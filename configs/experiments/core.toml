@@ -1,0 +1,24 @@
+name = "core_controlled_comparison"
+status = "blocked_until_pilot_passes"
+window = 150
+folds = 3
+loss = "standard_masked"
+
+models = [
+  "inhouse_joint",
+  "inhouse_single",
+  "deepripe",
+  "multiresbind",
+  "prismnet_seq",
+]
+
+development_proteins = [
+  "TARDBP",
+  "ELAVL1",
+  "U2AF2",
+  "PTBP1",
+  "HNRNPC",
+  "PUM2",
+  "QKI",
+  "RBFOX2",
+]

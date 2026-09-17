@@ -1,0 +1,45 @@
+{
+  "files": [
+    {
+      "path": "dataset_K562_multilabel_with_NEGs.csv",
+      "sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945",
+      "size_bytes": 724425277
+    },
+    {
+      "path": "intRBP ResCNN - for students.ipynb",
+      "sha256": "9a04f551ed9e5420c720074bf57f41f1c93ab92acc37c3b8ff44868e6b021b84",
+      "size_bytes": 3794737
+    },
+    {
+      "path": "CNNMultiLabelResidual_20250812_123241.pth",
+      "sha256": "9c036fceab966442d3cea40146a757114d8b23711c41cba227c3dafd24ff27c3",
+      "size_bytes": 36155022
+    },
+    {
+      "path": "output_sequences.tsv",
+      "sha256": "aae63909608282fb9856bdb32623b864bd9bc2aa9a833d9bc14d869008ccec10",
+      "size_bytes": 44564100
+    },
+    {
+      "path": "output_sequences.tsv_test.npz",
+      "sha256": "2334ea5b9f93f1c66f6013537c8ac3a276e862e9016c553147c5f50f7f8a9e7d",
+      "size_bytes": 27178760
+    },
+    {
+      "path": "papers/DeepRiPe.pdf",
+      "sha256": "d2065f8f66bfd8d6eecbcf16934fd4adcae8d252457d43776bec560cdaaf008f",
+      "size_bytes": 8420192
+    },
+    {
+      "path": "papers/Prismnet.pdf",
+      "sha256": "ef5984bcb0dac23f303d92b3ab79f0a682afa8c62330a65230b22a6bb0dd4ef5",
+      "size_bytes": 5411571
+    },
+    {
+      "path": "papers/RBPNet.pdf",
+      "sha256": "8fffb93e9f008a2867f62ecaafc230efcd4b007c417db21e4ff7e1d71360b852",
+      "size_bytes": 4044111
+    }
+  ],
+  "schema_version": 1
+}

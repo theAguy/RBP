@@ -1,0 +1,14 @@
+[submitted]
+positive_weight = 15.0
+unknown_penalty = 1.0
+mask_unknown = false
+
+[submitted_no_unknown]
+positive_weight = 15.0
+unknown_penalty = 0.0
+mask_unknown = true
+
+[standard_masked]
+positive_weight = 1.0
+unknown_penalty = 0.0
+mask_unknown = true

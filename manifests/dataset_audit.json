@@ -1,0 +1,1011 @@
+{
+  "encoding": {
+    "center_window_length_nt": 101,
+    "center_window_start_zero_based": 199,
+    "num_proteins": 122,
+    "one_hot_order": "ACGT",
+    "sequence_length_nt": 500
+  },
+  "gc_descriptive": {
+    "macro_direct_gc_auc_101": 0.6500338206858698,
+    "macro_direct_gc_auc_500": 0.659399392200948,
+    "macro_orientation_adjusted_gc_auc_101": 0.7246572992193088,
+    "macro_orientation_adjusted_gc_auc_500": 0.7245361480530743,
+    "mean_negative_gc_101": 0.4622883490202533,
+    "mean_negative_gc_500": 0.44890421363207045,
+    "mean_positive_gc_101": 0.5295973927079684,
+    "mean_positive_gc_500": 0.5172706625420123
+  },
+  "per_protein": [
+    {
+      "direct_gc_auc_101": 0.7994547803028191,
+      "direct_gc_auc_500": 0.8054750904546004,
+      "known_count": 2176,
+      "negative_count": 1089,
+      "positive_count": 1087,
+      "protein_id": 1
+    },
+    {
+      "direct_gc_auc_101": 0.5556334614939122,
+      "direct_gc_auc_500": 0.5694507387694561,
+      "known_count": 1886,
+      "negative_count": 943,
+      "positive_count": 943,
+      "protein_id": 2
+    },
+    {
+      "direct_gc_auc_101": 0.7614226226529376,
+      "direct_gc_auc_500": 0.8099235311932163,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 3
+    },
+    {
+      "direct_gc_auc_101": 0.722726875709669,
+      "direct_gc_auc_500": 0.7292177286671503,
+      "known_count": 2996,
+      "negative_count": 1498,
+      "positive_count": 1498,
+      "protein_id": 4
+    },
+    {
+      "direct_gc_auc_101": 0.9420516353725015,
+      "direct_gc_auc_500": 0.9576889763779528,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 5
+    },
+    {
+      "direct_gc_auc_101": 0.4213245641719771,
+      "direct_gc_auc_500": 0.45964279992824536,
+      "known_count": 2042,
+      "negative_count": 1021,
+      "positive_count": 1021,
+      "protein_id": 6
+    },
+    {
+      "direct_gc_auc_101": 0.7873823440339188,
+      "direct_gc_auc_500": 0.8181592973955178,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 7
+    },
+    {
+      "direct_gc_auc_101": 0.4364381512913821,
+      "direct_gc_auc_500": 0.47148580656182615,
+      "known_count": 1114,
+      "negative_count": 557,
+      "positive_count": 557,
+      "protein_id": 8
+    },
+    {
+      "direct_gc_auc_101": 0.2696517262265294,
+      "direct_gc_auc_500": 0.18834978800726832,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 9
+    },
+    {
+      "direct_gc_auc_101": 0.7495307389460932,
+      "direct_gc_auc_500": 0.7455187764990915,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 10
+    },
+    {
+      "direct_gc_auc_101": 0.8124496249443104,
+      "direct_gc_auc_500": 0.8463837886983994,
+      "known_count": 2346,
+      "negative_count": 1173,
+      "positive_count": 1173,
+      "protein_id": 11
+    },
+    {
+      "direct_gc_auc_101": 0.22069553015034818,
+      "direct_gc_auc_500": 0.2537347306374974,
+      "known_count": 1582,
+      "negative_count": 791,
+      "positive_count": 791,
+      "protein_id": 12
+    },
+    {
+      "direct_gc_auc_101": 0.4472021502119927,
+      "direct_gc_auc_500": 0.47940096910963054,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 13
+    },
+    {
+      "direct_gc_auc_101": 0.8391641429436705,
+      "direct_gc_auc_500": 0.8708534221683828,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 14
+    },
+    {
+      "direct_gc_auc_101": 0.8757565112053302,
+      "direct_gc_auc_500": 0.8984491217443973,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 15
+    },
+    {
+      "direct_gc_auc_101": 0.8462624167171411,
+      "direct_gc_auc_500": 0.7971965475469412,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 16
+    },
+    {
+      "direct_gc_auc_101": 0.8783793774537177,
+      "direct_gc_auc_500": 0.87807153122291,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 17
+    },
+    {
+      "direct_gc_auc_101": 0.735125681405209,
+      "direct_gc_auc_500": 0.7270897940642035,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 18
+    },
+    {
+      "direct_gc_auc_101": 0.9237705330415314,
+      "direct_gc_auc_500": 0.9249336528060775,
+      "known_count": 2522,
+      "negative_count": 1260,
+      "positive_count": 1262,
+      "protein_id": 19
+    },
+    {
+      "direct_gc_auc_101": 0.7762990626142035,
+      "direct_gc_auc_500": 0.810041816497429,
+      "known_count": 2202,
+      "negative_count": 1101,
+      "positive_count": 1101,
+      "protein_id": 20
+    },
+    {
+      "direct_gc_auc_101": 0.9071708581488875,
+      "direct_gc_auc_500": 0.9159362432353334,
+      "known_count": 3644,
+      "negative_count": 1651,
+      "positive_count": 1993,
+      "protein_id": 21
+    },
+    {
+      "direct_gc_auc_101": 0.7380257979656369,
+      "direct_gc_auc_500": 0.7584708929927013,
+      "known_count": 3609,
+      "negative_count": 1651,
+      "positive_count": 1958,
+      "protein_id": 22
+    },
+    {
+      "direct_gc_auc_101": 0.7254572484777371,
+      "direct_gc_auc_500": 0.7192973129314344,
+      "known_count": 2514,
+      "negative_count": 1257,
+      "positive_count": 1257,
+      "protein_id": 23
+    },
+    {
+      "direct_gc_auc_101": 0.9054214157814087,
+      "direct_gc_auc_500": 0.9226215328592827,
+      "known_count": 1928,
+      "negative_count": 964,
+      "positive_count": 964,
+      "protein_id": 24
+    },
+    {
+      "direct_gc_auc_101": 0.2790817686250757,
+      "direct_gc_auc_500": 0.28591156874621443,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 25
+    },
+    {
+      "direct_gc_auc_101": 0.9028002796067931,
+      "direct_gc_auc_500": 0.9128514893424907,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 26
+    },
+    {
+      "direct_gc_auc_101": 0.7375607207752877,
+      "direct_gc_auc_500": 0.7630536038764385,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 27
+    },
+    {
+      "direct_gc_auc_101": 0.7516387097159869,
+      "direct_gc_auc_500": 0.7291989227706673,
+      "known_count": 1636,
+      "negative_count": 818,
+      "positive_count": 818,
+      "protein_id": 28
+    },
+    {
+      "direct_gc_auc_101": 0.5401701998788613,
+      "direct_gc_auc_500": 0.5200996365838886,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 29
+    },
+    {
+      "direct_gc_auc_101": 0.9551435493640218,
+      "direct_gc_auc_500": 0.9630425499697153,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 30
+    },
+    {
+      "direct_gc_auc_101": 0.5995225620835857,
+      "direct_gc_auc_500": 0.6510675348273773,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 31
+    },
+    {
+      "direct_gc_auc_101": 0.7468073894609327,
+      "direct_gc_auc_500": 0.8078084494245912,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 32
+    },
+    {
+      "direct_gc_auc_101": 0.4617013231024961,
+      "direct_gc_auc_500": 0.4944455874212091,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 33
+    },
+    {
+      "direct_gc_auc_101": 0.852457904300424,
+      "direct_gc_auc_500": 0.8764111144760751,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 34
+    },
+    {
+      "direct_gc_auc_101": 0.5910943237675487,
+      "direct_gc_auc_500": 0.590739545841381,
+      "known_count": 2732,
+      "negative_count": 1366,
+      "positive_count": 1366,
+      "protein_id": 35
+    },
+    {
+      "direct_gc_auc_101": 0.47947444346037343,
+      "direct_gc_auc_500": 0.4842425755579183,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 36
+    },
+    {
+      "direct_gc_auc_101": 0.4672746820109025,
+      "direct_gc_auc_500": 0.4861889763779528,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 37
+    },
+    {
+      "direct_gc_auc_101": 0.8221090178990986,
+      "direct_gc_auc_500": 0.8321705860993635,
+      "known_count": 1224,
+      "negative_count": 612,
+      "positive_count": 612,
+      "protein_id": 38
+    },
+    {
+      "direct_gc_auc_101": 0.9550599218314633,
+      "direct_gc_auc_500": 0.9521207113647744,
+      "known_count": 2914,
+      "negative_count": 1457,
+      "positive_count": 1457,
+      "protein_id": 39
+    },
+    {
+      "direct_gc_auc_101": 0.6966373410054513,
+      "direct_gc_auc_500": 0.6957630224106602,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 40
+    },
+    {
+      "direct_gc_auc_101": 0.8877497062695026,
+      "direct_gc_auc_500": 0.8972035160000057,
+      "known_count": 1682,
+      "negative_count": 841,
+      "positive_count": 841,
+      "protein_id": 41
+    },
+    {
+      "direct_gc_auc_101": 0.11843715929739551,
+      "direct_gc_auc_500": 0.16461826165960025,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 42
+    },
+    {
+      "direct_gc_auc_101": 0.8569237866490833,
+      "direct_gc_auc_500": 0.8803633979133448,
+      "known_count": 3648,
+      "negative_count": 1651,
+      "positive_count": 1997,
+      "protein_id": 43
+    },
+    {
+      "direct_gc_auc_101": 0.6837987583282858,
+      "direct_gc_auc_500": 0.6537639309509389,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 44
+    },
+    {
+      "direct_gc_auc_101": 0.8321507575757576,
+      "direct_gc_auc_500": 0.8186227272727272,
+      "known_count": 3650,
+      "negative_count": 1650,
+      "positive_count": 2000,
+      "protein_id": 45
+    },
+    {
+      "direct_gc_auc_101": 0.5752787704421563,
+      "direct_gc_auc_500": 0.5704529073288915,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 46
+    },
+    {
+      "direct_gc_auc_101": 0.7610121878715814,
+      "direct_gc_auc_500": 0.7278151010701546,
+      "known_count": 1160,
+      "negative_count": 580,
+      "positive_count": 580,
+      "protein_id": 47
+    },
+    {
+      "direct_gc_auc_101": 0.9619640225927621,
+      "direct_gc_auc_500": 0.9661123717521996,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 48
+    },
+    {
+      "direct_gc_auc_101": 0.47750366439912395,
+      "direct_gc_auc_500": 0.46070423088618667,
+      "known_count": 2164,
+      "negative_count": 1082,
+      "positive_count": 1082,
+      "protein_id": 49
+    },
+    {
+      "direct_gc_auc_101": 0.631924882629108,
+      "direct_gc_auc_500": 0.5954506381009059,
+      "known_count": 2130,
+      "negative_count": 1065,
+      "positive_count": 1065,
+      "protein_id": 50
+    },
+    {
+      "direct_gc_auc_101": 0.40342292549969716,
+      "direct_gc_auc_500": 0.38746199273167775,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 51
+    },
+    {
+      "direct_gc_auc_101": 0.8625567837674137,
+      "direct_gc_auc_500": 0.8673831011508177,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 52
+    },
+    {
+      "direct_gc_auc_101": 0.6792992458385915,
+      "direct_gc_auc_500": 0.7296117270596719,
+      "known_count": 1032,
+      "negative_count": 516,
+      "positive_count": 516,
+      "protein_id": 53
+    },
+    {
+      "direct_gc_auc_101": 0.8738909034796698,
+      "direct_gc_auc_500": 0.8853594399187873,
+      "known_count": 3645,
+      "negative_count": 1651,
+      "positive_count": 1994,
+      "protein_id": 54
+    },
+    {
+      "direct_gc_auc_101": 0.6543086008479709,
+      "direct_gc_auc_500": 0.6855814657783161,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 55
+    },
+    {
+      "direct_gc_auc_101": 0.5646219536176326,
+      "direct_gc_auc_500": 0.5631828633880841,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 56
+    },
+    {
+      "direct_gc_auc_101": 0.18566535433070866,
+      "direct_gc_auc_500": 0.17888264688067837,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 57
+    },
+    {
+      "direct_gc_auc_101": 0.5837695336159903,
+      "direct_gc_auc_500": 0.5810947910357359,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 58
+    },
+    {
+      "direct_gc_auc_101": 0.2823764385221078,
+      "direct_gc_auc_500": 0.30556420351302244,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 59
+    },
+    {
+      "direct_gc_auc_101": 0.6411203597813425,
+      "direct_gc_auc_500": 0.6641204542974912,
+      "known_count": 3644,
+      "negative_count": 1651,
+      "positive_count": 1993,
+      "protein_id": 60
+    },
+    {
+      "direct_gc_auc_101": 0.2609791257449146,
+      "direct_gc_auc_500": 0.3417904584345973,
+      "known_count": 2451,
+      "negative_count": 1226,
+      "positive_count": 1225,
+      "protein_id": 61
+    },
+    {
+      "direct_gc_auc_101": 0.32853919388525277,
+      "direct_gc_auc_500": 0.3002544579376302,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 62
+    },
+    {
+      "direct_gc_auc_101": 0.6222415202907329,
+      "direct_gc_auc_500": 0.5742715021199273,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 63
+    },
+    {
+      "direct_gc_auc_101": 0.8222968319653562,
+      "direct_gc_auc_500": 0.8452244437735899,
+      "known_count": 2702,
+      "negative_count": 1351,
+      "positive_count": 1351,
+      "protein_id": 64
+    },
+    {
+      "direct_gc_auc_101": 0.5374058231544858,
+      "direct_gc_auc_500": 0.5223613489850689,
+      "known_count": 3647,
+      "negative_count": 1651,
+      "positive_count": 1996,
+      "protein_id": 65
+    },
+    {
+      "direct_gc_auc_101": 0.657309496407184,
+      "direct_gc_auc_500": 0.6875280582468799,
+      "known_count": 2425,
+      "negative_count": 1213,
+      "positive_count": 1212,
+      "protein_id": 66
+    },
+    {
+      "direct_gc_auc_101": 0.9241962447001817,
+      "direct_gc_auc_500": 0.9343626589945487,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 67
+    },
+    {
+      "direct_gc_auc_101": 0.9387109340546261,
+      "direct_gc_auc_500": 0.9459936886876587,
+      "known_count": 1807,
+      "negative_count": 904,
+      "positive_count": 903,
+      "protein_id": 68
+    },
+    {
+      "direct_gc_auc_101": 0.7959812293917554,
+      "direct_gc_auc_500": 0.8044640064382437,
+      "known_count": 2216,
+      "negative_count": 1108,
+      "positive_count": 1108,
+      "protein_id": 69
+    },
+    {
+      "direct_gc_auc_101": 0.9703805865223188,
+      "direct_gc_auc_500": 0.9822736121948721,
+      "known_count": 3649,
+      "negative_count": 1651,
+      "positive_count": 1998,
+      "protein_id": 70
+    },
+    {
+      "direct_gc_auc_101": 0.4611947116632913,
+      "direct_gc_auc_500": 0.504299775730903,
+      "known_count": 3140,
+      "negative_count": 1568,
+      "positive_count": 1572,
+      "protein_id": 71
+    },
+    {
+      "direct_gc_auc_101": 0.9446661361899898,
+      "direct_gc_auc_500": 0.9586031775613847,
+      "known_count": 3640,
+      "negative_count": 1651,
+      "positive_count": 1989,
+      "protein_id": 72
+    },
+    {
+      "direct_gc_auc_101": 0.6764300423985463,
+      "direct_gc_auc_500": 0.7292251665657178,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 73
+    },
+    {
+      "direct_gc_auc_101": 0.7906633858267716,
+      "direct_gc_auc_500": 0.805633555420957,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 74
+    },
+    {
+      "direct_gc_auc_101": 0.8634332222895215,
+      "direct_gc_auc_500": 0.8530966081162932,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 75
+    },
+    {
+      "direct_gc_auc_101": 0.7362256208358571,
+      "direct_gc_auc_500": 0.7029909145972139,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 76
+    },
+    {
+      "direct_gc_auc_101": 0.8009268342530145,
+      "direct_gc_auc_500": 0.8156499080318823,
+      "known_count": 1399,
+      "negative_count": 699,
+      "positive_count": 700,
+      "protein_id": 77
+    },
+    {
+      "direct_gc_auc_101": 0.695952604482132,
+      "direct_gc_auc_500": 0.7277839188370684,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 78
+    },
+    {
+      "direct_gc_auc_101": 0.5439474288337924,
+      "direct_gc_auc_500": 0.5367699724517906,
+      "known_count": 1320,
+      "negative_count": 660,
+      "positive_count": 660,
+      "protein_id": 79
+    },
+    {
+      "direct_gc_auc_101": 0.8583838582677166,
+      "direct_gc_auc_500": 0.8654863718958207,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 80
+    },
+    {
+      "direct_gc_auc_101": 0.5335887341005451,
+      "direct_gc_auc_500": 0.607519079345851,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 81
+    },
+    {
+      "direct_gc_auc_101": 0.43143655360387645,
+      "direct_gc_auc_500": 0.49165187764990914,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 82
+    },
+    {
+      "direct_gc_auc_101": 0.5970835205610073,
+      "direct_gc_auc_500": 0.5997502082355533,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 83
+    },
+    {
+      "direct_gc_auc_101": 0.29014778921865536,
+      "direct_gc_auc_500": 0.35411871592973954,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 84
+    },
+    {
+      "direct_gc_auc_101": 0.17507589357983058,
+      "direct_gc_auc_500": 0.21625016900607452,
+      "known_count": 3649,
+      "negative_count": 1651,
+      "positive_count": 1998,
+      "protein_id": 85
+    },
+    {
+      "direct_gc_auc_101": 0.8408168348256503,
+      "direct_gc_auc_500": 0.8550426030701601,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 86
+    },
+    {
+      "direct_gc_auc_101": 0.8465732889158086,
+      "direct_gc_auc_500": 0.8526115990308903,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 87
+    },
+    {
+      "direct_gc_auc_101": 0.29304863855425367,
+      "direct_gc_auc_500": 0.31487932258133494,
+      "known_count": 1982,
+      "negative_count": 991,
+      "positive_count": 991,
+      "protein_id": 88
+    },
+    {
+      "direct_gc_auc_101": 0.8528909906396256,
+      "direct_gc_auc_500": 0.8633982546801872,
+      "known_count": 1281,
+      "negative_count": 640,
+      "positive_count": 641,
+      "protein_id": 89
+    },
+    {
+      "direct_gc_auc_101": 0.3117393509127789,
+      "direct_gc_auc_500": 0.2931549827668662,
+      "known_count": 1393,
+      "negative_count": 697,
+      "positive_count": 696,
+      "protein_id": 90
+    },
+    {
+      "direct_gc_auc_101": 0.8462649909145972,
+      "direct_gc_auc_500": 0.7916258328285888,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 91
+    },
+    {
+      "direct_gc_auc_101": 0.5348100270491287,
+      "direct_gc_auc_500": 0.5149643888085104,
+      "known_count": 1513,
+      "negative_count": 757,
+      "positive_count": 756,
+      "protein_id": 92
+    },
+    {
+      "direct_gc_auc_101": 0.5631784941435716,
+      "direct_gc_auc_500": 0.533797334811993,
+      "known_count": 1054,
+      "negative_count": 527,
+      "positive_count": 527,
+      "protein_id": 93
+    },
+    {
+      "direct_gc_auc_101": 0.4623612533098772,
+      "direct_gc_auc_500": 0.4356943765644179,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 94
+    },
+    {
+      "direct_gc_auc_101": 0.7333608419139915,
+      "direct_gc_auc_500": 0.7401711084191399,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 95
+    },
+    {
+      "direct_gc_auc_101": 0.7087456087219867,
+      "direct_gc_auc_500": 0.739278921865536,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 96
+    },
+    {
+      "direct_gc_auc_101": 0.7136425571962238,
+      "direct_gc_auc_500": 0.7543432527893262,
+      "known_count": 3650,
+      "negative_count": 1651,
+      "positive_count": 1999,
+      "protein_id": 97
+    },
+    {
+      "direct_gc_auc_101": 0.8122300922430359,
+      "direct_gc_auc_500": 0.8038800646933535,
+      "known_count": 3622,
+      "negative_count": 1651,
+      "positive_count": 1971,
+      "protein_id": 98
+    },
+    {
+      "direct_gc_auc_101": 0.7248911265899455,
+      "direct_gc_auc_500": 0.7309318594791036,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 99
+    },
+    {
+      "direct_gc_auc_101": 0.6534418534221684,
+      "direct_gc_auc_500": 0.5667892186553604,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 100
+    },
+    {
+      "direct_gc_auc_101": 0.6884317997286663,
+      "direct_gc_auc_500": 0.6546737125676401,
+      "known_count": 3648,
+      "negative_count": 1651,
+      "positive_count": 1997,
+      "protein_id": 101
+    },
+    {
+      "direct_gc_auc_101": 0.44985666078207753,
+      "direct_gc_auc_500": 0.45537932165789186,
+      "known_count": 1012,
+      "negative_count": 506,
+      "positive_count": 506,
+      "protein_id": 102
+    },
+    {
+      "direct_gc_auc_101": 0.8008459138038447,
+      "direct_gc_auc_500": 0.8514908830989676,
+      "known_count": 1696,
+      "negative_count": 848,
+      "positive_count": 848,
+      "protein_id": 103
+    },
+    {
+      "direct_gc_auc_101": 0.28816838279830403,
+      "direct_gc_auc_500": 0.3451953361599031,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 104
+    },
+    {
+      "direct_gc_auc_101": 0.5374300423985463,
+      "direct_gc_auc_500": 0.564232889158086,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 105
+    },
+    {
+      "direct_gc_auc_101": 0.8526615586248614,
+      "direct_gc_auc_500": 0.8780707060523574,
+      "known_count": 1091,
+      "negative_count": 546,
+      "positive_count": 545,
+      "protein_id": 106
+    },
+    {
+      "direct_gc_auc_101": 0.5364812235009085,
+      "direct_gc_auc_500": 0.5294759236826166,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 107
+    },
+    {
+      "direct_gc_auc_101": 0.34659070260448216,
+      "direct_gc_auc_500": 0.45708101150817687,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 108
+    },
+    {
+      "direct_gc_auc_101": 0.3981003937007874,
+      "direct_gc_auc_500": 0.4562687764990915,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 109
+    },
+    {
+      "direct_gc_auc_101": 0.36046139860582643,
+      "direct_gc_auc_500": 0.35631251976505635,
+      "known_count": 3392,
+      "negative_count": 1651,
+      "positive_count": 1741,
+      "protein_id": 110
+    },
+    {
+      "direct_gc_auc_101": 0.34063685636856367,
+      "direct_gc_auc_500": 0.3439698592107872,
+      "known_count": 2460,
+      "negative_count": 1230,
+      "positive_count": 1230,
+      "protein_id": 111
+    },
+    {
+      "direct_gc_auc_101": 0.455175651120533,
+      "direct_gc_auc_500": 0.4327586311326469,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 112
+    },
+    {
+      "direct_gc_auc_101": 0.68773682616596,
+      "direct_gc_auc_500": 0.6063101150817686,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 113
+    },
+    {
+      "direct_gc_auc_101": 0.7185539067231981,
+      "direct_gc_auc_500": 0.7843824954572987,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 114
+    },
+    {
+      "direct_gc_auc_101": 0.7425136796654703,
+      "direct_gc_auc_500": 0.7764551127114657,
+      "known_count": 3648,
+      "negative_count": 1651,
+      "positive_count": 1997,
+      "protein_id": 115
+    },
+    {
+      "direct_gc_auc_101": 0.8787316640874039,
+      "direct_gc_auc_500": 0.8433924579712445,
+      "known_count": 1739,
+      "negative_count": 870,
+      "positive_count": 869,
+      "protein_id": 116
+    },
+    {
+      "direct_gc_auc_101": 0.9362807040960073,
+      "direct_gc_auc_500": 0.935573445372787,
+      "known_count": 2876,
+      "negative_count": 1439,
+      "positive_count": 1437,
+      "protein_id": 117
+    },
+    {
+      "direct_gc_auc_101": 0.6028600847970926,
+      "direct_gc_auc_500": 0.5938461538461538,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 118
+    },
+    {
+      "direct_gc_auc_101": 0.7115509090964867,
+      "direct_gc_auc_500": 0.7550570121754815,
+      "known_count": 1615,
+      "negative_count": 817,
+      "positive_count": 798,
+      "protein_id": 119
+    },
+    {
+      "direct_gc_auc_101": 0.3442053717068034,
+      "direct_gc_auc_500": 0.37939613080779155,
+      "known_count": 2428,
+      "negative_count": 1214,
+      "positive_count": 1214,
+      "protein_id": 120
+    },
+    {
+      "direct_gc_auc_101": 0.5211530890369473,
+      "direct_gc_auc_500": 0.4518678073894609,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 121
+    },
+    {
+      "direct_gc_auc_101": 0.5173988491823137,
+      "direct_gc_auc_500": 0.511759236826166,
+      "known_count": 3651,
+      "negative_count": 1651,
+      "positive_count": 2000,
+      "protein_id": 122
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "path": "dataset_K562_multilabel_with_NEGs.csv",
+    "sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945",
+    "size_bytes": 724425277
+  },
+  "summary": {
+    "known_labels": 374923,
+    "mean_known_labels_per_row": 1.0380502796389612,
+    "negative_labels": 173532,
+    "positive_labels": 201391,
+    "rows": 361180,
+    "rows_with_at_least_two_positives": 6500
+  }
+}

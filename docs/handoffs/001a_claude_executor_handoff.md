@@ -30,13 +30,14 @@ service. Do not use the real 724-MB CSV in Task 001A.
 
 ## Git boundary
 
-Before editing, verify that `main` has the reviewed baseline commit and that
-`origin` points to `https://github.com/theAguy/RBP.git`. Then create and work
-only on `issue-001a-coordinate-pipeline`.
+Before editing, verify that `main` contains reviewed baseline commit `cd2d530`
+and that `origin` points to `https://github.com/theAguy/RBP.git`. The published
+branch `issue-001a-coordinate-pipeline` already exists; switch to it, update it
+from its upstream, and work only there.
 
 If either condition is absent when you receive this handoff, stop and report
 the exact Git discrepancy. Do not replace the reviewed baseline, invent another
-remote, or commit directly to `main`.
+remote, create a replacement branch, or commit directly to `main`.
 
 ## Execution instructions
 

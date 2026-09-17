@@ -70,11 +70,16 @@ def seqkit_locate_command(query_fasta: Path, reference_fasta: Path) -> ToolComma
     ASSUMPTION (unverified against a real SeqKit binary; flag for 001B review):
     ``--pattern-file``/``--use-fmi``/``--bed`` are SeqKit 2.13.0 flags for
     exact-substring, FM-index-mode, BED-formatted output. Confirm with
-    ``seqkit locate --help`` before relying on this in Task 001B. Both-strand
-    coverage is obtained by invoking this twice: once against the reference
-    as given, and once with the *queries* reverse-complemented (see
-    :func:`rbpbench.coordinates.decode.reverse_complement`), never by
-    guessing SeqKit's own strand-handling default.
+    ``seqkit locate --help`` before relying on this in Task 001B.
+
+    ``seqkit locate`` searches both strands of the reference by default and
+    reports the matching strand per hit in the BED ``strand`` column, so both
+    strands are covered by exactly one invocation of this command per query
+    set. Do NOT also invoke this a second time against a reverse-complemented
+    query set: since each invocation already searches both strands, a second
+    reverse-complemented invocation reports the same genomic occurrence again
+    under the mirrored strand label, turning one real occurrence into two
+    (see :mod:`rbpbench.coordinates.exact_match`).
     """
     argv = (
         "seqkit",

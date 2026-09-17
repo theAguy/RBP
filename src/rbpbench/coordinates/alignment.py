@@ -2,8 +2,9 @@
 
 Scope note: these 500-nt windows are single-end queries, so there is no
 paired-end insert logic here. Coverage and identity are always computed from
-CIGAR/NM alignment operations, never from MAPQ; MAPQ is retained purely as a
-reported diagnostic per the parent task's contract.
+CIGAR/NM alignment operations, never from MAPQ; MAPQ and alignment score (AS)
+are retained as reported diagnostics and as best-candidate selection/tie-break
+evidence, never as classification-threshold inputs.
 """
 
 from __future__ import annotations
@@ -67,6 +68,7 @@ class AlignmentRecord:
     mapq: int
     cigar: str
     nm: int | None
+    as_score: int | None = None
 
     @property
     def is_reverse(self) -> bool:
@@ -85,6 +87,10 @@ class AlignmentRecord:
         return bool(self.flag & FLAG_UNMAPPED)
 
     @property
+    def is_primary(self) -> bool:
+        return not (self.is_secondary or self.is_supplementary)
+
+    @property
     def strand(self) -> str:
         return "-" if self.is_reverse else "+"
 
@@ -101,10 +107,12 @@ def parse_sam_line(line: str) -> AlignmentRecord | None:
     if flag & FLAG_UNMAPPED or rname == "*" or cigar == "*":
         return None
     nm = None
+    as_score = None
     for tag in fields[11:]:
         if tag.startswith("NM:i:"):
             nm = int(tag[len("NM:i:") :])
-            break
+        elif tag.startswith("AS:i:"):
+            as_score = int(tag[len("AS:i:") :])
     return AlignmentRecord(
         query_name=query_name,
         flag=flag,
@@ -113,43 +121,48 @@ def parse_sam_line(line: str) -> AlignmentRecord | None:
         mapq=int(mapq_s),
         cigar=cigar,
         nm=nm,
+        as_score=as_score,
     )
 
 
-@dataclass(frozen=True)
-class AlignmentStats:
-    coverage: float
-    identity: float
-    aligned_query_bases: int
-    total_query_bases: int
+def _per_op_match_mismatch(ops: Sequence[tuple[int, str]], nm: int | None) -> list[tuple[int, int]]:
+    """Per-op (matches, mismatches) counts, aligned by index with ``ops``.
 
+    Extended CIGAR ('=' and 'X') is used directly when present. Otherwise
+    (plain 'M', the common BWA-MEM case) a bare 'M' op does not itself
+    distinguish matches from mismatches, so the record's NM edit distance
+    (mismatches + inserted + deleted bases, per the SAM spec) is distributed
+    across the 'M' ops by base count. For the common single-M-op record this
+    reduces to an exact computation; the proportional split is an
+    approximation only for the rare multi-block plain-CIGAR record.
+    """
+    has_extended = any(op in ("=", "X") for _, op in ops)
+    result = [(0, 0)] * len(ops)
+    if has_extended:
+        for index, (length, op) in enumerate(ops):
+            if op == "=":
+                result[index] = (length, 0)
+            elif op == "X":
+                result[index] = (0, length)
+        return result
 
-def compute_alignment_stats(cigar: str, nm: int | None) -> AlignmentStats:
-    """Coverage/identity from CIGAR ops (using extended =/X when present, else M+NM)."""
-    ops = cigar_ops(cigar)
-    total_query = sum(n for n, op in ops if op in _TEMPLATE_LENGTH_OPS)
-    aligned_query = sum(n for n, op in ops if op in _ALIGNED_QUERY_OPS)
-    extended_matches = sum(n for n, op in ops if op == "=")
-    extended_mismatches = sum(n for n, op in ops if op == "X")
+    total_m = sum(length for length, op in ops if op == "M")
+    total_i = sum(length for length, op in ops if op == "I")
+    total_d = sum(length for length, op in ops if op == "D")
+    edit_distance = nm if nm is not None else 0
+    mismatches_total = min(max(edit_distance - total_i - total_d, 0), total_m)
 
-    if extended_matches or extended_mismatches:
-        denom = extended_matches + extended_mismatches
-        identity = extended_matches / denom if denom else 0.0
-    else:
-        m_len = sum(n for n, op in ops if op == "M")
-        indel = sum(n for n, op in ops if op in ("I", "D"))
-        edit_distance = nm if nm is not None else 0
-        estimated_mismatches = max(edit_distance - indel, 0)
-        matches = max(m_len - estimated_mismatches, 0)
-        identity = matches / m_len if m_len else 0.0
-
-    coverage = aligned_query / total_query if total_query else 0.0
-    return AlignmentStats(
-        coverage=coverage,
-        identity=identity,
-        aligned_query_bases=aligned_query,
-        total_query_bases=total_query,
-    )
+    consumed = 0
+    assigned = 0
+    for index, (length, op) in enumerate(ops):
+        if op != "M":
+            continue
+        consumed += length
+        target = round(consumed * mismatches_total / total_m) if total_m else 0
+        op_mismatches = target - assigned
+        assigned = target
+        result[index] = (length - op_mismatches, op_mismatches)
+    return result
 
 
 @dataclass(frozen=True)
@@ -165,6 +178,11 @@ class AlignedBlock:
     aligned_query_bases: int
     matches: int
     mismatches: int
+    insertions: int
+    deletions: int
+    mapq: int
+    as_score: int | None
+    is_primary: bool
 
 
 def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
@@ -176,6 +194,7 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
     corresponds to the *end* of the original template.
     """
     ops = cigar_ops(record.cigar)
+    per_op = _per_op_match_mismatch(ops, record.nm)
     total_len = sum(n for n, op in ops if op in _TEMPLATE_LENGTH_OPS)
 
     blocks: list[AlignedBlock] = []
@@ -186,9 +205,12 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
     block_aligned = 0
     block_matches = 0
     block_mismatches = 0
+    block_insertions = 0
+    block_deletions = 0
 
     def flush(read_end: int, ref_end: int) -> None:
         nonlocal block_ref_start, block_aligned, block_matches, block_mismatches
+        nonlocal block_insertions, block_deletions
         if block_ref_start is None:
             return
         if record.strand == "+":
@@ -206,14 +228,21 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
                 aligned_query_bases=block_aligned,
                 matches=block_matches,
                 mismatches=block_mismatches,
+                insertions=block_insertions,
+                deletions=block_deletions,
+                mapq=record.mapq,
+                as_score=record.as_score,
+                is_primary=record.is_primary,
             )
         )
         block_ref_start = None
         block_aligned = 0
         block_matches = 0
         block_mismatches = 0
+        block_insertions = 0
+        block_deletions = 0
 
-    for length, op in ops:
+    for index, (length, op) in enumerate(ops):
         if op in _CLIP_OPS:
             # Clips are only legal at CIGAR boundaries, so any open block ends
             # here. Both S and H advance the conceptual query axis (H is
@@ -232,17 +261,18 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
             block_ref_start = ref_pos
             block_read_start = read_pos
         if op in ("M", "=", "X"):
+            matches, mismatches = per_op[index]
             block_aligned += length
-            if op == "=":
-                block_matches += length
-            elif op == "X":
-                block_mismatches += length
+            block_matches += matches
+            block_mismatches += mismatches
             ref_pos += length
             read_pos += length
         elif op == "I":
             block_aligned += length
+            block_insertions += length
             read_pos += length
         elif op == "D":
+            block_deletions += length
             ref_pos += length
         else:
             raise ValueError(f"unsupported CIGAR operation {op!r}")
@@ -260,6 +290,9 @@ class CandidateLocus:
     identity: float
     aligned_query_bases: int
     total_query_bases: int
+    mapq: int
+    as_score: int | None
+    is_primary: bool
 
     @property
     def block_count(self) -> int:
@@ -302,11 +335,43 @@ def group_collinear_blocks(blocks: Sequence[AlignedBlock]) -> list[list[AlignedB
     return groups
 
 
+def _trimmed_contribution(prev_end: int, block: AlignedBlock) -> tuple[int, int, int, int, int]:
+    """Scale down a block's summed contribution by its query-space overlap
+    with the previous block in the group, so two collinear records (e.g. a
+    primary plus its supplementary) that redundantly cover the same few query
+    bases within the collinearity tolerance are not double-counted.
+    """
+    span = block.template_query_end - block.template_query_start
+    overlap = min(max(0, prev_end - block.template_query_start), span)
+    if overlap == 0:
+        return (
+            block.aligned_query_bases,
+            block.matches,
+            block.mismatches,
+            block.insertions,
+            block.deletions,
+        )
+    if span == 0:
+        return 0, 0, 0, 0, 0
+    fraction = (span - overlap) / span
+    return (
+        round(block.aligned_query_bases * fraction),
+        round(block.matches * fraction),
+        round(block.mismatches * fraction),
+        round(block.insertions * fraction),
+        round(block.deletions * fraction),
+    )
+
+
 def build_candidate_loci(records: Iterable[AlignmentRecord], total_query_bases: int) -> list[CandidateLocus]:
     """Combine all alignment records for one query into candidate loci.
 
     Supplementary/secondary records sharing a chromosome and strand are
-    collapsed into a single candidate only when their blocks are collinear.
+    collapsed into a single candidate only when their blocks are collinear;
+    overlapping query bases between merged blocks are counted once. Loci are
+    ranked with primary/alignment-score (AS) evidence first and coverage/
+    identity only as a tie-break, per the parent task's requirement that the
+    best candidate not be chosen from coverage alone.
     """
     all_blocks: list[AlignedBlock] = []
     for record in records:
@@ -314,24 +379,54 @@ def build_candidate_loci(records: Iterable[AlignmentRecord], total_query_bases: 
 
     loci: list[CandidateLocus] = []
     for group in group_collinear_blocks(all_blocks):
-        aligned = sum(b.aligned_query_bases for b in group)
-        matches = sum(b.matches for b in group)
-        mismatches = sum(b.mismatches for b in group)
-        denom = matches + mismatches
+        ordered = sorted(group, key=lambda b: b.template_query_start)
+        aligned = matches = mismatches = insertions = deletions = 0
+        prev_end: int | None = None
+        for block in ordered:
+            if prev_end is None:
+                a, m, mm, ins, dele = (
+                    block.aligned_query_bases,
+                    block.matches,
+                    block.mismatches,
+                    block.insertions,
+                    block.deletions,
+                )
+            else:
+                a, m, mm, ins, dele = _trimmed_contribution(prev_end, block)
+            aligned += a
+            matches += m
+            mismatches += mm
+            insertions += ins
+            deletions += dele
+            prev_end = block.template_query_end if prev_end is None else max(prev_end, block.template_query_end)
+
+        denom = matches + mismatches + insertions + deletions
         identity = matches / denom if denom else 0.0
         coverage = aligned / total_query_bases if total_query_bases else 0.0
+        as_scores = [b.as_score for b in group if b.as_score is not None]
         loci.append(
             CandidateLocus(
                 chrom=group[0].chrom,
                 strand=group[0].strand,
-                blocks=tuple(sorted(group, key=lambda b: b.template_query_start)),
+                blocks=tuple(ordered),
                 coverage=coverage,
                 identity=identity,
                 aligned_query_bases=aligned,
                 total_query_bases=total_query_bases,
+                mapq=max(b.mapq for b in group),
+                as_score=max(as_scores) if as_scores else None,
+                is_primary=any(b.is_primary for b in group),
             )
         )
-    loci.sort(key=lambda locus: (locus.coverage, locus.identity), reverse=True)
+    loci.sort(
+        key=lambda locus: (
+            locus.is_primary,
+            locus.as_score if locus.as_score is not None else float("-inf"),
+            locus.coverage,
+            locus.identity,
+        ),
+        reverse=True,
+    )
     return loci
 
 
@@ -395,3 +490,25 @@ def is_usable_unique(primary_category: str, splice_category: str | None) -> bool
     if primary_category in ("exact_unique", "high_conf_unique"):
         return True
     return splice_category == "spliced_unique"
+
+
+def near_tied_secondary_fractions(
+    loci: Sequence[CandidateLocus], fractions: Sequence[float]
+) -> dict[float, bool]:
+    """Tool-specific, diagnostic-only sensitivity output (parent task R5).
+
+    For each configured fraction, report whether any secondary locus's
+    alignment score (AS) is within that fraction of the best locus's AS.
+    Never used as a classification criterion and never compared across
+    mapping tools, since AS is not on a shared scale between them.
+    """
+    if len(loci) < 2 or loci[0].as_score is None:
+        return {fraction: False for fraction in fractions}
+    best_as = loci[0].as_score
+    result: dict[float, bool] = {}
+    for fraction in fractions:
+        threshold = best_as * (1 - fraction)
+        result[fraction] = any(
+            locus.as_score is not None and locus.as_score >= threshold for locus in loci[1:]
+        )
+    return result

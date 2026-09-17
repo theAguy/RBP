@@ -54,3 +54,18 @@
   feasibility execution, with planning review required between them.
 - Claude is authorized as executor for 001A only. The constrained Claude Linux
   environment must not perform human-genome indexing or mapping.
+
+## 2026-09-17 — Task 001A planning-review corrections
+
+- Planning review (see `docs/reviews/001_coordinate_recovery_reconciliation.md`
+  history and the requesting message) found the initial 001A implementation
+  unfit on: BWA-MEM plain-CIGAR identity, AS/MAPQ/primary-secondary-
+  supplementary preservation, real mapping capability, restart persistence,
+  fail-closed preflight, SeqKit double-strand counting, reconciliation
+  strength, quota-failure handling, and the environment specification.
+- The prior "environment lock" documenting an unresolved Python 3.9.17 vs.
+  `requires-python >= 3.10` mismatch is superseded by
+  `requirements-001a.txt`, verified against Python 3.11.7.
+- Corrections are implementation/robustness fixes to the already-approved
+  001A scope, not new scientific-scope changes; no threshold, contig policy,
+  mapper selection, or sampling design changed.

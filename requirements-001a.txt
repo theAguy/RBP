@@ -1,0 +1,20 @@
+# Installable environment specification for Task 001A.
+#
+# Supersedes the prior informal note that recorded a Python 3.9.17 host
+# mismatch against pyproject.toml's `requires-python = ">=3.10"` without
+# resolving it. Verified working on this branch: Python 3.11.7 (preferred,
+# per the parent review, over the 3.10 floor) in a clean venv.
+#
+# Reproduce:
+#   python3.11 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -e .
+#   pip install -r requirements-001a.txt
+#   pytest -q
+#
+# `pip install -e .` alone also works on any interpreter satisfying
+# `>=3.10`; on 3.10 it additionally pulls in `tomli` per pyproject.toml's
+# `python_version < '3.11'` marker, since `tomllib` is stdlib-only from 3.11.
+# Nothing below is a runtime dependency of the package itself.
+
+pytest==8.4.1

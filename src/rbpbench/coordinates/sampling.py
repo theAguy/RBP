@@ -51,6 +51,8 @@ class SamplingResult:
     representative_ids: frozenset
     quota_ids: frozenset
     filler_ids: frozenset
+    # Always empty: build_sample stops immediately (raises ValueError) on the
+    # first unsatisfiable protein/class quota rather than deferring it here.
     unsatisfied_quotas: tuple[tuple[int, str], ...]
 
 
@@ -104,7 +106,6 @@ def build_sample(
     positive_counts, negative_counts = _label_counts(representative_ids, by_id, num_proteins)
 
     quota_ids: list[str] = []
-    unsatisfied: list[tuple[int, str]] = []
 
     for protein in range(1, num_proteins + 1):
         for class_label, sign, counts, minimum in (
@@ -121,6 +122,15 @@ def build_sample(
             ]
             candidates.sort(key=lambda rid: quota_rank(seed, rid, protein, class_label))
             chosen = candidates[:needed]
+            if len(chosen) < needed:
+                # Stop immediately: an unsatisfiable quota is a dataset/config
+                # problem to surface now, not a gap to defer to later
+                # reporting while sampling continues to build an unreliable
+                # per-protein screening floor.
+                raise ValueError(
+                    f"quota unsatisfied for protein {protein} class {class_label!r}: "
+                    f"needed {needed} more, only {len(chosen)} candidate rows available"
+                )
             for row_id in chosen:
                 selected.add(row_id)
                 quota_ids.append(row_id)
@@ -132,8 +142,6 @@ def build_sample(
                         positive_counts[p] += 1
                     else:
                         negative_counts[p] += 1
-            if len(chosen) < needed:
-                unsatisfied.append((protein, class_label))
 
     if len(selected) > total_size:
         raise ValueError(
@@ -170,5 +178,5 @@ def build_sample(
         representative_ids=frozenset(representative_ids),
         quota_ids=frozenset(quota_ids),
         filler_ids=frozenset(filler_ids),
-        unsatisfied_quotas=tuple(unsatisfied),
+        unsatisfied_quotas=(),
     )

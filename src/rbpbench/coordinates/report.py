@@ -13,8 +13,10 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Sequence
 
-from rbpbench.coordinates.alignment import is_usable_unique
+from rbpbench.coordinates.alignment import PRIMARY_CATEGORIES, SPLICE_CATEGORIES, is_usable_unique
 from rbpbench.coordinates.sampling import FILLER, QUOTA, REPRESENTATIVE, SampleAssignment
+
+ALLOWED_CATEGORIES = frozenset(PRIMARY_CATEGORIES) | frozenset(SPLICE_CATEGORIES)
 
 
 @dataclass(frozen=True)
@@ -35,10 +37,21 @@ class ReconciliationIssue:
 @dataclass(frozen=True)
 class ReconciliationReport:
     issues: tuple[ReconciliationIssue, ...]
+    # False when mapping (align/exact_match) was never actually executed, e.g.
+    # a dry run or a run that stopped at planning. In that case reconciliation
+    # of mapping-derived counts has nothing to check and must say so plainly
+    # rather than reporting a hollow "passed".
+    mapping_evaluated: bool = True
+
+    @property
+    def status(self) -> str:
+        if not self.mapping_evaluated:
+            return "not_evaluated"
+        return "passed" if not self.issues else "failed"
 
     @property
     def passed(self) -> bool:
-        return len(self.issues) == 0
+        return self.mapping_evaluated and len(self.issues) == 0
 
 
 def stratum_counts(assignments: Sequence[SampleAssignment]) -> Counter:
@@ -88,7 +101,27 @@ def reconcile_counts(
     expected_total: int,
     expected_representative: int,
     expected_controls: int,
+    mapping_evaluated: bool = True,
+    expected_control_ids: Sequence[str] = (),
+    expected_builds: Sequence[str] = (),
+    expected_modes: Sequence[str] = (),
 ) -> ReconciliationReport:
+    """Check sample/stratum counts, and (when ``mapping_evaluated``) mapping
+    counts, for internal consistency.
+
+    ``mapping_evaluated=False`` marks a run where align/exact_match were
+    never actually executed (a dry run, or a run that stopped at planning):
+    the returned report's ``status`` is ``"not_evaluated"`` rather than a
+    potentially-misleading ``"passed"`` derived from an empty result set.
+
+    When ``mapping_evaluated`` is True, mapping-derived checks are
+    unconditional: zero controls or zero mapping rows are failures whenever
+    results were expected, never silently skipped. Passing
+    ``expected_builds``/``expected_modes``/``expected_control_ids`` also
+    requires every expected build x mode x biological/control combination to
+    be present with no missing sample IDs, not merely the combinations that
+    happen to appear in ``mapping_results``.
+    """
     issues: list[ReconciliationIssue] = []
 
     if len(assignments) != expected_total:
@@ -114,8 +147,28 @@ def reconcile_counts(
     if counts.get(REPRESENTATIVE, 0) + counts.get(QUOTA, 0) + counts.get(FILLER, 0) != len(assignments):
         issues.append(ReconciliationIssue("stratum_partition", "stratum counts do not sum to the total sample"))
 
+    if not mapping_evaluated:
+        return ReconciliationReport(issues=tuple(issues), mapping_evaluated=False)
+
+    if (expected_total or expected_controls) and not mapping_results:
+        issues.append(
+            ReconciliationIssue(
+                "empty_mapping_results",
+                "mapping was evaluated but produced zero rows, though results were expected",
+            )
+        )
+
+    invalid_categories = {r.category for r in mapping_results} - ALLOWED_CATEGORIES
+    if invalid_categories:
+        issues.append(
+            ReconciliationIssue(
+                "invalid_category",
+                f"unrecognized category name(s): {sorted(invalid_categories)}",
+            )
+        )
+
     control_ids = {r.sample_id for r in mapping_results if r.is_control}
-    if control_ids and len(control_ids) != expected_controls:
+    if len(control_ids) != expected_controls:
         issues.append(
             ReconciliationIssue(
                 "control_count",
@@ -135,26 +188,47 @@ def reconcile_counts(
         )
 
     table = category_table(mapping_results)
-    for (build, mode, is_control), category_counter in table.items():
-        total = sum(category_counter.values())
-        expected_rows = expected_controls if is_control else expected_total
-        distinct_ids = {r.sample_id for r in mapping_results if r.build == build and r.mode == mode and r.is_control == is_control}
-        if len(distinct_ids) != total:
-            issues.append(
-                ReconciliationIssue(
-                    "one_category_per_row",
-                    f"{build}/{mode}/control={is_control}: {total} category rows but {len(distinct_ids)} distinct sample IDs",
-                )
-            )
-        if not is_control and total != expected_rows:
-            issues.append(
-                ReconciliationIssue(
-                    "category_row_count",
-                    f"{build}/{mode}: expected {expected_rows} classified rows, found {total}",
-                )
-            )
+    present_builds = {build for build, _mode, _is_control in table}
+    present_modes = {mode for _build, mode, _is_control in table}
+    builds = tuple(expected_builds) or tuple(sorted(present_builds))
+    modes = tuple(expected_modes) or tuple(sorted(present_modes))
+    control_id_universe = set(expected_control_ids) or control_ids
 
-    return ReconciliationReport(issues=tuple(issues))
+    for build in builds:
+        for mode in modes:
+            for is_control, expected_ids in ((False, biological_ids), (True, control_id_universe)):
+                category_counter = table.get((build, mode, is_control), Counter())
+                total = sum(category_counter.values())
+                distinct_ids = {
+                    r.sample_id
+                    for r in mapping_results
+                    if r.build == build and r.mode == mode and r.is_control == is_control
+                }
+                if len(distinct_ids) != total:
+                    issues.append(
+                        ReconciliationIssue(
+                            "one_category_per_row",
+                            f"{build}/{mode}/control={is_control}: {total} category rows but {len(distinct_ids)} distinct sample IDs",
+                        )
+                    )
+                missing_ids = expected_ids - distinct_ids
+                if missing_ids:
+                    issues.append(
+                        ReconciliationIssue(
+                            "missing_mapping_ids",
+                            f"{build}/{mode}/control={is_control}: {len(missing_ids)} of {len(expected_ids)} expected sample IDs have no mapping row",
+                        )
+                    )
+                expected_rows = len(control_id_universe) if is_control else expected_total
+                if total != expected_rows:
+                    issues.append(
+                        ReconciliationIssue(
+                            "category_row_count",
+                            f"{build}/{mode}/control={is_control}: expected {expected_rows} classified rows, found {total}",
+                        )
+                    )
+
+    return ReconciliationReport(issues=tuple(issues), mapping_evaluated=True)
 
 
 def build_report(
@@ -178,6 +252,7 @@ def build_report(
             for (build, mode, is_control), counter in category_table(mapping_results).items()
         },
         "reconciliation": {
+            "status": reconciliation.status,
             "passed": reconciliation.passed,
             "issues": [
                 {"check": issue.check, "detail": issue.detail} for issue in reconciliation.issues
@@ -202,6 +277,7 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- {category}: {count}")
     lines.append("")
     lines.append("## Reconciliation")
+    lines.append(f"Status: {report['reconciliation']['status']}")
     lines.append(f"Passed: {report['reconciliation']['passed']}")
     for issue in report["reconciliation"]["issues"]:
         lines.append(f"- **{issue['check']}**: {issue['detail']}")

@@ -17,11 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rbpbench.coordinates.commands import resolve_version
-from rbpbench.coordinates.config import ResourceLimits
+from rbpbench.coordinates.config import ResourceLimits, ToolsConfig
+from rbpbench.data.audit import sha256_file
 
 DEV_VM = "dev_vm"
 APPROVED_MAC = "approved_mac"
 HOST_ROLES = (DEV_VM, APPROVED_MAC)
+
+APPROVED_OS = "Darwin"
+APPROVED_ARCH = "x86_64"
 
 
 def detect_physical_ram_gib() -> float | None:
@@ -86,19 +90,43 @@ def run_preflight(
     host_role: str,
     resources: ResourceLimits,
     disk_path: Path,
-    input_hashes: dict | None = None,
     allow_mapping: bool,
+    tools: ToolsConfig | None = None,
+    threads: int = 1,
+    required_input_paths: dict[str, Path] | None = None,
 ) -> PreflightReport:
+    """Report host facts and fail closed before any real mapping is allowed.
+
+    A caller declaring ``host_role=approved_mac`` is not, by itself, evidence
+    that mapping may proceed: when ``allow_mapping`` is set, every one of the
+    following must be independently verified from detected/measured facts, or
+    the report fails closed with ``ok=False``:
+
+    - detected OS/architecture match the one approved host (Darwin/x86_64);
+    - physical RAM is *known* (never treated as passing when undetectable,
+      e.g. on Linux without ``/proc/meminfo`` or an unrecognized platform)
+      and meets ``resources.min_ram_gib_for_mapping``;
+    - free disk meets ``resources.min_free_disk_gib``;
+    - the requested thread count does not exceed ``resources.max_threads``;
+    - ``bwa``, ``minimap2``, and ``seqkit`` are all present on PATH *and*
+      report the pinned versions from ``tools``;
+    - every path in ``required_input_paths`` (references and reads) exists
+      and its SHA-256 hash is computed and recorded, never merely assumed.
+    """
     if host_role not in HOST_ROLES:
         raise ValueError(f"unknown host_role {host_role!r}; expected one of {HOST_ROLES}")
 
     physical_ram_gib = detect_physical_ram_gib()
     free_disk_gib = detect_free_disk_gib(disk_path)
+    os_name = platform.system()
+    architecture = platform.machine()
     tool_versions = {
         "bwa": resolve_version(["bwa"]),
         "minimap2": resolve_version(["minimap2", "--version"]),
         "seqkit": resolve_version(["seqkit", "version"]),
     }
+    required_input_paths = required_input_paths or {}
+    input_hashes: dict[str, str] = {}
 
     violations: list[str] = []
 
@@ -108,7 +136,14 @@ def run_preflight(
         )
 
     if allow_mapping and host_role == APPROVED_MAC:
-        if physical_ram_gib is not None and physical_ram_gib < resources.min_ram_gib_for_mapping:
+        if os_name != APPROVED_OS or architecture != APPROVED_ARCH:
+            violations.append(
+                f"detected {os_name}/{architecture}, but only {APPROVED_OS}/{APPROVED_ARCH} "
+                "is the approved mapping host; host_role alone is not evidence"
+            )
+        if physical_ram_gib is None:
+            violations.append("physical RAM could not be determined; refusing to assume it is sufficient")
+        elif physical_ram_gib < resources.min_ram_gib_for_mapping:
             violations.append(
                 f"detected {physical_ram_gib:.1f} GiB RAM, below the required "
                 f"{resources.min_ram_gib_for_mapping} GiB for mapping"
@@ -118,16 +153,44 @@ def run_preflight(
                 f"detected {free_disk_gib:.1f} GiB free disk, below the required "
                 f"{resources.min_free_disk_gib} GiB before a mapping run"
             )
+        if threads > resources.max_threads:
+            violations.append(f"requested {threads} threads exceeds the max of {resources.max_threads}")
+
+        if tools is None:
+            violations.append("no pinned tool versions supplied to verify against")
+        else:
+            pinned = {
+                "bwa": tools.bwa_version,
+                "minimap2": tools.minimap2_version,
+                "seqkit": tools.seqkit_version,
+            }
+            for tool, expected_version in pinned.items():
+                detected = tool_versions.get(tool)
+                if detected is None:
+                    violations.append(f"required tool {tool!r} was not found on PATH")
+                elif expected_version not in detected:
+                    violations.append(
+                        f"{tool} version mismatch: expected {expected_version!r}, detected {detected!r}"
+                    )
+
+        if not required_input_paths:
+            violations.append("no required input/reference paths supplied to hash-verify")
+        for name, path in required_input_paths.items():
+            path = Path(path)
+            if not path.is_file():
+                violations.append(f"required input {name!r} not found at {path}")
+                continue
+            input_hashes[name] = sha256_file(path)
 
     return PreflightReport(
         host_role=host_role,
-        os_name=platform.system(),
-        architecture=platform.machine(),
+        os_name=os_name,
+        architecture=architecture,
         cpu_count=os.cpu_count(),
         physical_ram_gib=physical_ram_gib,
         free_disk_gib=free_disk_gib,
         tool_versions=tool_versions,
-        input_hashes=dict(input_hashes or {}),
+        input_hashes=input_hashes,
         violations=tuple(violations),
     )
 

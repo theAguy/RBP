@@ -7,16 +7,28 @@ execution steps with a required planning-review checkpoint between them.
 ## Task 001A (this implementation) — done here
 
 - Frozen configuration: `configs/coordinate_feasibility.toml`.
-- Deterministic sampling, one-hot decoding/validation, dinucleotide-preserving
-  controls, mapper/SeqKit command construction, SAM parsing and
-  classification, exact-match reconciliation, report-table generation, an
-  environment preflight, and a restart-safe staged CLI runner
-  (`rbp-coordinates`, see `rbpbench.coordinates.runner`).
-- Everything is exercised only against tiny fixtures under
-  `tests/fixtures/coordinates/`. No real reference, the real 724-MB CSV, or
-  network access is used or required.
+- Deterministic sampling (stops immediately on an unsatisfiable per-protein
+  quota rather than deferring it), one-hot decoding/validation,
+  dinucleotide-preserving controls, mapper/SeqKit command construction, SAM
+  parsing and classification (real BWA-MEM `M`+`NM` CIGAR, AS/MAPQ/primary-
+  secondary-supplementary evidence, near-tied score-gap sensitivity),
+  exact-match reconciliation, report-table generation with unconditional
+  count/category checks, a fail-closed environment preflight, and a
+  restart-safe staged CLI runner (`rbp-coordinates`, see
+  `rbpbench.coordinates.runner`).
+- The runner is genuinely capable of real mapping/exact-match execution
+  (guarded `subprocess.run(argv, shell=False)`, never a shell string) when
+  explicitly authorized with `--allow-mapping --host-role=approved_mac
+  --reference <path>`; that capability is exercised in tests only against
+  tiny fake executables and synthetic FASTA content, never the real 724-MB
+  CSV, a human reference, or network access.
+- Sampled assignments and align/exact_match results are persisted to
+  `sample_state.json`/`align.json`/`exact_match.json` in `--output-dir` and
+  reloaded on every invocation, so a later stage can resume in a brand-new
+  process, not only later in the same one.
 - Importing any module in this package, or running the unit test suite,
-  never downloads anything and never invokes `bwa`/`minimap2`/`seqkit`.
+  never downloads anything and never invokes `bwa`/`minimap2`/`seqkit`
+  without those explicit flags and a real `--reference`.
 
 ## Task 001B (not started) — later, on the approved host only
 
@@ -24,12 +36,16 @@ execution steps with a required planning-review checkpoint between them.
   environment on the local 16-GiB macOS x86_64 host.
 - Download and hash the official hg38/GRCh38 and hg19/GRCh37 references.
 - Run the runner's `sample`/`decode`/`controls` stages against the real
-  10,000-row feasibility sample, then `align`/`exact_match` with
-  `--allow-mapping --host-role=approved_mac` on that host.
-- Produce `artifacts/coordinate_feasibility/report.json` and `report.md` with
-  the real mapping-quality tables, and have a human reviewer set the
-  Phase 2 recommendation from that full report (this pipeline deliberately
-  never computes that recommendation automatically).
+  10,000-row feasibility sample, then `align`/`exact_match`/`report` with
+  `--allow-mapping --host-role=approved_mac --reference <path> --build
+  hg38|hg19` on that host. Preflight independently fails closed on anything
+  short of a verified Darwin/x86_64 host with known RAM, matching pinned
+  tool versions, and hashed required inputs — declaring `host_role` is never
+  by itself sufficient.
+- Produce `artifacts/coordinate_feasibility/mappings.tsv.gz`, `report.json`,
+  and `report.md` with the real mapping-quality tables, and have a human
+  reviewer set the Phase 2 recommendation from that full report (this
+  pipeline deliberately never computes that recommendation automatically).
 
 ## Running the fixture pipeline
 
@@ -44,13 +60,16 @@ PYTHONPATH=src python3 -m rbpbench.coordinates.runner \
 This writes `sample_ids.tsv`, `sample_sequences.fasta`,
 `control_sequences.fasta`, `preflight.json`, `align.json` (mapping skipped
 and recorded why), `exact_match.json` (search skipped and recorded why),
-`report.json`, `report.md`, `state.json`, and `dry_run.json` to
-`--output-dir`. Re-running without `--force` skips stages already recorded
-in `state.json`.
+`report.json` (`reconciliation.status = "not_evaluated"`, since mapping never
+ran), `report.md`, `state.json`, and `dry_run.json` to `--output-dir`.
+Re-running without `--force` skips stages already recorded in `state.json`.
 
-Mapping only runs when both `--allow-mapping` and `--host-role=approved_mac`
-are passed; on any other host, or without the flag, `align`/`exact_match`
-only construct and log the commands that *would* run.
+Real mapping only runs when `--allow-mapping`, `--host-role=approved_mac`,
+and a `--reference` pointing at an existing FASTA are all given, and the
+pinned binaries are actually found on PATH; on any other host, or without
+those flags, `align`/`exact_match` only construct and log the commands that
+*would* run, and `report.json`'s reconciliation is explicitly
+`not_evaluated` rather than a hollow `passed`.
 
 ## Known assumption to confirm in Task 001B
 

@@ -4,6 +4,15 @@
 parent task requires independent confirmation that SeqKit's FM-index exact
 substring search also finds exactly one genomic occurrence, searched on both
 strands.
+
+``seqkit locate`` already searches both strands of the reference in a single
+invocation and labels each hit's strand in its BED output, so one call per
+query set (see :func:`rbpbench.coordinates.commands.seqkit_locate_command`)
+is both necessary and sufficient. There is deliberately no "merge forward and
+reverse-complemented query results" helper here: invoking SeqKit a second
+time against a reverse-complemented query set would re-report every genuine
+occurrence a second time under the mirrored strand label, turning one real
+genomic occurrence into two strand-distinct ones.
 """
 
 from __future__ import annotations
@@ -31,19 +40,6 @@ def parse_seqkit_bed(lines: Iterable[str]) -> dict[str, set[tuple[str, int, int,
         chrom, start_s, end_s, name, _score, strand = fields[:6]
         occurrences[name].add((chrom, int(start_s), int(end_s), strand))
     return occurrences
-
-
-def merge_both_strand_hits(
-    forward_hits: dict[str, set[tuple[str, int, int, str]]],
-    reverse_hits: dict[str, set[tuple[str, int, int, str]]],
-) -> dict[str, set[tuple[str, int, int, str]]]:
-    """Combine forward-query and reverse-complement-query search results."""
-    merged: dict[str, set[tuple[str, int, int, str]]] = defaultdict(set)
-    for sample_id, hits in forward_hits.items():
-        merged[sample_id] |= hits
-    for sample_id, hits in reverse_hits.items():
-        merged[sample_id] |= hits
-    return merged
 
 
 def exact_occurrence_count(occurrences: dict[str, set], sample_id: str) -> int:

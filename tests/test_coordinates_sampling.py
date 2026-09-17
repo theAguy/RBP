@@ -78,6 +78,27 @@ class SamplingTests(unittest.TestCase):
                 min_negative_per_protein=1,
             )
 
+    def test_stops_immediately_on_unsatisfiable_quota(self):
+        # protein 2's negative labels never appear anywhere in this fixture,
+        # so the quota for protein 2 negative can never be filled.
+        rows = [
+            DatasetRow(row_index=0, labels=(1,)),
+            DatasetRow(row_index=1, labels=(-1,)),
+            DatasetRow(row_index=2, labels=(2,)),
+            DatasetRow(row_index=3, labels=()),
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            build_sample(
+                rows,
+                seed=1,
+                num_proteins=2,
+                representative_size=1,
+                total_size=4,
+                min_positive_per_protein=1,
+                min_negative_per_protein=1,
+            )
+        self.assertIn("quota unsatisfied", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

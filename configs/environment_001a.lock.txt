@@ -1,0 +1,17 @@
+# Environment lock for Task 001A implementation and fixture tests.
+#
+# Captured on the implementation host (2026-09-17):
+#   python 3.9.17, macOS-14.4.1-x86_64-i386-64bit
+#
+# NOTE: pyproject.toml declares requires-python = ">=3.10", but the only
+# interpreter available on this implementation host is 3.9.17. This is a
+# pre-existing mismatch, not introduced by Task 001A; it is flagged in the
+# handoff rather than silently changed. All Task 001A code targets 3.9+
+# (uses `from __future__ import annotations`, no 3.10-only syntax) so it
+# runs correctly on this host despite the metadata mismatch.
+#
+# Runtime dependency (declared in pyproject.toml for python < 3.11):
+tomli==2.0.1
+
+# Test-only, not a package runtime dependency:
+pytest==8.4.1

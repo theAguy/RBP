@@ -1,0 +1,46 @@
+# Tiny fixture config for runner integration tests. Mirrors the shape of
+# configs/coordinate_feasibility.toml with sizes small enough for a 26-row
+# fixture CSV.
+
+sequence_length_nt = 20
+
+[sampling]
+seed = 20260916
+total_size = 20
+representative_size = 10
+min_positive_per_protein = 2
+min_negative_per_protein = 2
+num_proteins = 2
+
+[controls]
+count = 3
+max_shuffle_attempts = 50
+
+[thresholds]
+high_conf_min_coverage = 0.98
+high_conf_min_identity = 0.99
+secondary_min_coverage = 0.90
+secondary_min_identity = 0.95
+near_tied_fractions = [0.02, 0.05, 0.10]
+
+[tools]
+bwa_version = "0.7.19"
+minimap2_version = "2.31"
+seqkit_version = "2.13.0"
+
+[resources]
+max_threads = 4
+max_new_disk_gib = 30
+min_free_disk_gib = 80
+min_ram_gib_for_mapping = 16
+
+[contig_policy]
+include_categories = ["chromosome", "mitochondrion", "unlocalized_scaffold", "unplaced_scaffold"]
+exclude_categories = ["alt_haplotype", "patch", "decoy", "hla_contig"]
+
+[outputs]
+sample_ids_tsv = "artifacts/coordinate_feasibility/sample_ids.tsv"
+mappings_tsv_gz = "artifacts/coordinate_feasibility/mappings.tsv.gz"
+report_json = "artifacts/coordinate_feasibility/report.json"
+report_md = "artifacts/coordinate_feasibility/report.md"
+dry_run_json = "artifacts/coordinate_feasibility/dry_run.json"

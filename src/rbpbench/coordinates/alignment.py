@@ -10,7 +10,11 @@ evidence, never as classification-threshold inputs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
+
+from rbpbench.coordinates.reference import intron_junction_motif, is_canonical_junction
+
+ReferenceLookup = Callable[[str, int, int], str]
 
 FLAG_REVERSE = 0x10
 FLAG_SECONDARY = 0x100
@@ -183,6 +187,15 @@ class AlignedBlock:
     mapq: int
     as_score: int | None
     is_primary: bool
+    record_id: int
+    # Length of the 'N' CIGAR op immediately preceding this block within the
+    # *same originating record* (None for a record's first block, or when the
+    # predecessor came from a different record entirely, e.g. a
+    # supplementary alignment merged in only by build_candidate_loci's
+    # collinearity grouping). This is the only evidence build_candidate_loci
+    # is allowed to treat as a real intron: two supplementary blocks that
+    # happen to be collinear are not spliced evidence by themselves.
+    intron_length_before: int | None = None
 
 
 def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
@@ -196,6 +209,7 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
     ops = cigar_ops(record.cigar)
     per_op = _per_op_match_mismatch(ops, record.nm)
     total_len = sum(n for n, op in ops if op in _TEMPLATE_LENGTH_OPS)
+    record_id = id(record)
 
     blocks: list[AlignedBlock] = []
     ref_pos = record.pos0
@@ -207,10 +221,12 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
     block_mismatches = 0
     block_insertions = 0
     block_deletions = 0
+    block_intron_before: int | None = None
+    pending_intron_length: int | None = None
 
     def flush(read_end: int, ref_end: int) -> None:
         nonlocal block_ref_start, block_aligned, block_matches, block_mismatches
-        nonlocal block_insertions, block_deletions
+        nonlocal block_insertions, block_deletions, block_intron_before
         if block_ref_start is None:
             return
         if record.strand == "+":
@@ -233,6 +249,8 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
                 mapq=record.mapq,
                 as_score=record.as_score,
                 is_primary=record.is_primary,
+                record_id=record_id,
+                intron_length_before=block_intron_before,
             )
         )
         block_ref_start = None
@@ -241,6 +259,7 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
         block_mismatches = 0
         block_insertions = 0
         block_deletions = 0
+        block_intron_before = None
 
     for index, (length, op) in enumerate(ops):
         if op in _CLIP_OPS:
@@ -256,10 +275,14 @@ def blocks_from_record(record: AlignmentRecord) -> list[AlignedBlock]:
             flush(read_pos, ref_pos)
             ref_pos += length
             block_read_start = read_pos
+            pending_intron_length = length
             continue
         if block_ref_start is None:
             block_ref_start = ref_pos
             block_read_start = read_pos
+            if pending_intron_length is not None:
+                block_intron_before = pending_intron_length
+                pending_intron_length = None
         if op in ("M", "=", "X"):
             matches, mismatches = per_op[index]
             block_aligned += length
@@ -293,6 +316,16 @@ class CandidateLocus:
     mapq: int
     as_score: int | None
     is_primary: bool
+    # Real intron evidence only: lengths of 'N' CIGAR gaps between two blocks
+    # that came from the *same* originating alignment record, in genomic
+    # order. A locus assembled from several collinear but N-free records
+    # (e.g. two supplementary alignments) has an empty tuple here even
+    # though it has multiple blocks.
+    intron_lengths: tuple[int, ...] = ()
+    # Parallel to intron_lengths: True/False when a reference lookup was
+    # supplied and the junction's donor/acceptor dinucleotides were checked,
+    # None when no reference sequence was available to check against.
+    junction_is_canonical: tuple[bool | None, ...] = ()
 
     @property
     def block_count(self) -> int:
@@ -300,7 +333,13 @@ class CandidateLocus:
 
     @property
     def has_intron(self) -> bool:
-        return len(self.blocks) >= 2
+        """True only when at least one block boundary is real 'N' evidence.
+
+        Multiple blocks alone (e.g. a primary plus a collinear supplementary
+        record, neither containing an 'N' op) are not splice evidence; see
+        ``intron_lengths``.
+        """
+        return len(self.intron_lengths) > 0
 
 
 _MAX_QUERY_OVERLAP = 5
@@ -363,7 +402,42 @@ def _trimmed_contribution(prev_end: int, block: AlignedBlock) -> tuple[int, int,
     )
 
 
-def build_candidate_loci(records: Iterable[AlignmentRecord], total_query_bases: int) -> list[CandidateLocus]:
+def _intron_evidence(
+    group: Sequence[AlignedBlock], reference_lookup: ReferenceLookup | None
+) -> tuple[tuple[int, ...], tuple[bool | None, ...]]:
+    """Real intron gaps in a locus's blocks, in genomic order.
+
+    A gap only counts when both sides came from the *same* originating SAM
+    record and the later one recorded an 'N'-op length immediately before it
+    (see ``AlignedBlock.intron_length_before``); collinear blocks merged from
+    two different records (e.g. a primary plus an unrelated supplementary
+    alignment, neither containing 'N') never contribute an entry here. Genomic
+    order is used for adjacency (not template/query order) because it matches
+    the CIGAR's own left-to-right reference traversal regardless of strand.
+    """
+    genomic_ordered = sorted(group, key=lambda b: b.ref_start)
+    intron_lengths: list[int] = []
+    canonical: list[bool | None] = []
+    for prev, cur in zip(genomic_ordered, genomic_ordered[1:]):
+        if cur.record_id != prev.record_id or cur.intron_length_before is None:
+            continue
+        intron_lengths.append(cur.intron_length_before)
+        if reference_lookup is None:
+            canonical.append(None)
+        else:
+            donor, acceptor = intron_junction_motif(
+                reference_lookup, prev.chrom, prev.ref_end, cur.ref_start, prev.strand
+            )
+            canonical.append(is_canonical_junction(donor, acceptor))
+    return tuple(intron_lengths), tuple(canonical)
+
+
+def build_candidate_loci(
+    records: Iterable[AlignmentRecord],
+    total_query_bases: int,
+    *,
+    reference_lookup: ReferenceLookup | None = None,
+) -> list[CandidateLocus]:
     """Combine all alignment records for one query into candidate loci.
 
     Supplementary/secondary records sharing a chromosome and strand are
@@ -372,6 +446,11 @@ def build_candidate_loci(records: Iterable[AlignmentRecord], total_query_bases: 
     ranked with primary/alignment-score (AS) evidence first and coverage/
     identity only as a tie-break, per the parent task's requirement that the
     best candidate not be chosen from coverage alone.
+
+    ``reference_lookup``, when supplied, is a ``(chrom, start, end) -> bases``
+    callable (see :mod:`rbpbench.coordinates.reference`) used to check each
+    real intron's donor/acceptor motif; omitted, canonical-junction status is
+    reported as unknown (``None``) rather than guessed.
     """
     all_blocks: list[AlignedBlock] = []
     for record in records:
@@ -404,6 +483,7 @@ def build_candidate_loci(records: Iterable[AlignmentRecord], total_query_bases: 
         identity = matches / denom if denom else 0.0
         coverage = aligned / total_query_bases if total_query_bases else 0.0
         as_scores = [b.as_score for b in group if b.as_score is not None]
+        intron_lengths, junction_is_canonical = _intron_evidence(group, reference_lookup)
         loci.append(
             CandidateLocus(
                 chrom=group[0].chrom,
@@ -416,6 +496,8 @@ def build_candidate_loci(records: Iterable[AlignmentRecord], total_query_bases: 
                 mapq=max(b.mapq for b in group),
                 as_score=max(as_scores) if as_scores else None,
                 is_primary=any(b.is_primary for b in group),
+                intron_lengths=intron_lengths,
+                junction_is_canonical=junction_is_canonical,
             )
         )
     loci.sort(

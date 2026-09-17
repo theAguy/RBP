@@ -230,6 +230,93 @@ class CandidateSelectionEvidenceTests(unittest.TestCase):
         self.assertEqual(result, {0.02: False, 0.05: False, 0.10: False})
 
 
+class RealIntronEvidenceTests(unittest.TestCase):
+    """Regression coverage for review item 4: only a real 'N' CIGAR gap is
+    intron evidence. Multiple blocks merged from separate supplementary
+    records that never contain 'N' must not be classified spliced_unique.
+    """
+
+    def test_two_supplementary_blocks_without_n_are_not_spliced(self):
+        # Two separate, collinear alignment records (a primary plus a
+        # supplementary), neither containing an 'N' op: this is a split
+        # (chimeric) alignment merged by collinearity, not spliced evidence.
+        primary = parse_sam_line(sam("read1", 0, "chr1", 1, 60, "50M50S", nm=0))
+        supplementary = parse_sam_line(sam("read1", 2048, "chr1", 101, 60, "50H50M", nm=0))
+        loci = build_candidate_loci([primary, supplementary], total_query_bases=100)
+        self.assertEqual(loci[0].block_count, 2)
+        self.assertEqual(loci[0].intron_lengths, ())
+        self.assertFalse(loci[0].has_intron)
+        self.assertEqual(classify_splice(loci, THRESHOLDS), "unspliced_unique")
+        self.assertNotEqual(classify_splice(loci, THRESHOLDS), "spliced_unique")
+
+    def test_real_n_gap_within_one_record_is_intron_evidence(self):
+        record = parse_sam_line(sam("read2", 0, "chr3", 2001, 60, "50=200N50="))
+        loci = build_candidate_loci([record], total_query_bases=100)
+        self.assertEqual(loci[0].intron_lengths, (200,))
+        self.assertTrue(loci[0].has_intron)
+        self.assertEqual(classify_splice(loci, THRESHOLDS), "spliced_unique")
+
+    def test_canonical_junction_diagnostic_uses_reference_lookup(self):
+        from rbpbench.coordinates.reference import make_reference_lookup
+
+        # record pos1=1 -> pos0=0; first block ref [0,50), intron ref
+        # [50,250), second block ref [250,300): donor GT at [50,52),
+        # acceptor AG at [248,250).
+        sequence = "A" * 50 + "GT" + "C" * 196 + "AG" + "A" * 50
+        sequences = {"chr3": sequence}
+        lookup = make_reference_lookup(sequences)
+        record = parse_sam_line(sam("read3", 0, "chr3", 1, 60, "50=200N50="))
+        loci = build_candidate_loci([record], total_query_bases=100, reference_lookup=lookup)
+        self.assertEqual(loci[0].intron_lengths, (200,))
+        self.assertEqual(loci[0].junction_is_canonical, (True,))
+
+    def test_canonical_junction_diagnostic_is_unknown_without_reference(self):
+        record = parse_sam_line(sam("read4", 0, "chr3", 2001, 60, "50=200N50="))
+        loci = build_candidate_loci([record], total_query_bases=100)
+        self.assertEqual(loci[0].junction_is_canonical, (None,))
+
+    def test_non_canonical_junction_is_reported_false(self):
+        from rbpbench.coordinates.reference import make_reference_lookup
+
+        sequence = "A" * 50 + "CC" + "C" * 196 + "TT" + "A" * 50
+        lookup = make_reference_lookup({"chr3": sequence})
+        record = parse_sam_line(sam("read5", 0, "chr3", 1, 60, "50=200N50="))
+        loci = build_candidate_loci([record], total_query_bases=100, reference_lookup=lookup)
+        self.assertEqual(loci[0].junction_is_canonical, (False,))
+
+
+class ReverseStrandBlockOrderingTests(unittest.TestCase):
+    """Documents the root cause behind review item 5: CandidateLocus.blocks
+    is ordered by *template* (query) position, which runs genomically
+    *backwards* for a '-' strand locus. This is exactly why a caller that
+    naively serializes ``blocks[0].ref_start``/``blocks[-1].ref_end`` (as the
+    runner's ``_locus_detail`` used to) can get start > end; the actual
+    start<end/genomic-order regression test lives in
+    test_coordinates_runner.py against ``_locus_detail`` itself.
+    """
+
+    def test_reverse_strand_spliced_record_blocks_are_template_ordered_not_genomic(self):
+        record = parse_sam_line(sam("read1", 16, "chr5", 1001, 60, "50=300N50="))
+        loci = build_candidate_loci([record], total_query_bases=100)
+        locus = loci[0]
+        self.assertEqual(locus.strand, "-")
+        self.assertEqual(locus.block_count, 2)
+        self.assertGreater(locus.blocks[0].ref_start, locus.blocks[1].ref_start)
+        genomic_ordered = sorted(locus.blocks, key=lambda b: b.ref_start)
+        self.assertLess(genomic_ordered[0].ref_start, genomic_ordered[-1].ref_end)
+
+    def test_reverse_strand_two_record_split_blocks_are_template_ordered_not_genomic(self):
+        five_prime = parse_sam_line(sam("read2", 16, "chr5", 201, 60, "50H50=", nm=0))
+        three_prime = parse_sam_line(sam("read2", 2064, "chr5", 1, 60, "50=50S", nm=0))
+        loci = build_candidate_loci([five_prime, three_prime], total_query_bases=100)
+        locus = loci[0]
+        self.assertEqual(locus.strand, "-")
+        self.assertEqual(locus.block_count, 2)
+        self.assertGreater(locus.blocks[0].ref_start, locus.blocks[1].ref_start)
+        genomic_ordered = sorted(locus.blocks, key=lambda b: b.ref_start)
+        self.assertLess(genomic_ordered[0].ref_start, genomic_ordered[-1].ref_end)
+
+
 class UsableUniqueGateTests(unittest.TestCase):
     def test_primary_exact_or_high_conf_is_usable(self):
         self.assertTrue(is_usable_unique("exact_unique", None))

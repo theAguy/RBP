@@ -262,6 +262,92 @@ def build_report(
     }
 
 
+def build_combined_report(builds: Sequence[str], per_build: dict, build_comparison: dict) -> dict:
+    """Assemble the final two-build combined report (parent task's required
+    output/report path before Task 001B). Per-build reconciliation/category
+    tables already exist in each build's own ``report.json``; this is the
+    single report a human reviewer reads to set the Phase 2 recommendation,
+    never computed here (see module docstring).
+    """
+    return {
+        "schema_version": 1,
+        "builds": list(builds),
+        "per_build": per_build,
+        "build_comparison": build_comparison,
+        "phase2_recommendation": None,
+    }
+
+
+def _render_rate(rate: dict) -> str:
+    return (
+        f"{rate['point_estimate']:.4f} "
+        f"(95% CI {rate['lower']:.4f}-{rate['upper']:.4f}, n={rate['total']})"
+    )
+
+
+def render_combined_report_markdown(report: dict) -> str:
+    lines = ["# Coordinate feasibility — combined two-build report", ""]
+    lines.append(f"Builds compared: {', '.join(report['builds'])}")
+    lines.append("")
+
+    for build in report["builds"]:
+        summary = report["per_build"].get(build)
+        if summary is None:
+            continue
+        lines.append(f"## Build: {build}")
+        lines.append("")
+        if not summary.get("mapping_evaluated", True):
+            lines.append("Mapping was not evaluated for this build (dry run, or mapping never authorized).")
+            lines.append("")
+            continue
+        lines.append("### Representative-stratum gate (headline)")
+        gate = summary["representative_stratum_gate"]
+        for key, rate in gate.items():
+            lines.append(f"- {key}: {_render_rate(rate)}")
+        lines.append("")
+        lines.append("### Contiguous vs. splice-rescued")
+        for scope, payload in summary["contiguous_vs_splice_rescued"].items():
+            lines.append(f"- {scope}: {payload['counts']} (of {payload['total']})")
+        lines.append("")
+        lines.append("### Quality distributions (decile histograms)")
+        for key, histogram in summary["quality_distributions"].items():
+            lines.append(f"- {key}: {histogram}")
+        lines.append("")
+        lines.append("### Strand and locus summary")
+        for mode, payload in summary["strand_and_locus"].items():
+            lines.append(f"- {mode}: {payload}")
+        lines.append("")
+        lines.append("### Near-tied score-gap sensitivity (tool-specific diagnostic)")
+        for mode, payload in summary["near_tied_sensitivity"].items():
+            lines.append(f"- {mode}: {payload}")
+        lines.append("")
+        lines.append("### Control alerts")
+        for mode, payload in summary["control_alerts"].items():
+            marker = "ALERT" if payload["alert"] else "ok"
+            lines.append(f"- {mode}: {marker} — {payload['flagged_sample_ids']}")
+        lines.append("")
+        lines.append("### Retention audit")
+        retention = summary["retention"]
+        overall_gap = retention["by_protein_class"]["overall_positive_negative_gap"]
+        lines.append(f"- overall positive/negative retention gap: {overall_gap}")
+        severe = retention["by_protein_class"]["severe_alerts"]
+        lines.append(f"- severe per-protein/class alerts: {len(severe)}")
+        for alert in severe:
+            lines.append(f"  - {alert}")
+        lines.append("")
+
+    lines.append("## Build comparison (label-blind)")
+    for key, value in report["build_comparison"].items():
+        lines.append(f"- {key}: {value}")
+    lines.append("")
+    lines.append(
+        "## Phase 2 recommendation\n\n"
+        "Not computed by this pipeline. The parent task requires a human "
+        "reviewer to set this from the full report, not an automated rule."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def render_markdown(report: dict) -> str:
     lines = ["# Coordinate feasibility report", ""]
     lines.append(f"Total sampled rows: {report['sample']['total']}")

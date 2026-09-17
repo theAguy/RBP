@@ -1,3 +1,4 @@
+import contextlib
 import gzip
 import json
 import os
@@ -8,7 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from rbpbench.coordinates.runner import STAGES, main
+from rbpbench.coordinates.alignment import build_candidate_loci, parse_sam_line
+from rbpbench.coordinates.config import load_config
+from rbpbench.coordinates.runner import _locus_detail, build_mapping_rows, main
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_CONFIG = REPO_ROOT / "tests" / "fixtures" / "coordinates" / "tiny_coordinate_feasibility.toml"
@@ -69,6 +72,11 @@ awk '
 ' "$reads"
 """
 
+# A tool reporting an unpinned version: used to prove that even an
+# otherwise-authorized real-mapping attempt is refused when the fresh,
+# binding preflight check (review item 1) rejects it.
+_FAKE_BWA_WRONG_VERSION = _FAKE_BWA.replace("Version: 0.7.19", "Version: 0.7.17")
+
 
 def _write_fake_executable(bin_dir: Path, name: str, source: str) -> None:
     path = bin_dir / name
@@ -86,6 +94,24 @@ def _write_fake_executable(bin_dir: Path, name: str, source: str) -> None:
         except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
             if attempt == 2:
                 raise
+
+
+@contextlib.contextmanager
+def _approved_host_context(*, ram_gib: float = 32.0, free_disk_gib: float = 200.0):
+    """Make ``run_preflight`` see a passing approved-mac host regardless of
+    the machine actually running this test suite (a real Mac or Claude's
+    constrained Linux dev VM per the executor handoff) — the same approach
+    ``test_coordinates_preflight.py`` uses, applied around real-mapping
+    integration tests so they stay host-independent.
+    """
+    with mock.patch("rbpbench.coordinates.preflight.platform.system", return_value="Darwin"), mock.patch(
+        "rbpbench.coordinates.preflight.platform.machine", return_value="x86_64"
+    ), mock.patch(
+        "rbpbench.coordinates.preflight.detect_physical_ram_gib", return_value=ram_gib
+    ), mock.patch(
+        "rbpbench.coordinates.preflight.detect_free_disk_gib", return_value=free_disk_gib
+    ):
+        yield
 
 
 class RunnerIntegrationTests(unittest.TestCase):
@@ -112,23 +138,28 @@ class RunnerIntegrationTests(unittest.TestCase):
             self.assertTrue((output_dir / "report.json").exists())
             self.assertTrue((output_dir / "report.md").exists())
             self.assertTrue((output_dir / "dry_run.json").exists())
+            self.assertTrue((output_dir / "provenance.json").exists())
 
             sample_lines = (output_dir / "sample_ids.tsv").read_text().splitlines()
             self.assertEqual(len(sample_lines), 21)  # header + 20 rows
 
-            align_record = json.loads((output_dir / "align.json").read_text())
-            self.assertFalse(align_record["executed"])
-            self.assertIsNotNone(align_record["skip_reason"])
+            for build in ("hg38", "hg19"):
+                align_record = json.loads((output_dir / build / "align.json").read_text())
+                self.assertFalse(align_record["executed"])
+                self.assertIsNotNone(align_record["skip_reason"])
 
-            exact_match_record = json.loads((output_dir / "exact_match.json").read_text())
-            self.assertFalse(exact_match_record["executed"])
+                exact_match_record = json.loads((output_dir / build / "exact_match.json").read_text())
+                self.assertFalse(exact_match_record["executed"])
 
-            report = json.loads((output_dir / "report.json").read_text())
-            self.assertEqual(report["sample"]["total"], 20)
-            self.assertIsNone(report["phase2_recommendation"])
+            combined_report = json.loads((output_dir / "report.json").read_text())
+            self.assertEqual(sorted(combined_report["builds"]), ["hg19", "hg38"])
+            self.assertIsNone(combined_report["phase2_recommendation"])
 
             state = json.loads((output_dir / "state.json").read_text())
-            self.assertEqual(state["completed_stages"], list(STAGES))
+            expected_keys = {"preflight", "sample", "decode", "controls", "combined_report"} | {
+                f"{stage}:{build}" for stage in ("align", "exact_match", "report") for build in ("hg38", "hg19")
+            }
+            self.assertEqual(set(state["completed_stages"]), expected_keys)
 
     def test_rerun_without_force_skips_completed_stages(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,9 +177,6 @@ class RunnerIntegrationTests(unittest.TestCase):
             main(argv)  # re-run without --force
             self.assertEqual(report_path.stat().st_mtime_ns, first_mtime)
 
-            state = json.loads((output_dir / "state.json").read_text())
-            self.assertEqual(state["completed_stages"], list(STAGES))  # not duplicated
-
     def test_mapping_is_never_executed_without_explicit_flags(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
@@ -161,9 +189,167 @@ class RunnerIntegrationTests(unittest.TestCase):
                     "--stage", "exact_match",
                 ]
             )
-            align_record = json.loads((output_dir / "align.json").read_text())
+            for build in ("hg38", "hg19"):
+                align_record = json.loads((output_dir / build / "align.json").read_text())
+                self.assertFalse(align_record["executed"])
+                self.assertIn("--allow-mapping", align_record["skip_reason"])
+
+
+class AuthorizedDryRunGuaranteeTests(unittest.TestCase):
+    """Regression coverage for review item 2: --dry-run must guarantee that
+    no external mapping/exact-match subprocess can ever execute, even when
+    every authorization flag is also given, and a dry-run/skip must never be
+    recorded in a way that blocks a later real run of the same stage.
+    """
+
+    def test_authorized_dry_run_never_executes_and_does_not_block_a_later_real_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = Path(tmp) / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+
+            common = [
+                "--config", str(FIXTURE_CONFIG),
+                "--csv", str(FIXTURE_CSV),
+                "--output-dir", str(output_dir),
+                "--allow-mapping",
+                "--host-role", "approved_mac",
+                "--reference", f"hg38={reference}",
+                "--build", "hg38",
+            ]
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                main([*common, "--stage", "sample"])
+                main([*common, "--stage", "decode"])
+                main([*common, "--stage", "controls"])
+                # Fully authorized (--allow-mapping, approved host, a real
+                # reference and fake-but-real executables on PATH) AND
+                # --dry-run: --dry-run must still win.
+                main([*common, "--stage", "align", "--stage", "exact_match", "--dry-run"])
+
+                align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+                self.assertFalse(align_record["executed"])
+                self.assertIn("--dry-run", align_record["skip_reason"])
+                exact_match_record = json.loads((output_dir / "hg38" / "exact_match.json").read_text())
+                self.assertFalse(exact_match_record["executed"])
+                self.assertIn("--dry-run", exact_match_record["skip_reason"])
+                # No SAM/BED output was ever produced.
+                self.assertFalse((output_dir / "hg38" / "align_bwa_mem.sam").exists())
+                self.assertFalse((output_dir / "hg38" / "exact_match_hits.bed").exists())
+
+                state = json.loads((output_dir / "state.json").read_text())
+                self.assertNotIn("align:hg38", state["completed_stages"])
+                self.assertNotIn("exact_match:hg38", state["completed_stages"])
+
+                # A later real (non-dry-run) invocation for the same
+                # output-dir/build must still execute, i.e. it was never
+                # poisoned into "already completed" by the dry run above.
+                main([*common, "--stage", "align", "--stage", "exact_match"])
+
+            align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+            self.assertTrue(align_record["executed"])
+            exact_match_record = json.loads((output_dir / "hg38" / "exact_match.json").read_text())
+            self.assertTrue(exact_match_record["executed"])
+            state = json.loads((output_dir / "state.json").read_text())
+            self.assertIn("align:hg38", state["completed_stages"])
+            self.assertIn("exact_match:hg38", state["completed_stages"])
+
+
+class PreflightHardPrerequisiteTests(unittest.TestCase):
+    """Regression coverage for review item 1: successful preflight must be a
+    hard prerequisite for real alignment/exact-match, bound to detected
+    OS/architecture, resource limits, pinned tool versions, and hashes of the
+    current inputs — never merely a declared --host-role=approved_mac.
+    """
+
+    def test_direct_align_execution_without_valid_preflight_is_refused(self):
+        # Every basic capability flag is satisfied (--allow-mapping,
+        # --host-role=approved_mac, a real reference, fake executables on
+        # PATH) and the host facts are mocked to "pass" the OS/arch/RAM/disk
+        # checks, but the resolved 'bwa' binary reports an unpinned version.
+        # Real execution must still be refused: preflight, not the declared
+        # role, is the gate.
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA_WRONG_VERSION)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = Path(tmp) / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+
+            common = [
+                "--config", str(FIXTURE_CONFIG),
+                "--csv", str(FIXTURE_CSV),
+                "--output-dir", str(output_dir),
+                "--allow-mapping",
+                "--host-role", "approved_mac",
+                "--reference", f"hg38={reference}",
+                "--build", "hg38",
+            ]
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                main([*common, "--stage", "sample"])
+                main([*common, "--stage", "decode"])
+                main([*common, "--stage", "controls"])
+                # No explicit "preflight" stage was ever run; align is
+                # invoked directly. It must still refuse to execute, because
+                # it runs its own fresh, binding preflight check internally.
+                main([*common, "--stage", "align"])
+
+            align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
             self.assertFalse(align_record["executed"])
-            self.assertIn("--allow-mapping", align_record["skip_reason"])
+            self.assertIn("preflight failed closed", align_record["skip_reason"])
+            self.assertIn("0.7.19", align_record["skip_reason"])
+            self.assertFalse((output_dir / "hg38" / "align_bwa_mem.sam").exists())
+
+            # A stage that was authorized but never actually executed must
+            # not be recorded as completed (review item 2's bookkeeping
+            # rule applies here too): a later, correctly-versioned run must
+            # still be able to retry it.
+            state = json.loads((output_dir / "state.json").read_text())
+            self.assertNotIn("align:hg38", state["completed_stages"])
+
+    def test_exact_match_also_requires_its_own_passing_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = Path(tmp) / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+
+            common = [
+                "--config", str(FIXTURE_CONFIG),
+                "--csv", str(FIXTURE_CSV),
+                "--output-dir", str(output_dir),
+                "--allow-mapping",
+                "--host-role", "approved_mac",
+                "--reference", f"hg38={reference}",
+                "--build", "hg38",
+            ]
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                main([*common, "--stage", "sample"])
+                main([*common, "--stage", "decode"])
+                main([*common, "--stage", "controls"])
+                main([*common, "--stage", "align"])
+                # Thread count above the fixture config's max_threads=4:
+                # exact_match's own fresh preflight must reject it even
+                # though align already succeeded.
+                main([*common, "--stage", "exact_match", "--threads", "8"])
+
+            exact_match_record = json.loads((output_dir / "hg38" / "exact_match.json").read_text())
+            self.assertFalse(exact_match_record["executed"])
+            self.assertIn("preflight failed closed", exact_match_record["skip_reason"])
 
 
 class RunnerRestartTests(unittest.TestCase):
@@ -200,7 +386,7 @@ class RunnerRestartTests(unittest.TestCase):
             _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
             _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
             reference = Path(tmp) / "reference.fasta"
-            reference.write_text(">chr1\nACGT\n")
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
 
             common = [
                 "--config", str(FIXTURE_CONFIG),
@@ -208,10 +394,11 @@ class RunnerRestartTests(unittest.TestCase):
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
-                "--reference", str(reference),
+                "--reference", f"hg38={reference}",
+                "--build", "hg38",
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
-            with mock.patch.dict(os.environ, env):
+            with mock.patch.dict(os.environ, env), _approved_host_context():
                 main([*common, "--stage", "sample"])
                 main([*common, "--stage", "decode"])
                 main([*common, "--stage", "controls"])
@@ -221,11 +408,9 @@ class RunnerRestartTests(unittest.TestCase):
                 # must be reloaded from align.json/exact_match.json, not lost.
                 main([*common, "--stage", "report"])
 
-            report = json.loads((output_dir / "report.json").read_text())
+            report = json.loads((output_dir / "hg38" / "report.json").read_text())
             self.assertEqual(report["reconciliation"]["status"], "passed")
-            # Outputs are flattened directly under output_dir (matching every
-            # other stage's output_dir / Path(cfg.outputs.X).name convention).
-            mappings_path = output_dir / "mappings.tsv.gz"
+            mappings_path = output_dir / "hg38" / "mappings.tsv.gz"
             self.assertTrue(mappings_path.exists())
             with gzip.open(mappings_path, "rt") as handle:
                 lines = handle.read().splitlines()
@@ -236,14 +421,17 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
     """Review R3: the runner must be genuinely capable of executing real
     mapping/exact-match when explicitly authorized, guarded by subprocess.run
     with shell=False, using tiny fake executables rather than any human data.
+    Every real-mapping attempt now also passes through its own fresh,
+    binding preflight check (review item 1), so these tests mock the host
+    facts to a passing approved-mac state rather than omitting preflight.
     """
 
-    def _run_full_authorized_pipeline(self, output_dir: Path, bin_dir: Path) -> None:
+    def _run_full_authorized_pipeline(self, output_dir: Path, bin_dir: Path, *, build: str = "hg38") -> None:
         _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
         _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
         _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
-        reference = output_dir / "reference.fasta"
-        reference.write_text(">chr1\nACGT\n")
+        reference = output_dir / f"reference_{build}.fasta"
+        reference.write_text(">chr1\n" + "A" * 20 + "\n")
 
         argv = [
             "--config", str(FIXTURE_CONFIG),
@@ -251,12 +439,9 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
             "--output-dir", str(output_dir),
             "--allow-mapping",
             "--host-role", "approved_mac",
-            "--reference", str(reference),
-            "--build", "hg38",
+            "--reference", f"{build}={reference}",
+            "--build", build,
         ]
-        # "preflight" is intentionally excluded: it independently enforces
-        # the approved-host hardware/tool contract (review R5) and is
-        # exercised on its own in test_coordinates_preflight.py.
         for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
             argv.extend(["--stage", stage])
         main(argv)
@@ -267,19 +452,19 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
             bin_dir = Path(tmp) / "bin"
             bin_dir.mkdir()
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
-            with mock.patch.dict(os.environ, env):
+            with mock.patch.dict(os.environ, env), _approved_host_context():
                 self._run_full_authorized_pipeline(output_dir, bin_dir)
 
-            align_record = json.loads((output_dir / "align.json").read_text())
+            align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
             self.assertTrue(align_record["executed"])
-            exact_match_record = json.loads((output_dir / "exact_match.json").read_text())
+            exact_match_record = json.loads((output_dir / "hg38" / "exact_match.json").read_text())
             self.assertTrue(exact_match_record["executed"])
 
             state = json.loads((output_dir / "state.json").read_text())
-            self.assertTrue(state["mapping_executed"]["align"])
-            self.assertTrue(state["mapping_executed"]["exact_match"])
+            self.assertTrue(state["mapping_executed"]["hg38"]["align"])
+            self.assertTrue(state["mapping_executed"]["hg38"]["exact_match"])
 
-            mappings_path = output_dir / "mappings.tsv.gz"
+            mappings_path = output_dir / "hg38" / "mappings.tsv.gz"
             with gzip.open(mappings_path, "rt") as handle:
                 rows = handle.read().splitlines()
             header = rows[0].split("\t")
@@ -288,6 +473,82 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
             # must classify it exact_unique (BWA perfect + SeqKit single hit).
             primary_categories = {r["category"] for r in body if r["mode"] == "primary" and r["is_control"] == "False"}
             self.assertEqual(primary_categories, {"exact_unique"})
+
+    def test_provenance_is_connected_to_the_runner(self):
+        # Review item 7: input hashes, resolved binary hashes/versions,
+        # commands, output hashes, elapsed time, and peak memory must all be
+        # recorded for a real mapping/exact-match run.
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                self._run_full_authorized_pipeline(output_dir, bin_dir)
+
+            provenance = json.loads((output_dir / "provenance.json").read_text())
+            self.assertIsNotNone(provenance["declared_inputs"]["dataset_csv"]["sha256"])
+            self.assertIsNotNone(provenance["declared_inputs"]["config"]["sha256"])
+
+            align_provenance = provenance["builds"]["hg38"]["align"]["provenance"]
+            self.assertIn("reference", align_provenance["input_hashes"])
+            self.assertEqual(len(align_provenance["input_hashes"]["reference"]), 64)
+            for tool_key in ("bwa_mem", "minimap2_splice"):
+                tool_prov = align_provenance[tool_key]
+                self.assertTrue(tool_prov["command"])
+                self.assertGreaterEqual(tool_prov["elapsed_seconds"], 0)
+                self.assertIsInstance(tool_prov["peak_rss_kib_of_children"], int)
+                self.assertEqual(len(tool_prov["output_sha256"]), 64)
+                self.assertIsNotNone(tool_prov["binary"]["resolved_path"])
+                self.assertEqual(len(tool_prov["binary"]["sha256"]), 64)
+                self.assertIsNotNone(tool_prov["binary"]["version"])
+
+            exact_match_provenance = provenance["builds"]["hg38"]["exact_match"]["provenance"]
+            seqkit_prov = exact_match_provenance["seqkit_locate"]
+            self.assertTrue(seqkit_prov["command"])
+            self.assertEqual(len(seqkit_prov["output_sha256"]), 64)
+
+    def test_reference_manifest_metadata_is_connected_to_provenance(self):
+        # Review item 7: "index/reference metadata required by the parent
+        # task" must reach provenance.json when supplied.
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            manifest_path = output_dir / "hg38_manifest.json"
+            manifest_payload = {
+                "build_id": "hg38",
+                "assembly_accession": "GCF_000001405.40",
+                "source_url": "https://example.invalid/hg38.fa.gz",
+                "contig_categories_included": ["chromosome", "mitochondrion"],
+                "byte_size": 123,
+                "sha256": "0" * 64,
+            }
+            manifest_path.write_text(json.dumps(manifest_payload))
+
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+                _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+                _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+                reference = output_dir / "reference_hg38.fasta"
+                reference.write_text(">chr1\n" + "A" * 20 + "\n")
+                argv = [
+                    "--config", str(FIXTURE_CONFIG),
+                    "--csv", str(FIXTURE_CSV),
+                    "--output-dir", str(output_dir),
+                    "--allow-mapping",
+                    "--host-role", "approved_mac",
+                    "--reference", f"hg38={reference}",
+                    "--reference-manifest", f"hg38={manifest_path}",
+                    "--build", "hg38",
+                ]
+                for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
+                    argv.extend(["--stage", stage])
+                main(argv)
+
+            provenance = json.loads((output_dir / "provenance.json").read_text())
+            self.assertEqual(provenance["builds"]["hg38"]["reference_manifest"], manifest_payload)
 
     def test_planned_but_skipped_mapping_is_not_recorded_as_executed(self):
         # Review R4 regression: a planning-only / dry-run stage must not be
@@ -304,13 +565,151 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
                 ]
             )
             state = json.loads((output_dir / "state.json").read_text())
-            self.assertIn("align", state["completed_stages"])  # the stage ran (planned)
-            self.assertFalse(state["mapping_executed"]["align"])  # but never executed real mapping
-            self.assertFalse(state["mapping_executed"]["exact_match"])
+            self.assertIn("align:hg38", state["completed_stages"])  # the stage ran (planned)
+            self.assertFalse(state["mapping_executed"]["hg38"]["align"])  # but never executed real mapping
+            self.assertFalse(state["mapping_executed"]["hg38"]["exact_match"])
+            self.assertFalse(state["mapping_executed"]["hg19"]["align"])
 
-            report = json.loads((output_dir / "report.json").read_text())
-            self.assertEqual(report["reconciliation"]["status"], "not_evaluated")
-            self.assertFalse(report["reconciliation"]["passed"])
+            for build in ("hg38", "hg19"):
+                report = json.loads((output_dir / build / "report.json").read_text())
+                self.assertEqual(report["reconciliation"]["status"], "not_evaluated")
+                self.assertFalse(report["reconciliation"]["passed"])
+
+
+class SequentialTwoBuildProcessingTests(unittest.TestCase):
+    """Regression coverage for review item 6: hg38 and hg19 must process
+    sequentially into collision-safe per-build artifacts, with neither
+    overwriting the other and neither's stages stale-skipped because a
+    same-named stage already ran for the other build.
+    """
+
+    def test_sequential_hg38_and_hg19_do_not_overwrite_or_stale_skip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            ref_hg38 = output_dir / "hg38.fasta"
+            ref_hg38.write_text(">chr1\n" + "A" * 20 + "\n")
+            ref_hg19 = output_dir / "hg19.fasta"
+            ref_hg19.write_text(">chr2\n" + "C" * 20 + "\n")
+
+            argv = [
+                "--config", str(FIXTURE_CONFIG),
+                "--csv", str(FIXTURE_CSV),
+                "--output-dir", str(output_dir),
+                "--allow-mapping",
+                "--host-role", "approved_mac",
+                "--reference", f"hg38={ref_hg38}",
+                "--reference", f"hg19={ref_hg19}",
+                "--build", "hg38",
+                "--build", "hg19",
+                "--stage", "sample", "--stage", "decode", "--stage", "controls",
+                "--stage", "align", "--stage", "exact_match", "--stage", "report",
+                "--stage", "combined_report",
+            ]
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                main(argv)
+
+            # Collision-safe: each build kept its own SAM/BED/mappings/report.
+            hg38_sam = (output_dir / "hg38" / "align_bwa_mem.sam").read_text()
+            hg19_sam = (output_dir / "hg19" / "align_bwa_mem.sam").read_text()
+            self.assertIn("chr1", hg38_sam)
+            self.assertIn("chr1", hg19_sam)  # both fake mappers always emit chr1
+            self.assertTrue((output_dir / "hg38" / "mappings.tsv.gz").exists())
+            self.assertTrue((output_dir / "hg19" / "mappings.tsv.gz").exists())
+
+            state = json.loads((output_dir / "state.json").read_text())
+            # Neither build's align/exact_match/report was stale-skipped
+            # because the other build's same-named stage already ran.
+            for build in ("hg38", "hg19"):
+                for stage in ("align", "exact_match", "report"):
+                    self.assertIn(f"{stage}:{build}", state["completed_stages"])
+                self.assertTrue(state["mapping_executed"][build]["align"])
+                self.assertTrue(state["mapping_executed"][build]["exact_match"])
+
+            combined = json.loads((output_dir / "report.json").read_text())
+            self.assertEqual(sorted(combined["builds"]), ["hg19", "hg38"])
+            self.assertIn("hg38", combined["per_build"])
+            self.assertIn("hg19", combined["per_build"])
+            self.assertIn("usable_unique_rate_by_build", combined["build_comparison"])
+
+
+def _sam(qname, flag, rname, pos1, mapq, cigar, nm=None):
+    tags = [] if nm is None else [f"NM:i:{nm}"]
+    return "\t".join([qname, str(flag), rname, str(pos1), str(mapq), cigar, "*", "0", "0", "*", "*", *tags])
+
+
+class ReverseStrandLocusSerializationTests(unittest.TestCase):
+    """Regression coverage for review item 5: _locus_detail must serialize a
+    reverse-strand split mapping with start < end and BED-style blocks in
+    ascending genomic order, even though CandidateLocus.blocks itself is
+    template(query)-ordered (genomically descending for '-' strand).
+    """
+
+    def test_reverse_strand_spliced_locus_has_start_less_than_end(self):
+        record = parse_sam_line(_sam("read1", 16, "chr5", 1001, 60, "50=300N50="))
+        loci = build_candidate_loci([record], total_query_bases=100)
+        detail = _locus_detail(loci[0])
+        self.assertLess(detail["start"], detail["end"])
+        starts = [int(v) for v in detail["block_starts"].split(";")]
+        self.assertEqual(starts, sorted(starts))
+
+    def test_reverse_strand_two_record_split_locus_has_start_less_than_end(self):
+        five_prime = parse_sam_line(_sam("read2", 16, "chr5", 201, 60, "50H50=", nm=0))
+        three_prime = parse_sam_line(_sam("read2", 2064, "chr5", 1, 60, "50=50S", nm=0))
+        loci = build_candidate_loci([five_prime, three_prime], total_query_bases=100)
+        detail = _locus_detail(loci[0])
+        self.assertLess(detail["start"], detail["end"])
+        starts = [int(v) for v in detail["block_starts"].split(";")]
+        self.assertEqual(starts, sorted(starts))
+        # Genomic order, not the template order that produced locus.blocks:
+        # the smallest ref_start (three_prime's block, ref_start=0) must be
+        # first.
+        self.assertEqual(starts[0], 0)
+
+
+class BuildMappingRowsUniverseTests(unittest.TestCase):
+    """Regression coverage for review item 3: mapping rows must be built
+    from the complete expected biological-and-control ID universe, not from
+    whichever IDs happen to appear in mapped SAM records. A query unmapped by
+    both tools never appears in a SAM dict at all (parse_sam_line returns
+    None for an unmapped record), so it must still receive an explicit
+    'unmapped' row in both modes rather than being silently dropped.
+    """
+
+    def test_query_unmapped_by_both_tools_is_still_emitted_as_unmapped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            # Neither SAM contains any record for "row_0": both tools failed
+            # to map it (an unmapped SAM record parses to None and is simply
+            # absent, per rbpbench.coordinates.alignment.parse_sam_line).
+            bwa_sam = tmp_path / "bwa.sam"
+            bwa_sam.write_text("@HD\tVN:1.6\n")
+            mm2_sam = tmp_path / "mm2.sam"
+            mm2_sam.write_text("@HD\tVN:1.6\n")
+
+            cfg = load_config(FIXTURE_CONFIG)
+            results, rows = build_mapping_rows(
+                cfg,
+                {"row_0": "representative"},
+                build="hg38",
+                bwa_sam=bwa_sam,
+                minimap2_sam=mm2_sam,
+                exact_hits_bed=None,
+            )
+
+            categories = {(r.sample_id, r.mode): r.category for r in results}
+            self.assertEqual(categories[("row_0", "primary")], "unmapped")
+            self.assertEqual(categories[("row_0", "splice")], "unmapped")
+            self.assertEqual(len(rows), 2)
+            for row in rows:
+                self.assertEqual(row["sample_id"], "row_0")
+                self.assertEqual(row["category"], "unmapped")
+                self.assertEqual(row["chrom"], "")
 
 
 if __name__ == "__main__":

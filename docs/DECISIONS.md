@@ -69,3 +69,36 @@
 - Corrections are implementation/robustness fixes to the already-approved
   001A scope, not new scientific-scope changes; no threshold, contig policy,
   mapper selection, or sampling design changed.
+
+## 2026-09-17 — Task 001A acceptance-blocker corrections (round two)
+
+- Planning review found seven end-to-end acceptance blockers after the first
+  round of corrections: preflight was not a hard, binding prerequisite for
+  real alignment/exact-match; `--dry-run` did not guarantee no external
+  subprocess could execute and could poison stage-completion state; mapping
+  rows were built from IDs present in SAM output rather than the complete
+  expected biological-and-control universe (silently dropping queries
+  unmapped by both tools); multiple collinear-but-intron-free supplementary
+  blocks were misclassified as spliced; reverse-strand split-mapping
+  coordinates could serialize with start > end; the two-build combined
+  report/output path required before Task 001B did not exist; and
+  provenance (binary hashes, elapsed time, peak memory, output hashes,
+  reference metadata) was not connected to the runner.
+- All seven were fixed as implementation/robustness corrections to the
+  already-approved 001A scope: no scientific threshold, contig policy,
+  mapper selection, or sampling design changed.
+- `stage_align`/`stage_exact_match` now call `run_preflight` fresh,
+  immediately before any subprocess, bound to the exact reference/reads
+  about to be used; a declared `--host-role=approved_mac` alone is never
+  sufficient. `--dry-run` is checked first, before any other authorization
+  logic, in both stages.
+- The runner now processes `hg38`/`hg19` (or whichever builds `--build`
+  names) sequentially into collision-safe `<output-dir>/<build>/`
+  subdirectories, followed by a `combined_report` stage
+  (`rbpbench.coordinates.summaries` + `report.build_combined_report`) that
+  is the one report a human reviewer reads to set the Phase 2
+  recommendation — still never computed automatically.
+- `CandidateLocus` now distinguishes real `'N'`-op intron evidence
+  (`intron_lengths`) from blocks merely merged by collinearity, and supports
+  an optional reference-lookup canonical-junction diagnostic
+  (`rbpbench.coordinates.reference`).

@@ -6,6 +6,7 @@ __pycache__/
 .coverage
 .venv/
 venv/
+*.egg-info/
 
 # Large or generated project artifacts. Their checksums belong in manifests/.
 dataset_K562_multilabel_with_NEGs.csv

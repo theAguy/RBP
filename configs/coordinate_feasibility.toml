@@ -1,0 +1,56 @@
+# Frozen configuration for Task 001/001A coordinate-recovery feasibility.
+#
+# Every value here is taken directly from the reviewed, project-owner-approved
+# task documents:
+#   docs/tasks/001_coordinate_recovery_feasibility.md
+#   docs/reviews/001_coordinate_recovery_reconciliation.md
+# Do not change any value without recording the change in docs/DECISIONS.md.
+
+sequence_length_nt = 500
+
+[sampling]
+seed = 20260916
+total_size = 10000
+representative_size = 5000
+min_positive_per_protein = 20
+min_negative_per_protein = 20
+num_proteins = 122
+
+[controls]
+count = 100
+max_shuffle_attempts = 50
+
+[thresholds]
+# Primary-mode terminal categories (parent task section "Classify mappings").
+high_conf_min_coverage = 0.98
+high_conf_min_identity = 0.99
+# A "plausible distinct secondary locus": collinear-combined, shared across tools.
+secondary_min_coverage = 0.90
+secondary_min_identity = 0.95
+# Tool-specific sensitivity analysis only; never compared as raw score gaps
+# across BWA-MEM and minimap2, and never used as a classification criterion.
+near_tied_fractions = [0.02, 0.05, 0.10]
+
+[tools]
+bwa_version = "0.7.19"
+minimap2_version = "2.31"
+seqkit_version = "2.13.0"
+
+[resources]
+# Approved execution host: local 16-GiB macOS x86_64 machine (Task 001B only).
+max_threads = 4
+max_new_disk_gib = 30
+min_free_disk_gib = 80
+min_ram_gib_for_mapping = 16
+
+[contig_policy]
+# Matched primary-assembly scope for both hg38/GRCh38 and hg19/GRCh37.
+include_categories = ["chromosome", "mitochondrion", "unlocalized_scaffold", "unplaced_scaffold"]
+exclude_categories = ["alt_haplotype", "patch", "decoy", "hla_contig"]
+
+[outputs]
+sample_ids_tsv = "artifacts/coordinate_feasibility/sample_ids.tsv"
+mappings_tsv_gz = "artifacts/coordinate_feasibility/mappings.tsv.gz"
+report_json = "artifacts/coordinate_feasibility/report.json"
+report_md = "artifacts/coordinate_feasibility/report.md"
+dry_run_json = "artifacts/coordinate_feasibility/dry_run.json"

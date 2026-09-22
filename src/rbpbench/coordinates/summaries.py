@@ -7,6 +7,12 @@ process after every build's ``align``/``exact_match``/``report`` stage and
 still see every prior build's results — the same resume-safety requirement
 the rest of the runner already follows.
 
+Controls are diagnostic-only: they are excluded from every scientific
+mapping-quality, strand/locus, near-tied, retention, and build-comparison
+table here, and appear only in ``control_alert``'s dedicated tables (see
+``build_per_build_summary``, which is the only place a control-including and
+a control-excluding view of the same rows both exist side by side).
+
 Every table here is a descriptive summary or a gross-failure screen. None of
 them compute the Phase 2 recommendation (see ``rbpbench.coordinates.report``).
 """
@@ -14,14 +20,15 @@ them compute the Phase 2 recommendation (see ``rbpbench.coordinates.report``).
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from typing import Sequence
+from typing import Callable, Optional, Sequence
 
 from rbpbench.coordinates.alignment import is_usable_unique
-from rbpbench.coordinates.sequence_stats import gc_decile, low_complexity_decile
+from rbpbench.coordinates.sequence_stats import decile_index, gc_decile, low_complexity_decile
 from rbpbench.coordinates.stats import ConfidenceInterval, wilson_confidence_interval
 
 USABLE_PRIMARY_CATEGORIES = frozenset({"exact_unique", "high_conf_unique"})
 SPLICE_RESCUE_CATEGORY = "spliced_unique"
+SPLICE_MODE_USABLE_CATEGORIES = frozenset({"spliced_unique", "unspliced_unique"})
 SEVERE_RETENTION_FLOOR = 0.50
 SEVERE_GAP_POINTS = 0.40
 
@@ -39,8 +46,28 @@ def _float_or_none(value) -> float | None:
         return None
 
 
+def _int_or_none(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def index_rows_by_sample(rows: Sequence[dict], *, mode: str) -> dict[str, dict]:
     return {row["sample_id"]: row for row in rows if row.get("mode") == mode}
+
+
+def exclude_controls(rows_by_id: dict[str, dict]) -> dict[str, dict]:
+    """Biological-only view of a sample_id-keyed row dict.
+
+    Every scientific mapping-quality, strand/locus, near-tied, retention, and
+    build-comparison table must be computed from this, never from the raw
+    (control-including) dict — controls remain visible only through
+    ``control_alert``'s own dedicated, control-only tables.
+    """
+    return {sample_id: row for sample_id, row in rows_by_id.items() if not _is_control(row)}
 
 
 def rate_with_ci(successes: int, total: int) -> dict:
@@ -113,9 +140,9 @@ def contiguous_vs_splice_rescued(
 def quality_distribution(rows_by_id: dict[str, dict], *, field: str) -> dict[int, int]:
     """Decile histogram (0..9, equal-width over [0, 1]) of ``field``
     (``"coverage"`` or ``"identity"``) among rows that actually mapped.
+    ``rows_by_id`` must already be control-excluded (see
+    :func:`exclude_controls`).
     """
-    from rbpbench.coordinates.sequence_stats import decile_index
-
     histogram: Counter = Counter()
     for row in rows_by_id.values():
         value = _float_or_none(row.get(field))
@@ -126,6 +153,8 @@ def quality_distribution(rows_by_id: dict[str, dict], *, field: str) -> dict[int
 
 
 def strand_locus_summary(rows_by_id: dict[str, dict]) -> dict:
+    """``rows_by_id`` must already be control-excluded (see
+    :func:`exclude_controls`)."""
     strand_counts: Counter = Counter()
     locus_counts: Counter = Counter()
     for row in rows_by_id.values():
@@ -148,6 +177,8 @@ def near_tied_sensitivity_summary(rows_by_id: dict[str, dict], *, fractions: Seq
     """Fraction of mapped rows whose secondary is near-tied at each
     configured score-gap fraction (tool-specific diagnostic; see
     ``rbpbench.coordinates.alignment.near_tied_secondary_fractions``).
+    ``rows_by_id`` must already be control-excluded (see
+    :func:`exclude_controls`).
     """
     total = len(rows_by_id)
     result: dict[str, dict] = {}
@@ -165,12 +196,36 @@ def near_tied_sensitivity_summary(rows_by_id: dict[str, dict], *, fractions: Seq
 def control_alert(rows_by_id: dict[str, dict], *, usable_categories: frozenset) -> dict:
     """Controls classified usable-unique are never silently discarded: the
     parent task requires flagging them for manual pipeline-misconfiguration
-    inspection.
+    inspection. This is the one table controls are deliberately retained in.
     """
     flagged = sorted(
         sample_id for sample_id, row in rows_by_id.items() if row["category"] in usable_categories
     )
     return {"alert": bool(flagged), "flagged_sample_ids": flagged}
+
+
+def exact_match_discordance(primary_by_id: dict[str, dict]) -> dict:
+    """BWA-MEM-vs-SeqKit exact-match discordance (parent task: "Report
+    discordance between BWA-MEM and the exact matcher"). A row is discordant
+    when BWA-MEM's best primary alignment is a perfect (100% coverage, 100%
+    identity) unique candidate but SeqKit's independent exact-substring
+    search found other than exactly one genomic occurrence. ``primary_by_id``
+    must already be control-excluded (see :func:`exclude_controls`).
+    """
+    total_bwa_perfect = 0
+    discordant: list[dict] = []
+    for sample_id, row in primary_by_id.items():
+        if str(row.get("bwa_perfect_unique", "")).strip().lower() != "true":
+            continue
+        total_bwa_perfect += 1
+        occurrence_count = _int_or_none(row.get("exact_occurrence_count"))
+        if occurrence_count is not None and occurrence_count != 1:
+            discordant.append({"sample_id": sample_id, "exact_occurrence_count": occurrence_count})
+    return {
+        "total_bwa_perfect_unique": total_bwa_perfect,
+        "discordant_count": len(discordant),
+        "discordant_sample_ids": sorted(d["sample_id"] for d in discordant),
+    }
 
 
 def parse_labels(label_field: str) -> tuple[int, ...]:
@@ -179,15 +234,36 @@ def parse_labels(label_field: str) -> tuple[int, ...]:
     return tuple(int(v) for v in label_field.split(";") if v != "")
 
 
+def _usable_combined(primary_row: dict | None, splice_row: dict | None) -> bool:
+    primary_category = primary_row["category"] if primary_row is not None else "unmapped"
+    splice_category = splice_row["category"] if splice_row is not None else None
+    return is_usable_unique(primary_category, splice_category)
+
+
+def _usable_primary_mode(primary_row: dict | None, splice_row: dict | None) -> bool:
+    return primary_row is not None and primary_row["category"] in USABLE_PRIMARY_CATEGORIES
+
+
+def _usable_splice_mode(primary_row: dict | None, splice_row: dict | None) -> bool:
+    return splice_row is not None and splice_row["category"] in SPLICE_MODE_USABLE_CATEGORIES
+
+
+UsableFn = Callable[[Optional[dict], Optional[dict]], bool]
+
+
 def retention_by_protein_class(
     sample_meta: Sequence[dict],
     primary_by_id: dict[str, dict],
     splice_by_id: dict[str, dict],
+    *,
+    usable_fn: UsableFn = _usable_combined,
 ) -> dict:
-    """Per-protein/class usable-unique retention over label observations
-    (a row with labels for several proteins contributes to each), plus the
-    overall positive-minus-negative gap and a severe-alert flag per the
-    parent task's gross-failure-screen definition.
+    """Per-protein/class retention over label observations (a row with
+    labels for several proteins contributes to each), plus the *signed*
+    overall positive-minus-negative gap and per-protein gap distribution,
+    and a severe-alert flag using the *absolute* gap only for that
+    threshold decision (the parent task's gross-failure-screen definition).
+    ``primary_by_id``/``splice_by_id`` must already be control-excluded.
     """
     per_group: dict[tuple[int, str], list[bool]] = defaultdict(list)
     overall: dict[str, list[bool]] = defaultdict(list)
@@ -195,10 +271,10 @@ def retention_by_protein_class(
     for entry in sample_meta:
         sample_id = entry["sample_id"]
         primary_row = primary_by_id.get(sample_id)
-        if primary_row is None:
+        splice_row = splice_by_id.get(sample_id)
+        if primary_row is None and splice_row is None:
             continue
-        splice_category = splice_by_id.get(sample_id, {}).get("category")
-        usable = is_usable_unique(primary_row["category"], splice_category)
+        usable = usable_fn(primary_row, splice_row)
         for value in parse_labels(entry.get("labels", "")):
             protein = abs(value)
             class_label = "positive" if value > 0 else "negative"
@@ -229,17 +305,19 @@ def retention_by_protein_class(
             continue
         pos_rate = sum(pos) / len(pos)
         neg_rate = sum(neg) / len(neg)
-        gap = abs(pos_rate - neg_rate)
-        per_protein_gaps.append(gap)
-        if gap >= SEVERE_GAP_POINTS:
+        # Signed gap is preserved in the reported distribution; only the
+        # *absolute* gap decides the severe-alert threshold.
+        signed_gap = pos_rate - neg_rate
+        per_protein_gaps.append(signed_gap)
+        if abs(signed_gap) >= SEVERE_GAP_POINTS:
             severe_alerts.append(
-                {"protein": protein, "class": None, "reason": "retention_gap_ge_40pts", "gap": gap}
+                {"protein": protein, "class": None, "reason": "retention_gap_ge_40pts", "gap": signed_gap}
             )
 
     overall_pos = overall.get("positive", [])
     overall_neg = overall.get("negative", [])
     overall_gap = (
-        abs(sum(overall_pos) / len(overall_pos) - sum(overall_neg) / len(overall_neg))
+        (sum(overall_pos) / len(overall_pos) - sum(overall_neg) / len(overall_neg))
         if overall_pos and overall_neg
         else None
     )
@@ -259,24 +337,78 @@ def retention_by_decile(
     splice_by_id: dict[str, dict],
     *,
     decile_fn,
+    usable_fn: UsableFn = _usable_combined,
 ) -> dict:
     groups: dict[int, list[bool]] = defaultdict(list)
     for sample_id, sequence in sample_sequences.items():
         primary_row = primary_by_id.get(sample_id)
-        if primary_row is None:
+        splice_row = splice_by_id.get(sample_id)
+        if primary_row is None and splice_row is None:
             continue
-        splice_category = splice_by_id.get(sample_id, {}).get("category")
-        usable = is_usable_unique(primary_row["category"], splice_category)
+        usable = usable_fn(primary_row, splice_row)
         groups[decile_fn(sequence)].append(usable)
     return {str(decile): rate_with_ci(sum(flags), len(flags)) for decile, flags in sorted(groups.items())}
 
 
-def retention_by_gc_decile(sample_sequences, primary_by_id, splice_by_id) -> dict:
-    return retention_by_decile(sample_sequences, primary_by_id, splice_by_id, decile_fn=gc_decile)
+def retention_by_gc_decile(sample_sequences, primary_by_id, splice_by_id, *, usable_fn: UsableFn = _usable_combined) -> dict:
+    return retention_by_decile(sample_sequences, primary_by_id, splice_by_id, decile_fn=gc_decile, usable_fn=usable_fn)
 
 
-def retention_by_low_complexity_decile(sample_sequences, primary_by_id, splice_by_id) -> dict:
-    return retention_by_decile(sample_sequences, primary_by_id, splice_by_id, decile_fn=low_complexity_decile)
+def retention_by_low_complexity_decile(
+    sample_sequences, primary_by_id, splice_by_id, *, usable_fn: UsableFn = _usable_combined
+) -> dict:
+    return retention_by_decile(
+        sample_sequences, primary_by_id, splice_by_id, decile_fn=low_complexity_decile, usable_fn=usable_fn
+    )
+
+
+def retention_by_contig_category(
+    primary_by_id: dict[str, dict],
+    splice_by_id: dict[str, dict],
+    contig_categories: dict[str, str] | None,
+    *,
+    usable_fn: UsableFn = _usable_combined,
+) -> dict | None:
+    """Retention stratified by repeat/contig category, reported only when
+    the reference manifest supplies a per-contig category mapping (parent
+    task: "when the selected reference supplies the necessary metadata").
+    Returns ``None`` — not an empty table — when no mapping was supplied.
+    ``primary_by_id``/``splice_by_id`` must already be control-excluded.
+    """
+    if not contig_categories:
+        return None
+    groups: dict[str, list[bool]] = defaultdict(list)
+    all_ids = set(primary_by_id) | set(splice_by_id)
+    for sample_id in all_ids:
+        primary_row = primary_by_id.get(sample_id)
+        splice_row = splice_by_id.get(sample_id)
+        chrom = (primary_row or {}).get("chrom") or (splice_row or {}).get("chrom")
+        category = contig_categories.get(chrom) if chrom else None
+        if not category:
+            continue
+        groups[category].append(usable_fn(primary_row, splice_row))
+    return {category: rate_with_ci(sum(flags), len(flags)) for category, flags in sorted(groups.items())}
+
+
+def _mode_retention_tables(
+    *,
+    usable_fn: UsableFn,
+    sample_meta: Sequence[dict],
+    primary_by_id: dict[str, dict],
+    splice_by_id: dict[str, dict],
+    sample_sequences: dict[str, str],
+    contig_categories: dict[str, str] | None,
+) -> dict:
+    return {
+        "by_protein_class": retention_by_protein_class(sample_meta, primary_by_id, splice_by_id, usable_fn=usable_fn),
+        "by_gc_decile": retention_by_gc_decile(sample_sequences, primary_by_id, splice_by_id, usable_fn=usable_fn),
+        "by_low_complexity_decile": retention_by_low_complexity_decile(
+            sample_sequences, primary_by_id, splice_by_id, usable_fn=usable_fn
+        ),
+        "by_contig_category": retention_by_contig_category(
+            primary_by_id, splice_by_id, contig_categories, usable_fn=usable_fn
+        ),
+    }
 
 
 def build_per_build_summary(
@@ -289,15 +421,17 @@ def build_per_build_summary(
     sample_meta: Sequence[dict],
     sample_sequences: dict[str, str],
     near_tied_fractions: Sequence[float],
+    contig_categories: dict[str, str] | None = None,
 ) -> dict:
-    primary_by_id = index_rows_by_sample(primary_rows, mode="primary")
-    splice_by_id = index_rows_by_sample(splice_rows, mode="splice")
-    primary_control_by_id = {
-        row["sample_id"]: row for row in primary_rows if row.get("mode") == "primary" and _is_control(row)
-    }
-    splice_control_by_id = {
-        row["sample_id"]: row for row in splice_rows if row.get("mode") == "splice" and _is_control(row)
-    }
+    # Two views of the same rows: the raw (control-including) dicts are used
+    # only to build control_alert's own tables; every scientific table below
+    # uses the control-excluded view.
+    primary_by_id_raw = index_rows_by_sample(primary_rows, mode="primary")
+    splice_by_id_raw = index_rows_by_sample(splice_rows, mode="splice")
+    primary_control_by_id = {sid: row for sid, row in primary_by_id_raw.items() if _is_control(row)}
+    splice_control_by_id = {sid: row for sid, row in splice_by_id_raw.items() if _is_control(row)}
+    primary_by_id = exclude_controls(primary_by_id_raw)
+    splice_by_id = exclude_controls(splice_by_id_raw)
 
     return {
         "build": build,
@@ -337,26 +471,47 @@ def build_per_build_summary(
             "primary": control_alert(primary_control_by_id, usable_categories=USABLE_PRIMARY_CATEGORIES),
             "splice": control_alert(splice_control_by_id, usable_categories=frozenset({SPLICE_RESCUE_CATEGORY})),
         },
+        "exact_match_discordance": exact_match_discordance(primary_by_id),
         "retention": {
-            "by_protein_class": retention_by_protein_class(sample_meta, primary_by_id, splice_by_id),
-            "by_gc_decile": retention_by_gc_decile(sample_sequences, primary_by_id, splice_by_id),
-            "by_low_complexity_decile": retention_by_low_complexity_decile(
-                sample_sequences, primary_by_id, splice_by_id
+            "combined": _mode_retention_tables(
+                usable_fn=_usable_combined,
+                sample_meta=sample_meta,
+                primary_by_id=primary_by_id,
+                splice_by_id=splice_by_id,
+                sample_sequences=sample_sequences,
+                contig_categories=contig_categories,
+            ),
+            "primary": _mode_retention_tables(
+                usable_fn=_usable_primary_mode,
+                sample_meta=sample_meta,
+                primary_by_id=primary_by_id,
+                splice_by_id=splice_by_id,
+                sample_sequences=sample_sequences,
+                contig_categories=contig_categories,
+            ),
+            "splice": _mode_retention_tables(
+                usable_fn=_usable_splice_mode,
+                sample_meta=sample_meta,
+                primary_by_id=primary_by_id,
+                splice_by_id=splice_by_id,
+                sample_sequences=sample_sequences,
+                contig_categories=contig_categories,
             ),
         },
     }
 
 
-def _locus_key(row: dict) -> tuple | None:
-    chrom = row.get("chrom") or ""
-    if not chrom:
-        return None
-    return (chrom, row.get("start"), row.get("end"), row.get("strand"))
-
-
 def compare_builds(build_summaries: dict[str, dict], build_primary_rows: dict[str, dict[str, dict]]) -> dict:
     """Label-blind comparison across exactly the builds given, per the parent
     task's "Compare builds without outcome leakage" mapping-first criteria.
+
+    ``build_primary_rows`` must already be control-excluded. Raw genomic
+    coordinates are never compared across builds here: hg19 and hg38
+    coordinates are not directly comparable without a liftover (or another
+    defensible equivalence) step, which this pipeline does not perform.
+    Instead, "category changed" (the terminal classification, which is
+    build-coordinate-independent) is reported as the liftover-free
+    build-comparison signal.
     """
     builds = sorted(build_summaries)
     comparison: dict = {
@@ -376,21 +531,31 @@ def compare_builds(build_summaries: dict[str, dict], build_primary_rows: dict[st
         rate2 = comparison["usable_unique_rate_by_build"][b2]
         comparison["usable_unique_rate_gap_points"] = abs(rate1 - rate2) * 100
         shared_ids = set(build_primary_rows[b1]) & set(build_primary_rows[b2])
-        changed = 0
+        category_changed = 0
         for sample_id in shared_ids:
-            row1, row2 = build_primary_rows[b1][sample_id], build_primary_rows[b2][sample_id]
-            key1, key2 = _locus_key(row1), _locus_key(row2)
-            if key1 is not None and key2 is not None and key1 != key2:
-                changed += 1
-        comparison["loci_changed_between_builds"] = changed
-        comparison["loci_compared"] = len(shared_ids)
+            cat1 = build_primary_rows[b1][sample_id]["category"]
+            cat2 = build_primary_rows[b2][sample_id]["category"]
+            if cat1 != cat2:
+                category_changed += 1
+        comparison["primary_category_changed_between_builds"] = category_changed
+        comparison["primary_category_compared"] = len(shared_ids)
+        comparison["coordinate_comparison_note"] = (
+            "Raw genomic coordinates are not compared across builds: hg19 "
+            "and hg38 coordinates are not directly comparable without a "
+            "liftover (or another defensible equivalence) step, which this "
+            "pipeline does not perform. 'primary_category_changed_between_"
+            "builds' compares terminal classification instead, which is "
+            "build-coordinate-independent."
+        )
     return comparison
 
 
 __all__ = [
     "USABLE_PRIMARY_CATEGORIES",
     "SPLICE_RESCUE_CATEGORY",
+    "SPLICE_MODE_USABLE_CATEGORIES",
     "index_rows_by_sample",
+    "exclude_controls",
     "rate_with_ci",
     "usable_unique_rate",
     "category_rate",
@@ -399,9 +564,11 @@ __all__ = [
     "strand_locus_summary",
     "near_tied_sensitivity_summary",
     "control_alert",
+    "exact_match_discordance",
     "retention_by_protein_class",
     "retention_by_gc_decile",
     "retention_by_low_complexity_decile",
+    "retention_by_contig_category",
     "build_per_build_summary",
     "compare_builds",
 ]

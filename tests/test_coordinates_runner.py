@@ -11,7 +11,9 @@ from unittest import mock
 
 from rbpbench.coordinates.alignment import build_candidate_loci, parse_sam_line
 from rbpbench.coordinates.config import load_config
-from rbpbench.coordinates.runner import _locus_detail, build_mapping_rows, main
+from rbpbench.coordinates.runner import _locus_detail, build_mapping_rows, main, stage_combined_report
+from rbpbench.coordinates.sampling import SamplingResult
+from rbpbench.data.audit import sha256_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_CONFIG = REPO_ROOT / "tests" / "fixtures" / "coordinates" / "tiny_coordinate_feasibility.toml"
@@ -94,6 +96,26 @@ def _write_fake_executable(bin_dir: Path, name: str, source: str) -> None:
         except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
             if attempt == 2:
                 raise
+
+
+def _write_reference_manifest(manifest_path: Path, *, build: str, reference: Path) -> Path:
+    """Write a valid reference manifest matching ``reference``'s real hash
+    and size — required (review item 4b) for any real align/exact_match
+    attempt.
+    """
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "build_id": build,
+                "assembly_accession": f"TEST-{build}",
+                "source_url": "https://example.invalid/reference.fa.gz",
+                "contig_categories_included": ["chromosome"],
+                "byte_size": reference.stat().st_size,
+                "sha256": sha256_file(reference),
+            }
+        )
+    )
+    return manifest_path
 
 
 @contextlib.contextmanager
@@ -212,6 +234,7 @@ class AuthorizedDryRunGuaranteeTests(unittest.TestCase):
             _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
             reference = Path(tmp) / "reference.fasta"
             reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest = _write_reference_manifest(Path(tmp) / "hg38_manifest.json", build="hg38", reference=reference)
 
             common = [
                 "--config", str(FIXTURE_CONFIG),
@@ -220,6 +243,7 @@ class AuthorizedDryRunGuaranteeTests(unittest.TestCase):
                 "--allow-mapping",
                 "--host-role", "approved_mac",
                 "--reference", f"hg38={reference}",
+                "--reference-manifest", f"hg38={manifest}",
                 "--build", "hg38",
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -260,6 +284,151 @@ class AuthorizedDryRunGuaranteeTests(unittest.TestCase):
             self.assertIn("exact_match:hg38", state["completed_stages"])
 
 
+class RestartStateValidityTests(unittest.TestCase):
+    """Regression coverage for review item 1 (round two): a planning-only
+    run must never block a later, differently-authorized real run in the
+    same output directory, and any change to the declared CSV/config/
+    reference must invalidate (never silently skip) the stages that depend
+    on it.
+    """
+
+    def test_ordinary_documented_dry_run_then_real_full_run_in_same_directory(self):
+        # Exactly the documented COORDINATES.md workflow (no --allow-mapping
+        # at all) followed by a separate, fully authorized real run in the
+        # same --output-dir: this reproduced the reported failure where
+        # every build-scoped stage was skipped and the combined report
+        # stayed mapping_evaluated=false.
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = Path(tmp) / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest = _write_reference_manifest(Path(tmp) / "hg38_manifest.json", build="hg38", reference=reference)
+
+            # Step 1: the plain documented dry run, no authorization flags.
+            main(
+                [
+                    "--config", str(FIXTURE_CONFIG),
+                    "--csv", str(FIXTURE_CSV),
+                    "--output-dir", str(output_dir),
+                    "--stage", "all",
+                    "--dry-run",
+                ]
+            )
+            combined_after_dry_run = json.loads((output_dir / "report.json").read_text())
+            self.assertFalse(combined_after_dry_run["per_build"]["hg38"].get("mapping_evaluated", True))
+
+            # Step 2: a separate, fully authorized real run in that same
+            # directory, for a single build and without --dry-run.
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                main(
+                    [
+                        "--config", str(FIXTURE_CONFIG),
+                        "--csv", str(FIXTURE_CSV),
+                        "--output-dir", str(output_dir),
+                        "--allow-mapping",
+                        "--host-role", "approved_mac",
+                        "--reference", f"hg38={reference}",
+                        "--reference-manifest", f"hg38={manifest}",
+                        "--build", "hg38",
+                        "--stage", "align", "--stage", "exact_match", "--stage", "report", "--stage", "combined_report",
+                    ]
+                )
+
+            align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+            self.assertTrue(align_record["executed"])
+            exact_match_record = json.loads((output_dir / "hg38" / "exact_match.json").read_text())
+            self.assertTrue(exact_match_record["executed"])
+            combined_after_real_run = json.loads((output_dir / "report.json").read_text())
+            self.assertTrue(combined_after_real_run["per_build"]["hg38"].get("mapping_evaluated", True) is not False)
+            self.assertIn("representative_stratum_gate", combined_after_real_run["per_build"]["hg38"])
+
+    def test_changed_csv_invalidates_sample_decode_controls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_copy = Path(tmp) / "dataset.csv"
+            csv_copy.write_text(FIXTURE_CSV.read_text())
+            common = ["--config", str(FIXTURE_CONFIG), "--csv", str(csv_copy), "--output-dir", str(output_dir)]
+
+            main([*common, "--stage", "sample", "--stage", "decode"])
+            fasta_path = output_dir / "sample_sequences.fasta"
+            first_mtime = fasta_path.stat().st_mtime_ns
+            first_ids_hash = sha256_file(output_dir / "sample_ids.tsv")
+
+            # Re-running unchanged is a no-op (skip).
+            main([*common, "--stage", "sample", "--stage", "decode"])
+            self.assertEqual(fasta_path.stat().st_mtime_ns, first_mtime)
+
+            # Change the CSV content at the same path: sample/decode must
+            # re-run, not be silently skipped as "already completed".
+            lines = FIXTURE_CSV.read_text().splitlines(keepends=True)
+            # Flip one label field so the CSV's bytes (and hash) actually change.
+            lines[1] = lines[1].replace(",1;2", ",2;1")
+            csv_copy.write_text("".join(lines))
+
+            main([*common, "--stage", "sample", "--stage", "decode"])
+            self.assertNotEqual(sha256_file(output_dir / "sample_ids.tsv"), first_ids_hash)
+
+    def test_changed_reference_invalidates_align_even_with_identical_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = Path(tmp) / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest = _write_reference_manifest(Path(tmp) / "hg38_manifest.json", build="hg38", reference=reference)
+
+            common = [
+                "--config", str(FIXTURE_CONFIG),
+                "--csv", str(FIXTURE_CSV),
+                "--output-dir", str(output_dir),
+                "--allow-mapping",
+                "--host-role", "approved_mac",
+                "--reference", f"hg38={reference}",
+                "--reference-manifest", f"hg38={manifest}",
+                "--build", "hg38",
+            ]
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                main([*common, "--stage", "sample"])
+                main([*common, "--stage", "decode"])
+                main([*common, "--stage", "controls"])
+                main([*common, "--stage", "align"])
+                align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+                first_reference_hash = align_record["provenance"]["input_hashes"]["reference"]
+
+                # Same path, different content, same manifest (now stale —
+                # but stage_align validates the manifest against the *new*
+                # content and must reject it, exercising the manifest check
+                # rather than silently reusing the old completion).
+                reference.write_text(">chr1\n" + "C" * 20 + "\n")
+                main([*common, "--stage", "align"])
+                align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+                self.assertFalse(align_record["executed"])
+                self.assertIn("manifest", align_record["skip_reason"])
+
+                # With a manifest that matches the new content, align must
+                # actually re-run rather than being skipped as already
+                # complete (the reference-hash component of its fingerprint
+                # changed).
+                fresh_manifest = _write_reference_manifest(
+                    Path(tmp) / "hg38_manifest.json", build="hg38", reference=reference
+                )
+                main([*common, "--reference-manifest", f"hg38={fresh_manifest}", "--stage", "align"])
+                align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+                self.assertTrue(align_record["executed"])
+                self.assertNotEqual(align_record["provenance"]["input_hashes"]["reference"], first_reference_hash)
+                self.assertEqual(align_record["provenance"]["input_hashes"]["reference"], sha256_file(reference))
+
+
 class PreflightHardPrerequisiteTests(unittest.TestCase):
     """Regression coverage for review item 1: successful preflight must be a
     hard prerequisite for real alignment/exact-match, bound to detected
@@ -283,6 +452,7 @@ class PreflightHardPrerequisiteTests(unittest.TestCase):
             _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
             reference = Path(tmp) / "reference.fasta"
             reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest = _write_reference_manifest(Path(tmp) / "hg38_manifest.json", build="hg38", reference=reference)
 
             common = [
                 "--config", str(FIXTURE_CONFIG),
@@ -291,6 +461,7 @@ class PreflightHardPrerequisiteTests(unittest.TestCase):
                 "--allow-mapping",
                 "--host-role", "approved_mac",
                 "--reference", f"hg38={reference}",
+                "--reference-manifest", f"hg38={manifest}",
                 "--build", "hg38",
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -326,6 +497,7 @@ class PreflightHardPrerequisiteTests(unittest.TestCase):
             _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
             reference = Path(tmp) / "reference.fasta"
             reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest = _write_reference_manifest(Path(tmp) / "hg38_manifest.json", build="hg38", reference=reference)
 
             common = [
                 "--config", str(FIXTURE_CONFIG),
@@ -334,6 +506,7 @@ class PreflightHardPrerequisiteTests(unittest.TestCase):
                 "--allow-mapping",
                 "--host-role", "approved_mac",
                 "--reference", f"hg38={reference}",
+                "--reference-manifest", f"hg38={manifest}",
                 "--build", "hg38",
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -387,6 +560,7 @@ class RunnerRestartTests(unittest.TestCase):
             _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
             reference = Path(tmp) / "reference.fasta"
             reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest = _write_reference_manifest(Path(tmp) / "hg38_manifest.json", build="hg38", reference=reference)
 
             common = [
                 "--config", str(FIXTURE_CONFIG),
@@ -395,6 +569,7 @@ class RunnerRestartTests(unittest.TestCase):
                 "--allow-mapping",
                 "--host-role", "approved_mac",
                 "--reference", f"hg38={reference}",
+                "--reference-manifest", f"hg38={manifest}",
                 "--build", "hg38",
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -432,6 +607,7 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
         _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
         reference = output_dir / f"reference_{build}.fasta"
         reference.write_text(">chr1\n" + "A" * 20 + "\n")
+        manifest = _write_reference_manifest(output_dir / f"{build}_manifest.json", build=build, reference=reference)
 
         argv = [
             "--config", str(FIXTURE_CONFIG),
@@ -440,6 +616,7 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
             "--allow-mapping",
             "--host-role", "approved_mac",
             "--reference", f"{build}={reference}",
+            "--reference-manifest", f"{build}={manifest}",
             "--build", build,
         ]
         for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
@@ -595,6 +772,8 @@ class SequentialTwoBuildProcessingTests(unittest.TestCase):
             ref_hg38.write_text(">chr1\n" + "A" * 20 + "\n")
             ref_hg19 = output_dir / "hg19.fasta"
             ref_hg19.write_text(">chr2\n" + "C" * 20 + "\n")
+            manifest_hg38 = _write_reference_manifest(output_dir / "hg38_manifest.json", build="hg38", reference=ref_hg38)
+            manifest_hg19 = _write_reference_manifest(output_dir / "hg19_manifest.json", build="hg19", reference=ref_hg19)
 
             argv = [
                 "--config", str(FIXTURE_CONFIG),
@@ -604,6 +783,8 @@ class SequentialTwoBuildProcessingTests(unittest.TestCase):
                 "--host-role", "approved_mac",
                 "--reference", f"hg38={ref_hg38}",
                 "--reference", f"hg19={ref_hg19}",
+                "--reference-manifest", f"hg38={manifest_hg38}",
+                "--reference-manifest", f"hg19={manifest_hg19}",
                 "--build", "hg38",
                 "--build", "hg19",
                 "--stage", "sample", "--stage", "decode", "--stage", "controls",
@@ -672,6 +853,61 @@ class ReverseStrandLocusSerializationTests(unittest.TestCase):
         self.assertEqual(starts[0], 0)
 
 
+class CombinedReportBlocksOnFailedReconciliationTests(unittest.TestCase):
+    """Regression coverage for review item 4: combined_report must stop
+    (never silently finalize) when any evaluated per-build reconciliation
+    failed, rather than laundering an internally-inconsistent per-build
+    report into a combined report that looks trustworthy.
+    """
+
+    def _empty_sample(self) -> SamplingResult:
+        return SamplingResult(
+            assignments=(),
+            representative_ids=frozenset(),
+            quota_ids=frozenset(),
+            filler_ids=frozenset(),
+            unsatisfied_quotas=(),
+        )
+
+    def test_failed_build_reconciliation_stops_combined_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "hg38").mkdir()
+            (output_dir / "hg38" / "report.json").write_text(
+                json.dumps(
+                    {
+                        "reconciliation": {
+                            "status": "failed",
+                            "passed": False,
+                            "issues": [{"check": "sample_total", "detail": "mismatch"}],
+                        }
+                    }
+                )
+            )
+
+            cfg = load_config(FIXTURE_CONFIG)
+            with self.assertRaises(SystemExit) as ctx:
+                stage_combined_report(self._empty_sample(), cfg=cfg, output_dir=output_dir, builds=("hg38",))
+            self.assertIn("reconciliation failed", str(ctx.exception))
+            # No top-level combined report was written as a side effect of
+            # the failed attempt (only the per-build report.json exists).
+            self.assertFalse((output_dir / "report.json").exists())
+
+    def test_not_evaluated_build_does_not_block_combined_report(self):
+        # A dry-run/unauthorized build (honestly "not_evaluated") is not the
+        # same as a "failed" one and must not block finalization.
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "hg38").mkdir()
+            (output_dir / "hg38" / "report.json").write_text(
+                json.dumps({"reconciliation": {"status": "not_evaluated", "passed": False, "issues": []}})
+            )
+
+            cfg = load_config(FIXTURE_CONFIG)
+            combined = stage_combined_report(self._empty_sample(), cfg=cfg, output_dir=output_dir, builds=("hg38",))
+            self.assertFalse(combined["per_build"]["hg38"]["mapping_evaluated"])
+
+
 class BuildMappingRowsUniverseTests(unittest.TestCase):
     """Regression coverage for review item 3: mapping rows must be built
     from the complete expected biological-and-control ID universe, not from
@@ -710,6 +946,119 @@ class BuildMappingRowsUniverseTests(unittest.TestCase):
                 self.assertEqual(row["sample_id"], "row_0")
                 self.assertEqual(row["category"], "unmapped")
                 self.assertEqual(row["chrom"], "")
+
+
+class ExactMatchDiscordanceEvidenceTests(unittest.TestCase):
+    """Regression coverage for review item 4 (auditability): exact-occurrence
+    evidence must be persisted on the mapping row itself, not just implied
+    by which terminal category a row landed in, so BWA-vs-SeqKit discordance
+    can be audited downstream (rbpbench.coordinates.summaries.exact_match_discordance).
+    """
+
+    def test_discordant_row_persists_occurrence_count_and_perfect_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg = load_config(FIXTURE_CONFIG)
+            length = cfg.sequence_length_nt
+            bwa_sam = tmp_path / "bwa.sam"
+            bwa_sam.write_text(
+                "\t".join(["row_0", "0", "chr1", "1", "60", f"{length}M", "*", "0", "0", "*", "*", "NM:i:0"]) + "\n"
+            )
+            mm2_sam = tmp_path / "mm2.sam"
+            mm2_sam.write_text("@HD\tVN:1.6\n")
+            # SeqKit independently finds TWO occurrences: discordant with
+            # BWA-MEM's perfect-unique call.
+            bed = tmp_path / "hits.bed"
+            bed.write_text("chr1\t0\t{0}\trow_0\t.\t+\nchr2\t0\t{0}\trow_0\t.\t+\n".format(length))
+
+            _, rows = build_mapping_rows(
+                cfg,
+                {"row_0": "representative"},
+                build="hg38",
+                bwa_sam=bwa_sam,
+                minimap2_sam=mm2_sam,
+                exact_hits_bed=bed,
+            )
+            primary_row = next(r for r in rows if r["mode"] == "primary")
+            self.assertEqual(str(primary_row["bwa_perfect_unique"]), "True")
+            self.assertEqual(primary_row["exact_occurrence_count"], 2)
+            # Discordant: BWA-perfect but not exactly one SeqKit occurrence,
+            # so classification must not be exact_unique.
+            self.assertNotEqual(primary_row["category"], "exact_unique")
+            self.assertEqual(primary_row["category"], "high_conf_unique")
+
+            splice_row = next(r for r in rows if r["mode"] == "splice")
+            self.assertEqual(splice_row["bwa_perfect_unique"], "")
+            self.assertEqual(splice_row["exact_occurrence_count"], "")
+
+
+class ProvenanceCompletenessTests(unittest.TestCase):
+    """Regression coverage for review item 4: provenance must hash declared
+    inputs (dataset audit, protein config) and generated artifacts (sample
+    IDs, mappings, reports), include index provenance, and bind everything
+    to the current restart-state fingerprints.
+    """
+
+    def test_provenance_hashes_declared_inputs_and_generated_artifacts_and_binds_fingerprints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = output_dir / "reference_hg38.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest = _write_reference_manifest(output_dir / "hg38_manifest.json", build="hg38", reference=reference)
+
+            dataset_audit = Path(tmp) / "dataset_audit.json"
+            dataset_audit.write_text(json.dumps({"ok": True}))
+            proteins_config = Path(tmp) / "proteins.tsv"
+            proteins_config.write_text("protein_id\tname\n1\tTEST\n")
+
+            argv = [
+                "--config", str(FIXTURE_CONFIG),
+                "--csv", str(FIXTURE_CSV),
+                "--output-dir", str(output_dir),
+                "--dataset-audit", str(dataset_audit),
+                "--proteins-config", str(proteins_config),
+                "--allow-mapping",
+                "--host-role", "approved_mac",
+                "--reference", f"hg38={reference}",
+                "--reference-manifest", f"hg38={manifest}",
+                "--build", "hg38",
+            ]
+            for stage in ("sample", "decode", "controls", "align", "exact_match", "report", "combined_report"):
+                argv.extend(["--stage", stage])
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                main(argv)
+
+            provenance = json.loads((output_dir / "provenance.json").read_text())
+            self.assertEqual(provenance["declared_inputs"]["dataset_audit"]["sha256"], sha256_file(dataset_audit))
+            self.assertEqual(provenance["declared_inputs"]["proteins_config"]["sha256"], sha256_file(proteins_config))
+
+            generated = provenance["generated_artifacts"]
+            self.assertEqual(generated["sample_ids_tsv"]["sha256"], sha256_file(output_dir / "sample_ids.tsv"))
+            self.assertEqual(
+                generated["sample_sequences_fasta"]["sha256"], sha256_file(output_dir / "sample_sequences.fasta")
+            )
+            self.assertIsNotNone(generated["combined_report_json"])
+
+            build_artifacts = provenance["builds"]["hg38"]["generated_artifacts"]
+            self.assertEqual(
+                build_artifacts["mappings_tsv_gz"]["sha256"],
+                sha256_file(output_dir / "hg38" / "mappings.tsv.gz"),
+            )
+            self.assertIsNotNone(build_artifacts["report_json"])
+
+            self.assertIsNotNone(provenance["builds"]["hg38"]["reference_index"])
+            self.assertIn("index_sha256", provenance["builds"]["hg38"]["reference_index"])
+
+            # Bound to the state fingerprints that decided which stages ran.
+            state = json.loads((output_dir / "state.json").read_text())
+            self.assertEqual(provenance["state_fingerprints"], state["stage_fingerprints"])
+            self.assertIn("align:hg38", provenance["state_fingerprints"])
 
 
 if __name__ == "__main__":

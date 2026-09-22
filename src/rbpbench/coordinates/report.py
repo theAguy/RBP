@@ -326,14 +326,24 @@ def render_combined_report_markdown(report: dict) -> str:
             marker = "ALERT" if payload["alert"] else "ok"
             lines.append(f"- {mode}: {marker} — {payload['flagged_sample_ids']}")
         lines.append("")
-        lines.append("### Retention audit")
-        retention = summary["retention"]
-        overall_gap = retention["by_protein_class"]["overall_positive_negative_gap"]
-        lines.append(f"- overall positive/negative retention gap: {overall_gap}")
-        severe = retention["by_protein_class"]["severe_alerts"]
-        lines.append(f"- severe per-protein/class alerts: {len(severe)}")
-        for alert in severe:
-            lines.append(f"  - {alert}")
+        lines.append("### Exact-match discordance (BWA-MEM vs. SeqKit)")
+        discordance = summary["exact_match_discordance"]
+        lines.append(
+            f"- {discordance['discordant_count']} of {discordance['total_bwa_perfect_unique']} "
+            "BWA-perfect-unique rows disagree with SeqKit's exact-occurrence count"
+        )
+        if discordance["discordant_sample_ids"]:
+            lines.append(f"  - discordant: {discordance['discordant_sample_ids']}")
+        lines.append("")
+        lines.append("### Retention audit (signed positive-minus-negative gaps; alerts use absolute gaps)")
+        for scope in ("combined", "primary", "splice"):
+            by_protein_class = summary["retention"][scope]["by_protein_class"]
+            overall_gap = by_protein_class["overall_positive_negative_gap"]
+            severe = by_protein_class["severe_alerts"]
+            lines.append(f"- **{scope}** mode: overall positive/negative retention gap: {overall_gap}")
+            lines.append(f"  - severe per-protein/class alerts: {len(severe)}")
+            for alert in severe:
+                lines.append(f"    - {alert}")
         lines.append("")
 
     lines.append("## Build comparison (label-blind)")

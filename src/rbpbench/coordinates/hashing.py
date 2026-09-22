@@ -42,3 +42,13 @@ def quota_rank(seed: int, sample_id: str, protein_id: int, class_label: str) -> 
 def control_seed(seed: int, sample_id: str, attempt: int) -> int:
     """Derive a deterministic RNG seed for one shuffle attempt of one control."""
     return stable_hash_rank(seed, "control", sample_id, attempt)
+
+
+def content_fingerprint(*fields: object) -> str:
+    """Full SHA-256 hex digest over the encoded fields.
+
+    Used for restart-state validity (see ``rbpbench.coordinates.runner``):
+    unlike :func:`stable_hash_rank`, this is an equality-check fingerprint,
+    not a ranking value, so it is never truncated.
+    """
+    return hashlib.sha256(encode_fields(*fields).encode("utf-8")).hexdigest()

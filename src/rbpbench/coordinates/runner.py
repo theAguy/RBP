@@ -61,10 +61,11 @@ from rbpbench.coordinates.config import FeasibilityConfig, load_config
 from rbpbench.coordinates.controls import generate_control
 from rbpbench.coordinates.decode import decode_and_validate, fasta_record
 from rbpbench.coordinates.exact_match import exact_occurrence_count, exact_unique_confirmed, parse_seqkit_bed
-from rbpbench.coordinates.hashing import control_seed
+from rbpbench.coordinates.hashing import content_fingerprint, control_seed
+from rbpbench.coordinates.manifest import validate_reference_manifest
 from rbpbench.coordinates.preflight import APPROVED_MAC, DEV_VM, run_preflight
 from rbpbench.coordinates.provenance import resolve_binary_provenance, run_tool_with_provenance
-from rbpbench.coordinates.reference import load_fasta_sequences, make_reference_lookup
+from rbpbench.coordinates.reference import IndexedFastaReader, load_fasta_sequences, prepare_reference_index
 from rbpbench.coordinates.report import (
     MappingResult,
     build_combined_report,
@@ -103,9 +104,26 @@ MAPPING_TSV_COLUMNS = (
     "intron_lengths",
     "canonical_junctions",
     "near_tied_fractions",
+    # Exact-match evidence (primary mode only; empty for splice rows), kept
+    # so BWA-vs-SeqKit discordance is auditable rather than collapsed into
+    # just a category name (see rbpbench.coordinates.summaries.exact_match_discordance).
+    "exact_occurrence_count",
+    "bwa_perfect_unique",
+    # Full best-secondary evidence (not just chrom/coverage/identity), so a
+    # reviewer can audit *why* a row was called ambiguous.
     "best_secondary_chrom",
+    "best_secondary_start",
+    "best_secondary_end",
+    "best_secondary_strand",
+    "best_secondary_block_count",
+    "best_secondary_block_starts",
+    "best_secondary_block_sizes",
     "best_secondary_coverage",
     "best_secondary_identity",
+    "best_secondary_mapq",
+    "best_secondary_alignment_score",
+    "best_secondary_intron_lengths",
+    "best_secondary_canonical_junctions",
 )
 
 
@@ -130,6 +148,7 @@ def _load_state(state_path: Path) -> dict:
         state = {}
     state.setdefault("completed_stages", [])
     state.setdefault("mapping_executed", {})
+    state.setdefault("stage_fingerprints", {})
     return state
 
 
@@ -364,11 +383,13 @@ def _mapping_capable(*, allow_mapping: bool, host_role: str, reference: Path | N
 def stage_align(
     cfg: FeasibilityConfig,
     *,
+    build: str,
     build_output_dir: Path,
     allow_mapping: bool,
     host_role: str,
     threads: int,
     reference: Path | None,
+    reference_manifest: dict | None,
     reads_fasta: Path | None,
     dry_run: bool,
 ) -> dict:
@@ -399,6 +420,21 @@ def stage_align(
     )
     if skip_reason is not None:
         record["skip_reason"] = skip_reason
+        _write_json(build_output_dir / "align.json", record)
+        return record
+
+    # A reference manifest is now required (not merely recorded when
+    # present) for real mapping, and validated against the exact reference
+    # file this run is about to use — a stale or wrong-build manifest must
+    # never be silently attributed to the current reference.
+    if reference_manifest is None:
+        record["skip_reason"] = f"reference manifest required for real mapping but not provided for build {build!r}"
+        _write_json(build_output_dir / "align.json", record)
+        return record
+    manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
+    record["reference_manifest_validation"] = {"provided": True, "violations": list(manifest_violations)}
+    if manifest_violations:
+        record["skip_reason"] = f"reference manifest invalid for build {build!r}: {list(manifest_violations)}"
         _write_json(build_output_dir / "align.json", record)
         return record
 
@@ -460,11 +496,13 @@ def stage_align(
 def stage_exact_match(
     cfg: FeasibilityConfig,
     *,
+    build: str,
     build_output_dir: Path,
     allow_mapping: bool,
     host_role: str,
     threads: int,
     reference: Path | None,
+    reference_manifest: dict | None,
     reads_fasta: Path | None,
     align_record: dict,
     dry_run: bool,
@@ -494,6 +532,19 @@ def stage_exact_match(
 
     if not align_record.get("executed"):
         record["skip_reason"] = "align stage did not execute real mapping; nothing to confirm"
+        _write_json(build_output_dir / "exact_match.json", record)
+        return record
+
+    # Same reference-manifest requirement/validation as stage_align — an
+    # independent check, not a reused one.
+    if reference_manifest is None:
+        record["skip_reason"] = f"reference manifest required for real exact-match but not provided for build {build!r}"
+        _write_json(build_output_dir / "exact_match.json", record)
+        return record
+    manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
+    record["reference_manifest_validation"] = {"provided": True, "violations": list(manifest_violations)}
+    if manifest_violations:
+        record["skip_reason"] = f"reference manifest invalid for build {build!r}: {list(manifest_violations)}"
         _write_json(build_output_dir / "exact_match.json", record)
         return record
 
@@ -594,6 +645,15 @@ def _locus_detail(locus: CandidateLocus | None) -> dict:
     }
 
 
+def _prefixed_locus_detail(locus: CandidateLocus | None, prefix: str) -> dict:
+    """Full best-secondary evidence (coordinates, strand, blocks, MAPQ, and
+    alignment score — not merely chrom/coverage/identity), so an ambiguous
+    call is auditable against exactly what the plausible secondary locus
+    looked like.
+    """
+    return {f"{prefix}{key}": value for key, value in _locus_detail(locus).items()}
+
+
 def _near_tied_field(loci: Sequence[CandidateLocus], fractions: Sequence[float]) -> str:
     triggered = near_tied_secondary_fractions(loci, fractions)
     return ";".join(f"{fraction:g}" for fraction, is_triggered in triggered.items() if is_triggered)
@@ -665,12 +725,14 @@ def build_mapping_rows(
             "build": build,
             "mode": "primary",
             "category": primary_category,
+            # Exact-match evidence (BWA-vs-SeqKit): persisted regardless of
+            # the classification outcome so discordance is auditable, not
+            # just implied by which category a row landed in.
+            "exact_occurrence_count": occurrence_count,
+            "bwa_perfect_unique": primary_is_perfect,
         }
         row.update(_locus_detail(best_primary))
-        second = _locus_detail(second_primary)
-        row["best_secondary_chrom"] = second["chrom"]
-        row["best_secondary_coverage"] = second["coverage"]
-        row["best_secondary_identity"] = second["identity"]
+        row.update(_prefixed_locus_detail(second_primary, "best_secondary_"))
         row["near_tied_fractions"] = _near_tied_field(primary_loci, cfg.near_tied_fractions)
         rows.append(row)
 
@@ -685,12 +747,13 @@ def build_mapping_rows(
             "build": build,
             "mode": "splice",
             "category": splice_category,
+            # Exact-substring validation only ever applies to the primary
+            # (BWA-MEM) mode; not applicable to the splice-aware diagnostic.
+            "exact_occurrence_count": "",
+            "bwa_perfect_unique": "",
         }
         row.update(_locus_detail(best_splice))
-        second = _locus_detail(second_splice)
-        row["best_secondary_chrom"] = second["chrom"]
-        row["best_secondary_coverage"] = second["coverage"]
-        row["best_secondary_identity"] = second["identity"]
+        row.update(_prefixed_locus_detail(second_splice, "best_secondary_"))
         row["near_tied_fractions"] = _near_tied_field(splice_loci, cfg.near_tied_fractions)
         rows.append(row)
 
@@ -737,7 +800,13 @@ def stage_report(
 
         reference_lookup = None
         if reference is not None and Path(reference).is_file():
-            reference_lookup = make_reference_lookup(_read_fasta(Path(reference)))
+            # Indexed random access (never a whole-file load): suitable for
+            # an hg38/hg19-scale reference, since only a single sequential
+            # pass builds the index and every lookup thereafter seeks
+            # directly to the requested span.
+            index_entries, index_record = prepare_reference_index(Path(reference))
+            _write_json(build_output_dir / "reference_index.json", index_record)
+            reference_lookup = IndexedFastaReader(Path(reference), index_entries).fetch
 
         mapping_results, rows = build_mapping_rows(
             cfg,
@@ -773,12 +842,14 @@ def stage_combined_report(
     cfg: FeasibilityConfig,
     output_dir: Path,
     builds: Sequence[str],
+    reference_manifests: dict[str, dict] | None = None,
 ) -> dict:
     """Collision-safe per-build artifacts already exist under
     ``output_dir/<build>/``; this reads every one of them back from disk (the
     same resume-safety pattern as align/exact_match reloading) and produces
     the single combined report the parent task requires before Task 001B.
     """
+    reference_manifests = reference_manifests or {}
     sample_meta = [{"sample_id": a.sample_id, "labels": ";".join(str(v) for v in a.labels)} for a in sample.assignments]
     representative_ids = sorted(sample.representative_ids)
     all_sample_ids = sorted(a.sample_id for a in sample.assignments)
@@ -800,14 +871,25 @@ def stage_combined_report(
         # (see rbpbench.coordinates.report): there is no mapping data to
         # summarize yet, so record that plainly rather than raising or
         # fabricating an empty-but-"passed"-looking summary.
-        if build_report_payload["reconciliation"]["status"] == "not_evaluated":
+        status = build_report_payload["reconciliation"]["status"]
+        if status == "not_evaluated":
             per_build_summaries[build] = {"build": build, "mapping_evaluated": False}
             continue
+        if status == "failed":
+            # An evaluated-but-failed reconciliation means the per-build
+            # mapping/category counts are internally inconsistent: combining
+            # it into one report would launder that inconsistency into a
+            # report that looks trustworthy. Stop clearly instead.
+            raise SystemExit(
+                f"combined_report refuses to finalize: build {build!r} reconciliation failed "
+                f"({build_report_payload['reconciliation']['issues']})"
+            )
 
         mappings_path = build_dir / Path(cfg.outputs.mappings_tsv_gz).name
         rows = read_mappings_tsv_gz(mappings_path)
         primary_rows = [r for r in rows if r["mode"] == "primary"]
         splice_rows = [r for r in rows if r["mode"] == "splice"]
+        contig_categories = (reference_manifests.get(build) or {}).get("contig_categories")
         summary = summaries.build_per_build_summary(
             build=build,
             primary_rows=primary_rows,
@@ -817,9 +899,12 @@ def stage_combined_report(
             sample_meta=sample_meta,
             sample_sequences=sample_sequences,
             near_tied_fractions=cfg.near_tied_fractions,
+            contig_categories=contig_categories,
         )
         per_build_summaries[build] = summary
-        per_build_primary_by_id[build] = summaries.index_rows_by_sample(primary_rows, mode="primary")
+        per_build_primary_by_id[build] = summaries.exclude_controls(
+            summaries.index_rows_by_sample(primary_rows, mode="primary")
+        )
         evaluated_builds.append(build)
 
     comparison = (
@@ -836,37 +921,80 @@ def stage_combined_report(
     return combined
 
 
+def _artifact_hash(path: Path) -> dict | None:
+    """Hash-and-size a generated or declared artifact, or ``None`` (never a
+    fabricated placeholder) when it does not exist.
+    """
+    if not path.is_file():
+        return None
+    return {"path": str(path), "sha256": sha256_file(path), "byte_size": path.stat().st_size}
+
+
 def _write_provenance(
     *,
+    cfg: FeasibilityConfig,
     output_dir: Path,
     csv_path: Path,
     config_path: Path,
+    dataset_audit_path: Path | None,
+    proteins_config_path: Path | None,
     builds: Sequence[str],
     align_records: dict[str, dict],
     exact_match_records: dict[str, dict],
     reference_manifests: dict[str, dict],
+    state: dict,
 ) -> dict:
-    """Connect provenance to the runner: declared input hashes, resolved
-    binary hashes/versions, commands, output hashes, elapsed time, peak
-    memory, and reference metadata, all in one place per run. Written
-    unconditionally (cheap, idempotent) so it always reflects whatever
-    align/exact_match records the current invocation has, whichever stages
-    it actually ran.
+    """Connect provenance to the runner: declared input hashes (dataset CSV,
+    config, dataset audit, protein config), resolved binary hashes/versions,
+    commands, index commands/parameters/sizes/hashes, output hashes, elapsed
+    time, peak memory, and reference-manifest metadata, all in one place per
+    run. Bound to the current restart-state fingerprints (see
+    ``state["stage_fingerprints"]``) so a reader can tell whether these
+    outputs actually correspond to the current inputs rather than a stale
+    prior run. Written unconditionally (cheap, idempotent) so it always
+    reflects whatever align/exact_match records the current invocation has,
+    whichever stages it actually ran.
     """
+    declared_inputs = {
+        "dataset_csv": _artifact_hash(csv_path),
+        "config": _artifact_hash(config_path),
+        "dataset_audit": _artifact_hash(dataset_audit_path) if dataset_audit_path is not None else None,
+        "proteins_config": _artifact_hash(proteins_config_path) if proteins_config_path is not None else None,
+    }
+    generated_artifacts = {
+        "sample_ids_tsv": _artifact_hash(output_dir / Path(cfg.outputs.sample_ids_tsv).name),
+        "sample_sequences_fasta": _artifact_hash(output_dir / "sample_sequences.fasta"),
+        "control_sequences_fasta": _artifact_hash(output_dir / "control_sequences.fasta"),
+        "combined_report_json": _artifact_hash(output_dir / Path(cfg.outputs.report_json).name),
+        "combined_report_md": _artifact_hash(output_dir / Path(cfg.outputs.report_md).name),
+    }
+
+    builds_payload = {}
+    for build in builds:
+        build_dir = _build_dir(output_dir, build)
+        reference_index_path = build_dir / "reference_index.json"
+        builds_payload[build] = {
+            "align": align_records.get(build, {}),
+            "exact_match": exact_match_records.get(build, {}),
+            "reference_manifest": reference_manifests.get(build),
+            "reference_index": json.loads(reference_index_path.read_text()) if reference_index_path.exists() else None,
+            "generated_artifacts": {
+                "mappings_tsv_gz": _artifact_hash(build_dir / Path(cfg.outputs.mappings_tsv_gz).name),
+                "report_json": _artifact_hash(build_dir / Path(cfg.outputs.report_json).name),
+                "report_md": _artifact_hash(build_dir / Path(cfg.outputs.report_md).name),
+            },
+        }
+
     payload = {
-        "schema_version": 1,
-        "declared_inputs": {
-            "dataset_csv": {"path": str(csv_path), "sha256": sha256_file(csv_path) if csv_path.is_file() else None},
-            "config": {"path": str(config_path), "sha256": sha256_file(config_path) if config_path.is_file() else None},
-        },
-        "builds": {
-            build: {
-                "align": align_records.get(build, {}),
-                "exact_match": exact_match_records.get(build, {}),
-                "reference_manifest": reference_manifests.get(build),
-            }
-            for build in builds
-        },
+        "schema_version": 2,
+        "declared_inputs": declared_inputs,
+        "generated_artifacts": generated_artifacts,
+        "builds": builds_payload,
+        # Binds this provenance to the exact restart-state fingerprints that
+        # decided which stages actually ran (see _stage_is_valid/
+        # _mark_stage_complete): current inputs cannot be silently
+        # attributed to stale outputs from a previous, differing run.
+        "state_fingerprints": dict(state.get("stage_fingerprints", {})),
     }
     _write_json(output_dir / "provenance.json", payload)
     return payload
@@ -911,12 +1039,44 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Reference build ID(s) to process; repeat per build (default: {', '.join(DEFAULT_BUILDS)})",
     )
+    parser.add_argument(
+        "--dataset-audit",
+        type=Path,
+        default=Path("manifests/dataset_audit.json"),
+        help="Declared-input path to hash into provenance.json (parent-task dataset audit manifest)",
+    )
+    parser.add_argument(
+        "--proteins-config",
+        type=Path,
+        default=Path("configs/proteins.tsv"),
+        help="Declared-input path to hash into provenance.json (parent-task protein configuration)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Guarantee no external tool ever executes; plan commands only")
     return parser
 
 
 def _stage_key(stage: str, build: str | None) -> str:
     return f"{stage}:{build}" if build is not None else stage
+
+
+def _mark_stage_complete(state: dict, key: str, fingerprint: str) -> None:
+    if key not in state["completed_stages"]:
+        state["completed_stages"].append(key)
+    state.setdefault("stage_fingerprints", {})[key] = fingerprint
+
+
+def _stage_is_valid(state: dict, key: str, fingerprint: str) -> bool:
+    """Restart-state validity check (review item 1): a stage is only
+    skippable when it was both previously marked complete *and* its
+    fingerprint (the declared inputs/config/reference/authorization it would
+    run with right now) still matches what produced that completion. A
+    planning-only (unauthorized or dry-run) attempt's fingerprint always
+    differs from a later authorized real attempt's, so it can never block
+    that later real run merely by being "in completed_stages".
+    """
+    if key not in state["completed_stages"]:
+        return False
+    return state.get("stage_fingerprints", {}).get(key) == fingerprint
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -938,6 +1098,60 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     state_path = args.output_dir / "state.json"
     state = _load_state(state_path)
+
+    # Restart-state validity (review item 1): every stage's skip/re-run
+    # decision is bound to a fingerprint of the declared inputs/config/
+    # reference/authorization it would use right now, not merely "did this
+    # key already run". See _stage_is_valid/_mark_stage_complete.
+    dataset_csv_hash = sha256_file(args.csv) if args.csv.is_file() else None
+    config_hash = sha256_file(args.config) if args.config.is_file() else None
+    reference_hashes: dict[str, str | None] = {
+        build: (sha256_file(path) if path.is_file() else None) for build, path in references.items()
+    }
+    base_fingerprint = content_fingerprint("sample_decode_controls", dataset_csv_hash, config_hash)
+
+    def align_fingerprint(build: str) -> str:
+        return content_fingerprint(
+            "align",
+            base_fingerprint,
+            reference_hashes.get(build),
+            args.allow_mapping,
+            args.host_role,
+            args.threads,
+            args.dry_run,
+        )
+
+    def exact_match_fingerprint(build: str) -> str:
+        # Chained from align's *last recorded* fingerprint (not recomputed
+        # from this invocation's CLI flags, which may not even mention
+        # align/exact_match when only --stage report is requested) plus
+        # align's current executed status, so any upstream change — a
+        # changed input, or align actually executing after being merely
+        # planned — propagates without guessing at flags this call never
+        # received.
+        recorded_align_fp = state.get("stage_fingerprints", {}).get(_stage_key("align", build), "never_run")
+        return content_fingerprint("exact_match", recorded_align_fp, bool(align_records[build].get("executed")))
+
+    def report_fingerprint(build: str) -> str:
+        recorded_exact_fp = state.get("stage_fingerprints", {}).get(_stage_key("exact_match", build), "never_run")
+        return content_fingerprint("report", recorded_exact_fp, bool(exact_match_records[build].get("executed")))
+
+    def preflight_fingerprint() -> str:
+        return content_fingerprint(
+            "preflight",
+            base_fingerprint,
+            tuple(sorted(reference_hashes.items())),
+            args.host_role,
+            args.allow_mapping,
+            args.threads,
+        )
+
+    def combined_report_fingerprint() -> str:
+        report_fps = {
+            build: state.get("stage_fingerprints", {}).get(_stage_key("report", build), "never_run")
+            for build in builds
+        }
+        return content_fingerprint("combined_report", tuple(sorted(report_fps.items())))
 
     rows = read_dataset_rows(args.csv, cfg.sampling.num_proteins)
     rows_by_id: dict = {}
@@ -970,19 +1184,30 @@ def main(argv: Sequence[str] | None = None) -> None:
         if stage in BUILD_SCOPED_STAGES:
             for build in builds:
                 key = _stage_key(stage, build)
-                if key in state["completed_stages"] and not args.force:
-                    print(f"skip {key} (already completed; pass --force to redo)")
+                if stage == "align":
+                    fingerprint = align_fingerprint(build)
+                elif stage == "exact_match":
+                    fingerprint = exact_match_fingerprint(build)
+                else:  # "report"
+                    fingerprint = report_fingerprint(build)
+
+                if not args.force and _stage_is_valid(state, key, fingerprint):
+                    print(f"skip {key} (already completed with matching inputs; pass --force to redo)")
                     continue
+                if key in state["completed_stages"] and state.get("stage_fingerprints", {}).get(key) != fingerprint:
+                    print(f"{key}: declared inputs/config/reference/authorization changed since it last completed; re-running")
 
                 build_dir = _build_dir(args.output_dir, build)
                 if stage == "align":
                     align_record = stage_align(
                         cfg,
+                        build=build,
                         build_output_dir=build_dir,
                         allow_mapping=args.allow_mapping,
                         host_role=args.host_role,
                         threads=args.threads,
                         reference=references.get(build),
+                        reference_manifest=reference_manifests.get(build),
                         reads_fasta=_prepare_mapping_reads(args.output_dir),
                         dry_run=args.dry_run,
                     )
@@ -997,11 +1222,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                 elif stage == "exact_match":
                     exact_match_record = stage_exact_match(
                         cfg,
+                        build=build,
                         build_output_dir=build_dir,
                         allow_mapping=args.allow_mapping,
                         host_role=args.host_role,
                         threads=args.threads,
                         reference=references.get(build),
+                        reference_manifest=reference_manifests.get(build),
                         reads_fasta=_prepare_mapping_reads(args.output_dir),
                         align_record=align_records.get(build, {"executed": False}),
                         dry_run=args.dry_run,
@@ -1028,13 +1255,22 @@ def main(argv: Sequence[str] | None = None) -> None:
                     retryable = False
 
                 if not retryable:
-                    state["completed_stages"].append(key)
+                    _mark_stage_complete(state, key, fingerprint)
             _save_state(state_path, state)
             continue
 
-        if stage in state["completed_stages"] and not args.force:
-            print(f"skip {stage} (already completed; pass --force to redo)")
+        if stage == "preflight":
+            fingerprint = preflight_fingerprint()
+        elif stage == "combined_report":
+            fingerprint = combined_report_fingerprint()
+        else:  # "sample", "decode", "controls"
+            fingerprint = base_fingerprint
+
+        if not args.force and _stage_is_valid(state, stage, fingerprint):
+            print(f"skip {stage} (already completed with matching inputs; pass --force to redo)")
             continue
+        if stage in state["completed_stages"] and state.get("stage_fingerprints", {}).get(stage) != fingerprint:
+            print(f"{stage}: declared inputs/config changed since it last completed; re-running")
 
         if stage == "preflight":
             stage_preflight(
@@ -1066,19 +1302,29 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif stage == "combined_report":
             if sample is None:
                 raise SystemExit("combined_report stage requires sample stage state; run --stage sample first")
-            stage_combined_report(sample, cfg=cfg, output_dir=args.output_dir, builds=builds)
+            stage_combined_report(
+                sample,
+                cfg=cfg,
+                output_dir=args.output_dir,
+                builds=builds,
+                reference_manifests=reference_manifests,
+            )
 
-        state["completed_stages"].append(stage)
+        _mark_stage_complete(state, stage, fingerprint)
         _save_state(state_path, state)
 
     _write_provenance(
+        cfg=cfg,
         output_dir=args.output_dir,
         csv_path=args.csv,
         config_path=args.config,
+        dataset_audit_path=args.dataset_audit,
+        proteins_config_path=args.proteins_config,
         builds=builds,
         align_records=align_records,
         exact_match_records=exact_match_records,
         reference_manifests=reference_manifests,
+        state=state,
     )
 
     if args.dry_run:

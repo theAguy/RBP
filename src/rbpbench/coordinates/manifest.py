@@ -12,6 +12,55 @@ from rbpbench.data.audit import sha256_file
 
 SCHEMA_VERSION = 1
 
+REQUIRED_REFERENCE_MANIFEST_FIELDS = (
+    "build_id",
+    "assembly_accession",
+    "source_url",
+    "contig_categories_included",
+    "byte_size",
+    "sha256",
+)
+
+
+def validate_reference_manifest(manifest: dict, *, build: str, reference: Path) -> tuple[str, ...]:
+    """Validate a supplied reference-manifest dict against the real reference
+    file before real mapping/exact-match is allowed to use it.
+
+    A manifest is not merely present-or-absent evidence: its declared
+    ``build_id``, ``byte_size``, and ``sha256`` must actually match the
+    reference file this run is about to submit to the mapper, so a stale or
+    mismatched manifest cannot be silently attributed to the wrong reference.
+    Returns an empty tuple when the manifest is valid, else the violations.
+    """
+    violations: list[str] = []
+    for field_name in REQUIRED_REFERENCE_MANIFEST_FIELDS:
+        if field_name not in manifest or manifest[field_name] in (None, ""):
+            violations.append(f"reference manifest missing required field {field_name!r}")
+    if violations:
+        return tuple(violations)
+
+    if manifest["build_id"] != build:
+        violations.append(
+            f"reference manifest build_id {manifest['build_id']!r} does not match requested build {build!r}"
+        )
+
+    reference = Path(reference)
+    if not reference.is_file():
+        violations.append(f"reference file not found at {reference}")
+        return tuple(violations)
+
+    actual_size = reference.stat().st_size
+    if manifest["byte_size"] != actual_size:
+        violations.append(
+            f"reference manifest byte_size {manifest['byte_size']} does not match actual size {actual_size}"
+        )
+    actual_sha256 = sha256_file(reference)
+    if manifest["sha256"] != actual_sha256:
+        violations.append(
+            f"reference manifest sha256 {manifest['sha256']!r} does not match actual hash {actual_sha256!r}"
+        )
+    return tuple(violations)
+
 
 @dataclass(frozen=True)
 class ReferenceManifestEntry:

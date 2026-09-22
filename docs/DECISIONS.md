@@ -102,3 +102,41 @@
   (`intron_lengths`) from blocks merely merged by collinearity, and supports
   an optional reference-lookup canonical-junction diagnostic
   (`rbpbench.coordinates.reference`).
+
+## 2026-09-22 — Task 001A acceptance-blocker corrections (round three)
+
+- Planning review found four remaining end-to-end blockers after round two:
+  a planning-only run could still permanently block a later, differently-
+  authorized real run in the same output directory (and a changed CSV/
+  config/reference was not detected either); the canonical-junction
+  reference lookup still loaded the whole FASTA into memory; several
+  scientific-report tables leaked controls into scientific denominators,
+  collapsed mode-specific retention into one rescue-aware number, absolute-
+  valued a signed retention gap, never reported BWA-vs-SeqKit discordance,
+  and compared raw hg19/hg38 coordinates as if they were equivalent; and
+  provenance did not hash several declared inputs/generated artifacts,
+  did not require or validate reference manifests, and did not bind itself
+  to restart state. All four were fixed as implementation/robustness
+  corrections; no scientific threshold, contig policy, mapper selection, or
+  sampling design changed.
+- Restart-state validity is now fingerprint-based
+  (`state.json`'s `stage_fingerprints`): every stage's skip/re-run decision
+  compares a fingerprint of its current declared inputs/config/reference/
+  authorization against the fingerprint recorded when it last completed,
+  rather than trusting "already in completed_stages" alone.
+- `rbpbench.coordinates.reference` gained `IndexedFastaReader` and
+  `prepare_reference_index` (a samtools-`faidx`-style sequential index
+  preparation/checking workflow); `stage_report` uses these for the
+  canonical-junction lookup instead of loading the reference whole.
+- `rbpbench.coordinates.summaries` now excludes controls from every
+  scientific mapping-quality/strand-locus/near-tied/retention/build-
+  comparison table (control_alerts remains the one control-including
+  table), reports retention separately for combined/primary/splice-only
+  "usable" definitions, preserves signed retention gaps, reports BWA-vs-
+  SeqKit exact-match discordance, and compares builds by terminal-category
+  change rather than raw coordinates (no liftover is performed).
+- Reference manifests are now required and validated
+  (`rbpbench.coordinates.manifest.validate_reference_manifest`) before real
+  mapping/exact-match; `provenance.json` now hashes the dataset audit,
+  `configs/proteins.tsv`, and every generated artifact, includes index
+  provenance, and is bound to `state["stage_fingerprints"]`.

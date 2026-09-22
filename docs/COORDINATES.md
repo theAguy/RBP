@@ -38,22 +38,55 @@ execution steps with a required planning-review checkpoint between them.
   `run_preflight` bound to the detected OS/architecture, resource limits,
   pinned tool versions, and hashes of that exact reference/reads pair —
   declaring `--host-role=approved_mac` is never by itself sufficient, and
-  this cannot be bypassed by omitting the explicit `preflight` stage.
+  this cannot be bypassed by omitting the explicit `preflight` stage. A
+  `--reference-manifest <build>=<path.json>` is *required* (not merely
+  recorded when present) for real execution and is validated against the
+  real reference file's build ID, byte size, and SHA-256 before anything
+  runs (`rbpbench.coordinates.manifest.validate_reference_manifest`).
   `--dry-run` is an absolute guard checked first in both stages: no external
   mapping/exact-match subprocess can ever execute under it, and a stage that
   was authorized but did not actually execute (dry run, failed preflight, a
   missing binary) is never recorded as completed, so a later real run can
   still retry it.
-- Every real mapping/exact-match run's input hashes, resolved binary
-  hashes/versions, commands, output hashes, elapsed time, peak memory, and
-  any supplied `--reference-manifest` metadata are recorded per build inside
-  `align.json`/`exact_match.json` and rolled up into a top-level
-  `provenance.json` (`rbpbench.coordinates.provenance`), refreshed on every
-  invocation.
+- Restart-state validity: every stage's skip-or-rerun decision is bound to a
+  fingerprint of its declared inputs/config/reference/authorization (see
+  `state.json`'s `stage_fingerprints`), not merely "did this key already
+  run". A planning-only (unauthorized or dry-run) attempt's fingerprint
+  always differs from a later authorized real attempt's, so it can never
+  block that later run merely by having been recorded as completed; the same
+  mechanism invalidates `sample`/`decode`/`controls`/`preflight`/`align`/
+  `exact_match`/`report`/`combined_report` whenever the declared CSV,
+  config, or a build's reference changes.
+- The canonical-junction diagnostic's reference lookup uses indexed random
+  access (`rbpbench.coordinates.reference.IndexedFastaReader`, backed by
+  `prepare_reference_index`'s sequential index preparation/checking
+  workflow — a `.fai`-style index built with one sequential pass, reused
+  only when it matches the reference's current hash), never a whole-file
+  load, so it is suitable for an hg38/hg19-scale reference.
+- Every real mapping/exact-match run's declared-input hashes (dataset CSV,
+  config, dataset audit, protein config), resolved binary hashes/versions,
+  commands, index commands/hashes/sizes, output hashes, elapsed time, peak
+  memory, generated-artifact hashes (sample IDs, mappings, reports, FASTAs),
+  and reference-manifest metadata are recorded per build inside
+  `align.json`/`exact_match.json`/`reference_index.json` and rolled up into
+  a top-level `provenance.json` (`rbpbench.coordinates.provenance`),
+  refreshed on every invocation and bound to the current
+  `state["stage_fingerprints"]` so stale outputs can never be mistaken for
+  current ones.
 - Sampled assignments are persisted to `sample_state.json`, and each build's
   `align.json`/`exact_match.json` under `<output-dir>/<build>/` are reloaded
   on every invocation, so a later stage can resume in a brand-new process,
   not only later in the same one.
+- The scientific report tables (`rbpbench.coordinates.summaries`) exclude
+  controls from every mapping-quality, strand/locus, near-tied, retention,
+  and build-comparison denominator, retaining them only in `control_alerts`;
+  report BWA-vs-SeqKit exact-match discordance; report retention separately
+  for the combined (rescue-aware), primary-only, and splice-only definitions
+  of "usable"; preserve the *signed* positive-minus-negative retention gap
+  (alerts use the absolute gap only for the threshold decision); and, since
+  hg19/hg38 coordinates are not directly comparable without a liftover step
+  this pipeline does not perform, compare builds by terminal-category change
+  rather than raw coordinates.
 - Importing any module in this package, or running the unit test suite,
   never downloads anything and never invokes `bwa`/`minimap2`/`seqkit`
   without those explicit flags and a real `--reference`.
@@ -72,10 +105,11 @@ execution steps with a required planning-review checkpoint between them.
   pinned tool versions, and hashed required inputs, re-checked fresh before
   every real execution — declaring `host_role` is never by itself
   sufficient.
-- `rbpbench.coordinates.reference.load_fasta_sequences` loads a whole FASTA
-  into memory, which is adequate for 001A's tiny fixtures only; 001B must
-  replace it with indexed (e.g. `samtools faidx`) random access before
-  pointing the canonical-junction diagnostic at a real hg38/hg19 FASTA.
+- `rbpbench.coordinates.reference.load_fasta_sequences` (whole-file load)
+  remains for small FASTAs only (this package's own sample/control
+  sequences); the canonical-junction diagnostic already uses indexed
+  (`IndexedFastaReader`/`prepare_reference_index`) access suitable for a
+  real hg38/hg19 FASTA.
 - Produce `<output-dir>/<build>/mappings.tsv.gz` and per-build `report.json`
   plus the top-level combined `report.json`/`report.md` with the real
   mapping-quality tables, and have a human reviewer set the Phase 2

@@ -514,7 +514,12 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
 
                 combined_before = json.loads((output_dir / "report.json").read_text())
                 self.assertIsNone(combined_before["per_build"]["hg38"]["retention"]["combined"]["by_contig_category"])
-                first_mapping_hash = sha256_file(output_dir / "hg38" / "mappings.tsv.gz")
+                # Compare decompressed content, not the raw .gz bytes: gzip
+                # embeds a write-time mtime in its header, so byte-identical
+                # TSV content re-written a second later still hashes
+                # differently at the file level.
+                with gzip.open(output_dir / "hg38" / "mappings.tsv.gz", "rt") as handle:
+                    first_mapping_rows = handle.read()
 
                 # FASTA is untouched; only contig_categories metadata is
                 # added to the manifest (still describing the same,
@@ -533,7 +538,9 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
             # Mapping content is unaffected (same reference/reads); the
             # manifest-only change still legitimately re-ran align per the
             # fingerprint design, but the actual mapping result is identical.
-            self.assertEqual(sha256_file(output_dir / "hg38" / "mappings.tsv.gz"), first_mapping_hash)
+            with gzip.open(output_dir / "hg38" / "mappings.tsv.gz", "rt") as handle:
+                second_mapping_rows = handle.read()
+            self.assertEqual(second_mapping_rows, first_mapping_rows)
 
             combined_after = json.loads((output_dir / "report.json").read_text())
             by_contig = combined_after["per_build"]["hg38"]["retention"]["combined"]["by_contig_category"]

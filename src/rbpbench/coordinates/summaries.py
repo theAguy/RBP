@@ -207,22 +207,26 @@ def control_alert(rows_by_id: dict[str, dict], *, usable_categories: frozenset) 
 def exact_match_discordance(primary_by_id: dict[str, dict]) -> dict:
     """BWA-MEM-vs-SeqKit exact-match discordance (parent task: "Report
     discordance between BWA-MEM and the exact matcher"). A row is discordant
-    when BWA-MEM's best primary alignment is a perfect (100% coverage, 100%
-    identity) unique candidate but SeqKit's independent exact-substring
-    search found other than exactly one genomic occurrence. ``primary_by_id``
-    must already be control-excluded (see :func:`exclude_controls`).
+    when BWA-MEM's best primary alignment is a genuine exact-uniqueness
+    *candidate* (100% coverage/identity AND no plausible distinct secondary
+    locus — ``bwa_perfect_unique_candidate``, never merely
+    ``bwa_best_is_perfect``: a read with two perfect BWA loci is
+    ``ambiguous``, not a uniqueness candidate, regardless of what SeqKit
+    reports) but SeqKit's independent exact-substring search found other
+    than exactly one genomic occurrence. ``primary_by_id`` must already be
+    control-excluded (see :func:`exclude_controls`).
     """
-    total_bwa_perfect = 0
+    total_bwa_perfect_unique_candidates = 0
     discordant: list[dict] = []
     for sample_id, row in primary_by_id.items():
-        if str(row.get("bwa_perfect_unique", "")).strip().lower() != "true":
+        if str(row.get("bwa_perfect_unique_candidate", "")).strip().lower() != "true":
             continue
-        total_bwa_perfect += 1
+        total_bwa_perfect_unique_candidates += 1
         occurrence_count = _int_or_none(row.get("exact_occurrence_count"))
         if occurrence_count is not None and occurrence_count != 1:
             discordant.append({"sample_id": sample_id, "exact_occurrence_count": occurrence_count})
     return {
-        "total_bwa_perfect_unique": total_bwa_perfect,
+        "total_bwa_perfect_unique_candidates": total_bwa_perfect_unique_candidates,
         "discordant_count": len(discordant),
         "discordant_sample_ids": sorted(d["sample_id"] for d in discordant),
     }

@@ -23,7 +23,7 @@ from rbpbench.coordinates.sequence_stats import gc_decile, low_complexity_decile
 
 def _row(sample_id, mode, category, *, is_control=False, chrom="chr1", start="0", end="20", strand="+",
          coverage="1.000000", identity="1.000000", near_tied_fractions="",
-         exact_occurrence_count="", bwa_perfect_unique=""):
+         exact_occurrence_count="", bwa_best_is_perfect="", bwa_perfect_unique_candidate=""):
     return {
         "sample_id": sample_id,
         "is_control": str(is_control),
@@ -37,19 +37,22 @@ def _row(sample_id, mode, category, *, is_control=False, chrom="chr1", start="0"
         "identity": identity,
         "near_tied_fractions": near_tied_fractions,
         "exact_occurrence_count": exact_occurrence_count,
-        "bwa_perfect_unique": str(bwa_perfect_unique) if bwa_perfect_unique != "" else "",
+        "bwa_best_is_perfect": str(bwa_best_is_perfect) if bwa_best_is_perfect != "" else "",
+        "bwa_perfect_unique_candidate": (
+            str(bwa_perfect_unique_candidate) if bwa_perfect_unique_candidate != "" else ""
+        ),
     }
 
 
 PRIMARY_ROWS = [
     _row("row_0", "primary", "exact_unique", start="0", end="20", coverage="1.0", identity="1.0",
-         exact_occurrence_count="1", bwa_perfect_unique=True),
+         exact_occurrence_count="1", bwa_best_is_perfect=True, bwa_perfect_unique_candidate=True),
     _row("row_1", "primary", "low_quality", start="100", end="120", coverage="0.5", identity="0.9"),
     _row("row_2", "primary", "ambiguous", start="200", end="220", coverage="0.95", identity="0.96",
          near_tied_fractions="0.05;0.1"),
     _row("row_3", "primary", "unmapped", chrom="", start="", end="", strand="", coverage="", identity=""),
     _row("control_row_0", "primary", "exact_unique", is_control=True, start="300", end="320",
-         exact_occurrence_count="1", bwa_perfect_unique=True),
+         exact_occurrence_count="1", bwa_best_is_perfect=True, bwa_perfect_unique_candidate=True),
 ]
 
 SPLICE_ROWS = [
@@ -183,7 +186,7 @@ class BuildPerBuildSummarySchemaTests(unittest.TestCase):
     def test_exact_match_discordance_excludes_controls_and_flags_mismatch(self):
         primary_rows = PRIMARY_ROWS + [
             _row("row_4", "primary", "high_conf_unique", start="400", end="420", coverage="1.0", identity="1.0",
-                 exact_occurrence_count="2", bwa_perfect_unique=True),
+                 exact_occurrence_count="2", bwa_best_is_perfect=True, bwa_perfect_unique_candidate=True),
         ]
         summary = summaries.build_per_build_summary(
             build="hg38",
@@ -197,11 +200,37 @@ class BuildPerBuildSummarySchemaTests(unittest.TestCase):
         )
         discordance = summary["exact_match_discordance"]
         # row_0 (occurrence_count=1, concordant) and row_4 (occurrence_count=2,
-        # discordant) are BWA-perfect-unique; the control is excluded even
-        # though it is also BWA-perfect-unique.
-        self.assertEqual(discordance["total_bwa_perfect_unique"], 2)
+        # discordant) are BWA-perfect-unique *candidates*; the control is
+        # excluded even though it is also a perfect-unique candidate.
+        self.assertEqual(discordance["total_bwa_perfect_unique_candidates"], 2)
         self.assertEqual(discordance["discordant_count"], 1)
         self.assertEqual(discordance["discordant_sample_ids"], ["row_4"])
+
+    def test_two_perfect_bwa_loci_is_ambiguous_not_a_discordance_candidate(self):
+        # Regression: a read with two perfect (100% coverage/identity) BWA
+        # loci is classified ambiguous (a plausible distinct secondary
+        # exists), so bwa_best_is_perfect=True must NOT count it as a
+        # perfect-unique *candidate* for discordance purposes, regardless of
+        # what SeqKit reports.
+        primary_rows = PRIMARY_ROWS + [
+            _row("row_5", "primary", "ambiguous", start="500", end="520", coverage="1.0", identity="1.0",
+                 exact_occurrence_count="2", bwa_best_is_perfect=True, bwa_perfect_unique_candidate=False),
+        ]
+        summary = summaries.build_per_build_summary(
+            build="hg38",
+            primary_rows=primary_rows,
+            splice_rows=SPLICE_ROWS,
+            representative_ids=REPRESENTATIVE_IDS,
+            all_sample_ids=ALL_SAMPLE_IDS,
+            sample_meta=SAMPLE_META,
+            sample_sequences=SAMPLE_SEQUENCES,
+            near_tied_fractions=NEAR_TIED_FRACTIONS,
+        )
+        discordance = summary["exact_match_discordance"]
+        self.assertNotIn("row_5", discordance["discordant_sample_ids"])
+        # Only row_0 and the control are true candidates (2, after control
+        # exclusion only row_0 counts); row_5 must not inflate the total.
+        self.assertEqual(discordance["total_bwa_perfect_unique_candidates"], 1)
 
     def test_retention_reported_separately_for_combined_primary_and_splice(self):
         retention = self.summary["retention"]

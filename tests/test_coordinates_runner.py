@@ -429,6 +429,178 @@ class RestartStateValidityTests(unittest.TestCase):
                 self.assertEqual(align_record["provenance"]["input_hashes"]["reference"], sha256_file(reference))
 
 
+class ReferenceManifestFingerprintTests(unittest.TestCase):
+    """Regression coverage for the follow-on correction: each required
+    reference manifest's own content hash must be part of restart
+    fingerprints, so a manifest-only change (the FASTA itself untouched)
+    invalidates/revalidates align as appropriate, reruns the combined report
+    when contig-category metadata changes, and provenance never attaches a
+    newer manifest to reports actually produced under an older one.
+    """
+
+    def _authorized_common(self, tmp: Path, reference: Path, manifest: Path) -> list:
+        return [
+            "--config", str(FIXTURE_CONFIG),
+            "--csv", str(FIXTURE_CSV),
+            "--output-dir", str(tmp),
+            "--allow-mapping",
+            "--host-role", "approved_mac",
+            "--reference", f"hg38={reference}",
+            "--reference-manifest", f"hg38={manifest}",
+            "--build", "hg38",
+        ]
+
+    def test_manifest_becoming_invalid_while_fasta_unchanged_blocks_align(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / "out"
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = tmp_path / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest_path = tmp_path / "hg38_manifest.json"
+            _write_reference_manifest(manifest_path, build="hg38", reference=reference)
+
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                common = self._authorized_common(output_dir, reference, manifest_path)
+                main([*common, "--stage", "sample"])
+                main([*common, "--stage", "decode"])
+                main([*common, "--stage", "controls"])
+                main([*common, "--stage", "align"])
+                align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+                self.assertTrue(align_record["executed"])
+
+                # The FASTA is byte-for-byte unchanged; only the manifest is
+                # edited to declare a wrong SHA-256 (as if it now describes
+                # a different reference than the one on disk).
+                manifest_payload = json.loads(manifest_path.read_text())
+                manifest_payload["sha256"] = "0" * 64
+                manifest_path.write_text(json.dumps(manifest_payload))
+
+                main([*common, "--stage", "align"])
+
+            align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+            self.assertFalse(align_record["executed"])
+            self.assertIn("manifest", align_record["skip_reason"])
+            self.assertIn("sha256", " ".join(align_record["reference_manifest_validation"]["violations"]))
+            # The invalid attempt's own (rejected) manifest is what's
+            # persisted, not silently kept as the old valid one.
+            self.assertEqual(align_record["reference_manifest"]["sha256"], "0" * 64)
+
+    def test_contig_category_metadata_change_with_unchanged_fasta_reruns_combined_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / "out"
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = tmp_path / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest_path = tmp_path / "hg38_manifest.json"
+            _write_reference_manifest(manifest_path, build="hg38", reference=reference)
+
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                common = self._authorized_common(output_dir, reference, manifest_path)
+                for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
+                    main([*common, "--stage", stage])
+                main([*common, "--build", "hg38", "--stage", "combined_report"])
+
+                combined_before = json.loads((output_dir / "report.json").read_text())
+                self.assertIsNone(combined_before["per_build"]["hg38"]["retention"]["combined"]["by_contig_category"])
+                first_mapping_hash = sha256_file(output_dir / "hg38" / "mappings.tsv.gz")
+
+                # FASTA is untouched; only contig_categories metadata is
+                # added to the manifest (still describing the same,
+                # unchanged reference correctly).
+                manifest_payload = json.loads(manifest_path.read_text())
+                manifest_payload["contig_categories"] = {"chr1": "chromosome"}
+                manifest_path.write_text(json.dumps(manifest_payload))
+
+                for stage in ("align", "exact_match", "report"):
+                    main([*common, "--stage", stage])
+                main([*common, "--build", "hg38", "--stage", "combined_report"])
+
+            align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+            self.assertTrue(align_record["executed"])
+            self.assertEqual(align_record["reference_manifest"]["contig_categories"], {"chr1": "chromosome"})
+            # Mapping content is unaffected (same reference/reads); the
+            # manifest-only change still legitimately re-ran align per the
+            # fingerprint design, but the actual mapping result is identical.
+            self.assertEqual(sha256_file(output_dir / "hg38" / "mappings.tsv.gz"), first_mapping_hash)
+
+            combined_after = json.loads((output_dir / "report.json").read_text())
+            by_contig = combined_after["per_build"]["hg38"]["retention"]["combined"]["by_contig_category"]
+            self.assertIsNotNone(by_contig)
+            self.assertIn("chromosome", by_contig)
+
+            provenance = json.loads((output_dir / "provenance.json").read_text())
+            self.assertEqual(
+                provenance["builds"]["hg38"]["reference_manifest"]["contig_categories"], {"chr1": "chromosome"}
+            )
+
+    def test_provenance_never_attaches_a_newer_manifest_to_an_unrerun_report(self):
+        # A --reference-manifest passed on an invocation that does not
+        # actually re-run align/exact_match for that build must not make
+        # provenance (or the combined report's contig-category retention)
+        # look as though the existing report was produced under it.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / "out"
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            _write_fake_executable(bin_dir, "bwa", _FAKE_BWA)
+            _write_fake_executable(bin_dir, "minimap2", _FAKE_MINIMAP2)
+            _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
+            reference = tmp_path / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest_path = tmp_path / "hg38_manifest.json"
+            _write_reference_manifest(manifest_path, build="hg38", reference=reference)
+
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                common = self._authorized_common(output_dir, reference, manifest_path)
+                for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
+                    main([*common, "--stage", stage])
+
+                original_manifest = json.loads(manifest_path.read_text())
+
+                # A *different* manifest file (new contig_categories) is
+                # passed, but only "combined_report" is requested this
+                # invocation — align/exact_match/report for hg38 are not
+                # re-attempted.
+                other_manifest_path = tmp_path / "hg38_manifest_new.json"
+                other_payload = dict(original_manifest)
+                other_payload["contig_categories"] = {"chr1": "unlocalized_scaffold"}
+                other_manifest_path.write_text(json.dumps(other_payload))
+                argv = [
+                    "--config", str(FIXTURE_CONFIG),
+                    "--csv", str(FIXTURE_CSV),
+                    "--output-dir", str(output_dir),
+                    "--allow-mapping",
+                    "--host-role", "approved_mac",
+                    "--reference", f"hg38={reference}",
+                    "--reference-manifest", f"hg38={other_manifest_path}",
+                    "--build", "hg38",
+                    "--stage", "combined_report",
+                ]
+                main(argv)
+
+            # provenance.json must still attribute hg38's report to the
+            # manifest align actually ran under (no contig_categories),
+            # never the newer one passed on this later, non-reruning call.
+            provenance = json.loads((output_dir / "provenance.json").read_text())
+            self.assertNotIn("contig_categories", provenance["builds"]["hg38"]["reference_manifest"] or {})
+            combined = json.loads((output_dir / "report.json").read_text())
+            self.assertIsNone(combined["per_build"]["hg38"]["retention"]["combined"]["by_contig_category"])
+
+
 class PreflightHardPrerequisiteTests(unittest.TestCase):
     """Regression coverage for review item 1: successful preflight must be a
     hard prerequisite for real alignment/exact-match, bound to detected
@@ -980,7 +1152,8 @@ class ExactMatchDiscordanceEvidenceTests(unittest.TestCase):
                 exact_hits_bed=bed,
             )
             primary_row = next(r for r in rows if r["mode"] == "primary")
-            self.assertEqual(str(primary_row["bwa_perfect_unique"]), "True")
+            self.assertEqual(str(primary_row["bwa_best_is_perfect"]), "True")
+            self.assertEqual(str(primary_row["bwa_perfect_unique_candidate"]), "True")
             self.assertEqual(primary_row["exact_occurrence_count"], 2)
             # Discordant: BWA-perfect but not exactly one SeqKit occurrence,
             # so classification must not be exact_unique.
@@ -988,8 +1161,55 @@ class ExactMatchDiscordanceEvidenceTests(unittest.TestCase):
             self.assertEqual(primary_row["category"], "high_conf_unique")
 
             splice_row = next(r for r in rows if r["mode"] == "splice")
-            self.assertEqual(splice_row["bwa_perfect_unique"], "")
+            self.assertEqual(splice_row["bwa_best_is_perfect"], "")
             self.assertEqual(splice_row["exact_occurrence_count"], "")
+
+    def test_two_perfect_bwa_loci_stays_ambiguous_and_is_not_a_discordance_candidate(self):
+        # Regression: two equally perfect (100% coverage/identity) BWA loci
+        # must classify ambiguous (a plausible distinct secondary exists)
+        # and must NOT be reported as a BWA-vs-SeqKit uniqueness
+        # discordance, even though SeqKit also finds two occurrences (i.e.
+        # even where BWA and SeqKit occurrence counts happen to "agree").
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg = load_config(FIXTURE_CONFIG)
+            length = cfg.sequence_length_nt
+            bwa_sam = tmp_path / "bwa.sam"
+            bwa_sam.write_text(
+                "\n".join(
+                    [
+                        "\t".join(["row_0", "0", "chr1", "1", "60", f"{length}M", "*", "0", "0", "*", "*", "NM:i:0"]),
+                        "\t".join(
+                            ["row_0", "256", "chr2", "1", "0", f"{length}M", "*", "0", "0", "*", "*", "NM:i:0"]
+                        ),
+                    ]
+                )
+                + "\n"
+            )
+            mm2_sam = tmp_path / "mm2.sam"
+            mm2_sam.write_text("@HD\tVN:1.6\n")
+            bed = tmp_path / "hits.bed"
+            bed.write_text("chr1\t0\t{0}\trow_0\t.\t+\nchr2\t0\t{0}\trow_0\t.\t+\n".format(length))
+
+            _, rows = build_mapping_rows(
+                cfg,
+                {"row_0": "representative"},
+                build="hg38",
+                bwa_sam=bwa_sam,
+                minimap2_sam=mm2_sam,
+                exact_hits_bed=bed,
+            )
+            primary_row = next(r for r in rows if r["mode"] == "primary")
+            self.assertEqual(primary_row["category"], "ambiguous")
+            self.assertEqual(str(primary_row["bwa_best_is_perfect"]), "True")
+            self.assertEqual(str(primary_row["bwa_perfect_unique_candidate"]), "False")
+
+            from rbpbench.coordinates import summaries
+
+            primary_by_id = summaries.exclude_controls(summaries.index_rows_by_sample(rows, mode="primary"))
+            discordance = summaries.exact_match_discordance(primary_by_id)
+            self.assertEqual(discordance["total_bwa_perfect_unique_candidates"], 0)
+            self.assertNotIn("row_0", discordance["discordant_sample_ids"])
 
 
 class ProvenanceCompletenessTests(unittest.TestCase):

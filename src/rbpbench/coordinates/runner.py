@@ -48,6 +48,7 @@ from rbpbench.coordinates.alignment import (
     build_candidate_loci,
     classify_primary,
     classify_splice,
+    has_plausible_distinct_secondary,
     near_tied_secondary_fractions,
     parse_sam_line,
 )
@@ -108,7 +109,16 @@ MAPPING_TSV_COLUMNS = (
     # so BWA-vs-SeqKit discordance is auditable rather than collapsed into
     # just a category name (see rbpbench.coordinates.summaries.exact_match_discordance).
     "exact_occurrence_count",
-    "bwa_perfect_unique",
+    # bwa_best_is_perfect: the best BWA locus alone has 100% coverage and
+    # identity (diagnostic only — true even when a second, equally perfect
+    # locus makes the call ambiguous).
+    "bwa_best_is_perfect",
+    # bwa_perfect_unique_candidate: bwa_best_is_perfect AND no plausible
+    # distinct secondary locus — the actual BWA-side precondition for
+    # exact_unique, and the correct field for exact-match discordance
+    # auditing (a read with two perfect BWA loci is ambiguous, not a
+    # uniqueness candidate, regardless of what SeqKit reports).
+    "bwa_perfect_unique_candidate",
     # Full best-secondary evidence (not just chrom/coverage/identity), so a
     # reviewer can audit *why* a row was called ambiguous.
     "best_secondary_chrom",
@@ -431,6 +441,11 @@ def stage_align(
         record["skip_reason"] = f"reference manifest required for real mapping but not provided for build {build!r}"
         _write_json(build_output_dir / "align.json", record)
         return record
+    # Persisted regardless of validation outcome: provenance reads this
+    # back (rather than whatever --reference-manifest happens to be passed
+    # on a *later* invocation) so a report already on disk is never
+    # attributed to a manifest it was not actually produced under.
+    record["reference_manifest"] = reference_manifest
     manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
     record["reference_manifest_validation"] = {"provided": True, "violations": list(manifest_violations)}
     if manifest_violations:
@@ -541,6 +556,7 @@ def stage_exact_match(
         record["skip_reason"] = f"reference manifest required for real exact-match but not provided for build {build!r}"
         _write_json(build_output_dir / "exact_match.json", record)
         return record
+    record["reference_manifest"] = reference_manifest
     manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
     record["reference_manifest_validation"] = {"provided": True, "violations": list(manifest_violations)}
     if manifest_violations:
@@ -708,10 +724,23 @@ def build_mapping_rows(
             mm2_by_query.get(sample_id, ()), total_query_bases=total_query, reference_lookup=reference_lookup
         )
 
-        primary_is_perfect = bool(primary_loci) and primary_loci[0].coverage == 1.0 and primary_loci[0].identity == 1.0
+        # bwa_best_is_perfect is a diagnostic only: the best locus alone
+        # being 100% coverage/identity does not by itself mean BWA-MEM
+        # considers the read uniquely mapped — a second, equally perfect
+        # locus makes the call ambiguous. bwa_perfect_unique_candidate adds
+        # exactly that check, so it (not bwa_best_is_perfect) is the correct
+        # field for exact-match discordance auditing and for confirming
+        # exact uniqueness against SeqKit.
+        bwa_best_is_perfect = bool(primary_loci) and primary_loci[0].coverage == 1.0 and primary_loci[0].identity == 1.0
+        if primary_loci and bwa_best_is_perfect:
+            bwa_perfect_unique_candidate = not has_plausible_distinct_secondary(
+                primary_loci[0], primary_loci[1:], thresholds
+            )
+        else:
+            bwa_perfect_unique_candidate = False
         occurrence_count = exact_occurrence_count(exact_occurrences, sample_id)
         exact_confirmed = exact_unique_confirmed(
-            primary_is_perfect_unique=primary_is_perfect, occurrence_count=occurrence_count
+            primary_is_perfect_unique=bwa_perfect_unique_candidate, occurrence_count=occurrence_count
         )
 
         primary_category = classify_primary(primary_loci, thresholds, exact_confirmed=exact_confirmed)
@@ -729,7 +758,8 @@ def build_mapping_rows(
             # the classification outcome so discordance is auditable, not
             # just implied by which category a row landed in.
             "exact_occurrence_count": occurrence_count,
-            "bwa_perfect_unique": primary_is_perfect,
+            "bwa_best_is_perfect": bwa_best_is_perfect,
+            "bwa_perfect_unique_candidate": bwa_perfect_unique_candidate,
         }
         row.update(_locus_detail(best_primary))
         row.update(_prefixed_locus_detail(second_primary, "best_secondary_"))
@@ -750,7 +780,8 @@ def build_mapping_rows(
             # Exact-substring validation only ever applies to the primary
             # (BWA-MEM) mode; not applicable to the splice-aware diagnostic.
             "exact_occurrence_count": "",
-            "bwa_perfect_unique": "",
+            "bwa_best_is_perfect": "",
+            "bwa_perfect_unique_candidate": "",
         }
         row.update(_locus_detail(best_splice))
         row.update(_prefixed_locus_detail(second_splice, "best_secondary_"))
@@ -1090,9 +1121,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         references[build] = path
 
     reference_manifests: dict[str, dict] = {}
+    reference_manifest_hashes: dict[str, str] = {}
     for spec in args.reference_manifest or ():
         build, path = _parse_key_value_path(spec, flag="--reference-manifest")
         reference_manifests[build] = json.loads(Path(path).read_text())
+        # Hashed from the raw file, not the parsed dict, so any byte-level
+        # edit (including one that leaves the parsed value unchanged, e.g.
+        # whitespace) is still detected — see the fingerprint wiring below.
+        reference_manifest_hashes[build] = sha256_file(Path(path))
 
     cfg = load_config(args.config)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1111,10 +1147,20 @@ def main(argv: Sequence[str] | None = None) -> None:
     base_fingerprint = content_fingerprint("sample_decode_controls", dataset_csv_hash, config_hash)
 
     def align_fingerprint(build: str) -> str:
+        # Includes the reference *manifest's* own content hash (not just the
+        # reference FASTA's), so any manifest-only change — the manifest
+        # becoming invalid (edited sha256/byte_size that no longer matches
+        # the FASTA), or purely-descriptive metadata like contig_categories
+        # changing — invalidates align and forces it to revalidate, rather
+        # than trusting a manifest that was never re-checked against this
+        # exact content. This also means align.json (and therefore
+        # provenance.json's reference_manifest) can never be produced under
+        # one manifest and then silently re-labeled with a newer one.
         return content_fingerprint(
             "align",
             base_fingerprint,
             reference_hashes.get(build),
+            reference_manifest_hashes.get(build),
             args.allow_mapping,
             args.host_role,
             args.threads,
@@ -1141,6 +1187,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "preflight",
             base_fingerprint,
             tuple(sorted(reference_hashes.items())),
+            tuple(sorted(reference_manifest_hashes.items())),
             args.host_role,
             args.allow_mapping,
             args.threads,
@@ -1302,17 +1349,34 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif stage == "combined_report":
             if sample is None:
                 raise SystemExit("combined_report stage requires sample stage state; run --stage sample first")
+            # The manifest each build's align/exact_match actually ran
+            # under (persisted on align.json), not whichever
+            # --reference-manifest this invocation happens to declare: a
+            # build whose align stage was not re-attempted this invocation
+            # must keep contributing its old manifest's contig_categories,
+            # never a newer manifest it was never validated/re-run against.
+            persisted_manifests = {
+                build: align_records.get(build, {}).get("reference_manifest") or reference_manifests.get(build)
+                for build in builds
+            }
             stage_combined_report(
                 sample,
                 cfg=cfg,
                 output_dir=args.output_dir,
                 builds=builds,
-                reference_manifests=reference_manifests,
+                reference_manifests=persisted_manifests,
             )
 
         _mark_stage_complete(state, stage, fingerprint)
         _save_state(state_path, state)
 
+    # Same principle for provenance.json: attribute each build's manifest
+    # from what align/exact_match actually recorded using, not from
+    # whatever --reference-manifest this invocation happens to pass.
+    persisted_reference_manifests = {
+        build: align_records.get(build, {}).get("reference_manifest") or reference_manifests.get(build)
+        for build in builds
+    }
     _write_provenance(
         cfg=cfg,
         output_dir=args.output_dir,
@@ -1323,7 +1387,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         builds=builds,
         align_records=align_records,
         exact_match_records=exact_match_records,
-        reference_manifests=reference_manifests,
+        reference_manifests=persisted_reference_manifests,
         state=state,
     )
 

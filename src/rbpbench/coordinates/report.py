@@ -329,8 +329,8 @@ def render_combined_report_markdown(report: dict) -> str:
         lines.append("### Exact-match discordance (BWA-MEM vs. SeqKit)")
         discordance = summary["exact_match_discordance"]
         lines.append(
-            f"- {discordance['discordant_count']} of {discordance['total_bwa_perfect_unique']} "
-            "BWA-perfect-unique rows disagree with SeqKit's exact-occurrence count"
+            f"- {discordance['discordant_count']} of {discordance['total_bwa_perfect_unique_candidates']} "
+            "BWA-perfect-unique-candidate rows disagree with SeqKit's exact-occurrence count"
         )
         if discordance["discordant_sample_ids"]:
             lines.append(f"  - discordant: {discordance['discordant_sample_ids']}")

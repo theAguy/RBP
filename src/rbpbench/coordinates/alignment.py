@@ -531,6 +531,20 @@ def _is_plausible_distinct_secondary(
     )
 
 
+def has_plausible_distinct_secondary(
+    best: CandidateLocus, candidates: Sequence[CandidateLocus], thresholds: ClassificationThresholds
+) -> bool:
+    """Whether any of ``candidates`` is a plausible distinct secondary locus
+    relative to ``best``. Shared by ``classify_primary``/``classify_splice``
+    and by callers that need the same "is this locus actually unambiguous"
+    evidence outside classification itself (e.g. deciding whether a BWA-MEM
+    perfect locus is a genuine exact-uniqueness *candidate*, not merely the
+    best of several perfect loci — see
+    ``rbpbench.coordinates.runner.build_mapping_rows``).
+    """
+    return any(_is_plausible_distinct_secondary(best, candidate, thresholds) for candidate in candidates)
+
+
 def classify_primary(
     loci: Sequence[CandidateLocus],
     thresholds: ClassificationThresholds,
@@ -544,8 +558,7 @@ def classify_primary(
     meets_high_conf = best.coverage >= thresholds.high_conf_min_coverage and best.identity >= thresholds.high_conf_min_identity
     if not meets_high_conf:
         return "low_quality"
-    has_plausible_secondary = any(_is_plausible_distinct_secondary(best, c, thresholds) for c in loci[1:])
-    if has_plausible_secondary:
+    if has_plausible_distinct_secondary(best, loci[1:], thresholds):
         return "ambiguous"
     if best.coverage == 1.0 and best.identity == 1.0 and exact_confirmed:
         return "exact_unique"
@@ -560,11 +573,11 @@ def classify_splice(loci: Sequence[CandidateLocus], thresholds: ClassificationTh
     meets_high_conf = best.coverage >= thresholds.high_conf_min_coverage and best.identity >= thresholds.high_conf_min_identity
     if not meets_high_conf:
         return "low_quality"
-    has_plausible_secondary = any(_is_plausible_distinct_secondary(best, c, thresholds) for c in loci[1:])
+    has_secondary = has_plausible_distinct_secondary(best, loci[1:], thresholds)
     spliced = best.has_intron
     if spliced:
-        return "spliced_ambiguous" if has_plausible_secondary else "spliced_unique"
-    return "unspliced_ambiguous" if has_plausible_secondary else "unspliced_unique"
+        return "spliced_ambiguous" if has_secondary else "spliced_unique"
+    return "unspliced_ambiguous" if has_secondary else "unspliced_unique"
 
 
 def is_usable_unique(primary_category: str, splice_category: str | None) -> bool:

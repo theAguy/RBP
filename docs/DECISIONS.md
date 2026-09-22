@@ -140,3 +140,31 @@
   mapping/exact-match; `provenance.json` now hashes the dataset audit,
   `configs/proteins.tsv`, and every generated artifact, includes index
   provenance, and is bound to `state["stage_fingerprints"]`.
+
+## 2026-09-22 — Task 001A acceptance-blocker corrections (round four)
+
+- Planning review found two narrowly-scoped correctness issues after round
+  three: `bwa_perfect_unique` meant only "best BWA locus is 100%
+  coverage/identity", so a read with two perfect BWA loci (correctly
+  classified `ambiguous`) was still marked perfect-unique and counted as
+  BWA-vs-SeqKit discordant; and reference-manifest content was not part of
+  restart fingerprints, so a manifest-only edit (the FASTA itself
+  unchanged) did not invalidate/revalidate `align`, and a stale manifest
+  could be attributed to reports it did not actually produce.
+- `alignment.has_plausible_distinct_secondary` is now a shared, public
+  helper (factored out of `classify_primary`/`classify_splice`).
+  `runner.build_mapping_rows` renamed the diagnostic-only flag to
+  `bwa_best_is_perfect` and added the correctly-computed
+  `bwa_perfect_unique_candidate` (best perfect AND no plausible distinct
+  secondary), which `summaries.exact_match_discordance` now keys off.
+- `align_fingerprint`/`preflight_fingerprint` now include each build's
+  reference-manifest file hash, so any manifest change (invalid or purely
+  descriptive, e.g. `contig_categories`) invalidates and forces
+  `align`/`exact_match`/`report`/`combined_report` to revalidate/rerun via
+  the existing fingerprint chain. `align.json`/`exact_match.json` now
+  persist the exact manifest dict they ran under; `provenance.json` and
+  `combined_report`'s contig-category retention read that persisted
+  manifest (never the CLI's current `--reference-manifest`) so a build
+  whose align stage was not re-attempted this invocation keeps attributing
+  its old manifest, never a newer one it was never validated/re-run
+  against.

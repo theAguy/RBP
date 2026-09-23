@@ -168,3 +168,23 @@
   whose align stage was not re-attempted this invocation keeps attributing
   its old manifest, never a newer one it was never validated/re-run
   against.
+
+## 2026-09-23 — Task 001B second-review reconciliation
+
+- All twelve required second-review findings were accepted. They concern
+  execution safety and provenance at the Task 001A/001B seam; no sampling,
+  classification, retention, or Phase 1 scientific threshold changed.
+- Real mapping is single-build-only. Mapper indices live under exact
+  build-specific disposable directories; minimap2 uses a verified one-part
+  `splice:sr` index (`k=15`, `w=5`, non-HPC, `-I 8G`), and external-tool
+  stderr is retained and hashed.
+- `hg38` and `hg19` are internal study labels for the pinned RefSeq
+  GRCh38.p14 and GRCh37.p13 primary assemblies, not UCSC reference packages.
+  The GRCh37 mitochondrial difference is an accepted, reportable deviation.
+- The 30-GiB ceiling is enforced through a baseline, projected artifact
+  ledger, per-step measurements, and output stops. Expected input hashes are
+  compared before data access; successful checkpoint evidence is protected
+  against destructive planning or failed retries.
+- Only checkpoint B1 is authorized next. Human references, the real CSV, and
+  real mapping remain prohibited until their later checkpoint gates are
+  separately approved.

@@ -1,6 +1,7 @@
 # Task 001B — Coordinate-feasibility execution
 
-**Status:** proposed for second review; execution not yet authorized
+**Status:** second review reconciled; B1 readiness work may begin only from its
+bounded executor handoff
 **Parent:** `001_coordinate_recovery_feasibility.md`
 **Depends on:** accepted Task 001A, merged as `ad36864`
 **Branch:** `issue-001b-coordinate-execution`
@@ -24,6 +25,9 @@ than inputs to the submitted model.
   review.
 - Scientific constants in `configs/coordinate_feasibility.toml` are frozen.
   Any proposed change stops execution and requires a recorded decision.
+- The labels `hg38` and `hg19` are pipeline study labels for the RefSeq
+  GRCh38.p14 and GRCh37.p13 primary assemblies specified below. They do not
+  mean that UCSC hg38/hg19 FASTA content or naming is being used.
 - Real work runs only on the approved local Darwin/x86_64 Mac. At planning
   time it had approximately 152 GiB free disk; the real preflight must still
   re-measure RAM and disk immediately before each expensive step.
@@ -40,8 +44,18 @@ than inputs to the submitted model.
 - Study configuration: `configs/coordinate_feasibility.toml`, expected SHA-256
   `91c88168225648d16835f0a0d322dcb0317ce9baaa4a4a8bdb4907f917b4ec5c`.
 - Tools: BWA 0.7.19, minimap2 2.31, SeqKit 2.13.0, Python 3.11.
+- Frozen minimap2 index settings: preset `splice:sr`, `k=15`, `w=5`, HPC
+  minimizers disabled, and one-part batch limit `-I 8G`. The required command
+  shape is `minimap2 -x splice:sr -I 8G -d INDEX REFERENCE`, with the preset
+  before `-d`. The installed 2.31 binary must independently confirm these
+  resolved settings before a human reference is indexed.
 - Maximum mapping/indexing threads: 4.
 - Peak new disk: at most 30 GiB, while leaving at least 80 GiB free.
+- Pinned paths, all resolved under the repository filesystem:
+  - execution outputs: `artifacts/coordinate_feasibility/`;
+  - downloaded sources: `references/sources/<assembly>/`;
+  - derived references: `references/derived/<build>/reference.fna`;
+  - disposable mapper indices: `indices/<build>/`.
 
 ## Proposed official reference sources
 
@@ -79,6 +93,12 @@ These source FASTAs contain alternate and patch sequences and therefore are not
 used directly. A deterministic filter must derive matched references from the
 assembly reports.
 
+The recorded size and MD5 values are authoritative plan inputs, not advisory
+observations. B3/B5 must compare both the downloaded file and the live
+`md5checksums.txt` entry with these values. Any disagreement is a hard stop and
+requires a recorded decision in `docs/DECISIONS.md`; silent re-pinning is
+prohibited.
+
 ## Frozen derived-reference policy
 
 Include records whose assembly-report sequence role is one of:
@@ -106,7 +126,17 @@ The derivation must be streaming and deterministic. It must verify that:
 Each reference manifest must include at least the fields already enforced by
 `rbpbench.coordinates.manifest`, plus source compressed size/SHA-256/upstream
 MD5, assembly-report hashes, derivation command and Git commit, a complete
-contig list, and `contig_categories` keyed by the actual FASTA identifiers.
+contig list, and `contig_categories` keyed by the actual FASTA identifiers. It
+must also contain an accession-to-assembly-chromosome-name table and base counts
+by uppercase, lowercase, and ambiguous symbol so masking status is classified
+as `soft`, `hard`, or `none`.
+
+Accepted naming/content deviation: the `hg19` study label means the RefSeq
+GRCh37.p13 assembly, not the UCSC hg19 package. In particular, RefSeq
+GRCh37.p13 uses mitochondrial accession `NC_012920.1` (rCRS), whereas UCSC
+hg19's `chrM` is based on `NC_001807.4`. This difference is intentional and
+must be repeated in the final report so a build-rate difference is not
+misattributed.
 
 ## Required readiness work before real downloads
 
@@ -114,31 +144,89 @@ Task 001A intentionally stopped before reference acquisition and mapper-index
 preparation. Before downloading a genome, the executor must implement and test
 the missing 001B execution layer on tiny fixtures:
 
-1. A checked-in reference-source specification for the two sources above.
+1. A checked-in execution-source specification for the two references above
+   and the frozen dataset/audit/protein/config hashes. The runner must compare
+   expected and observed hashes before opening the real CSV or starting any
+   reference work; hashing for a fingerprint without an equality check is not
+   sufficient.
 2. A restart-safe downloader that writes to a temporary name and atomically
    promotes only after upstream MD5 and local SHA-256 verification.
 3. A streaming assembly-report/FASTA filter implementing the frozen contig
    policy and producing the required manifest.
 4. Explicit mapper-index preparation and provenance:
-   - `bwa index` output files, commands, hashes, sizes, elapsed time, and peak
-     memory;
-   - a minimap2 `.mmi` produced with the mapping-compatible preset/options,
-     with command, hashes, sizes, elapsed time, and peak memory;
+   - `bwa index -p indices/<build>/<build> ...`, with output files, commands,
+     hashes, sizes, elapsed time, and peak memory; add a build-keyed
+     `--bwa-index-prefix` runner argument and pass that prefix to `bwa mem`
+     instead of the FASTA;
+   - one minimap2 `.mmi` produced with the frozen `splice:sr`, `k=15`, `w=5`,
+     non-HPC, and `-I 8G` settings, with command, hashes, sizes, elapsed time,
+     peak memory, and verified one-part status;
    - runner support for using the prepared minimap2 index while continuing to
      use the matching FASTA for BWA, SeqKit, manifest validation, and junction
-     lookup.
-5. Restart fingerprints that include the prepared mapper-index hashes and do
-   not accept an index created from another FASTA or incompatible parameters.
-6. Cleanup that targets only an explicit build-specific index directory and
-   occurs only after hashes/provenance and required mapping outputs exist.
-7. A real-binary tiny smoke test confirming the installed SeqKit 2.13.0
-   contract: `locate --use-fmi --bed --pattern-file`, BED6 columns, both
-   strands in one invocation, and no double counting.
-8. Focused tests for download interruption, checksum failure, reference
-   filtering, missing/foreign/stale index rejection, restart behavior, and
-   cleanup target safety.
+     lookup;
+   - creation-time index manifests containing SHA-256 and byte size for every
+     index file. Restart checks may use unchanged size/mtime to avoid needless
+     multi-gigabyte rehashing, but any change forces full hash verification
+     against the creation-time manifest.
+5. Capture stdout and stderr separately for every external tool invocation and
+   hash both. Never send mapper stderr to `DEVNULL`. Treat minimap2's
+   `indexing parameters ... overridden` warning, any multi-part-index warning,
+   or a resolved `k/w/H` mismatch as a failed run.
+6. Restart fingerprints that include the current reference, manifest, BWA
+   prefix/index manifest, and minimap2 index manifest. `exact_match` and
+   `report` must compare the current reference hash with the one recorded by
+   `align` and fail closed on disagreement; `report` must do the same against
+   `exact_match`. No stage may silently attach a current reference or manifest
+   to older mapping evidence.
+7. Preserve accepted checkpoint evidence. If an existing `align.json` or
+   `exact_match.json` says `executed: true`, a dry run, failed preflight,
+   missing index, or other non-executed attempt must fail without overwriting
+   it. Successful replacements remain atomic and fingerprint-bound.
+8. Cleanup that removes exactly `indices/<build>/` only after index hashes,
+   provenance, successful mapping outputs, and successful reconciliation are
+   present. It must refuse symlinks; refuse a target equal to, above, or
+   containing the reference or output directory; show the resolved deletion
+   list first; and contain nothing irreplaceable in an index directory.
+9. A failed reconciliation must make the runner exit nonzero. The review gate
+   nevertheless checks `reconciliation.status == "passed"` in `report.json`,
+   rather than trusting the process exit code alone.
+10. Real mapping authorization must accept exactly one `--build`; the runner
+    must reject `--allow-mapping` with zero or multiple explicit builds.
+11. A real-binary tiny smoke test confirming the installed SeqKit 2.13.0
+    contract: `locate --use-fmi --bed --pattern-file`, BED6 columns, both
+    strands in one invocation, no double counting, and `--ignore-case` across
+    a lowercase/uppercase boundary in a soft-masked fixture.
+12. Focused tests for download interruption, checksum failure, reference
+    filtering/masking, missing/foreign/stale/multipart indices, captured
+    stderr, reference/report mismatch, protected executed records, single-build
+    authorization, failed-reconciliation exit status, restart behavior, disk
+    budgeting, and cleanup target safety.
 
 No scientific thresholds or mapper parameters may change during this work.
+
+### Disk-budget ledger
+
+The 30-GiB limit is measured from a recorded B1 baseline across every volume
+used by the pinned paths. These are conservative planning allowances, not
+claims about final file sizes:
+
+| Material simultaneously present at the B6 peak | Allowance |
+|---|---:|
+| Two compressed source packages and assembly metadata | 2.0 GiB |
+| Two derived references plus FASTA indices | 6.5 GiB |
+| Preserved hg38 SAM/BED/report outputs | 4.0 GiB |
+| Active-build BWA index | 5.5 GiB |
+| Active-build minimap2 index | 7.0 GiB |
+| Active hg19 SAM/BED/report outputs | 4.0 GiB |
+| Environment, manifests, logs, and temporary-file margin | 1.0 GiB |
+| **Projected peak** | **30.0 GiB** |
+
+B1 must implement a fail-closed projected-peak check before every download,
+derivation, indexing, or mapping subprocess and record observed new bytes and
+free space afterward. Mapper/exact-match output writers must enforce their
+combined 4.0-GiB build allowance as a stop, never use a truncated file, and
+retain the failure evidence. If observed sizes invalidate a later projection,
+stop before the next subprocess. Free space must remain at least 80 GiB.
 
 ## Checkpointed execution
 
@@ -156,20 +244,30 @@ Resolve review findings in writing before producing the executor handoff.
 ### B1 — environment and readiness implementation
 
 - Create an isolated project environment; never install globally.
+- Before other environment work, confirm that `osx-64` packages exist for all
+  three pinned tool versions; inability to resolve one is an immediate stop.
 - Resolve the three pinned tool versions and export an explicit environment
-  file plus resolved package/build and binary hashes.
+  file plus resolved package/build and binary hashes. Confirm minimap2 2.31's
+  installed `splice:sr` index settings are `k=15`, `w=5`, and non-HPC.
 - Implement the readiness work above using only tiny synthetic references.
 - Run the complete existing suite plus new tests and real-binary tiny smoke
   tests.
-- Record current host, RAM, CPU, free disk, environment, and tool evidence.
+- Pin the runtime paths to `artifacts/coordinate_feasibility/`, `references/`,
+  and `indices/<build>/`; add `.gitignore` coverage for `*.fa`, `*.fasta`,
+  `*.fna`, `*.fna.gz`, `*.bed`, and `*.tsv.gz` outside already ignored
+  directories.
+- Record machine-readable host, RAM, CPU, `df`, volume identity, baseline disk
+  usage, environment, tool evidence, and the resolved minimap2 index settings.
 
 **Gate:** code review confirms index/reference provenance and destructive
 cleanup safety. No human reference may have been downloaded.
 
 ### B2 — real dataset sampling only
 
-- Verify the three frozen input hashes before reading the dataset.
-- Run only `sample`, `decode`, and `controls` against the real CSV.
+- Run only the explicitly named `sample`, `decode`, and `controls` stages with
+  `--output-dir artifacts/coordinate_feasibility/`; do not use `--stage all`.
+- Fail-closed verification must compare all four frozen dataset/audit/protein/
+  config hashes before reading the dataset.
 - Reconcile exactly 10,000 biological IDs, 5,000 representative IDs, all
   quotas, strict 500-nt round trips, and 100 distinct controls.
 - Record artifact hashes; do not commit the decoded FASTA.
@@ -178,21 +276,31 @@ cleanup safety. No human reference may have been downloaded.
 
 ### B3 — prepare hg38
 
+- Every runner command must name exactly `--build hg38`; the runner must reject
+  accidental multi-build real execution.
 - Re-run resource preflight.
 - Download and verify only the GRCh38.p14 source FASTA/report/checksum listing.
 - Derive and validate the filtered hg38 reference and manifest.
 - Prepare BWA and minimap2 indices in the hg38-specific index directory.
 - Run a tiny real-tool smoke mapping against the prepared hg38 reference.
+- Run SeqKit against the largest hg38 contig with the complete realistic
+  pattern set (10,000 biological queries plus 100 controls). Record wall time,
+  peak RSS, baseline host memory, and output size; stop if projected full-run
+  memory plus host baseline would exceed the physical 16 GiB or the disk/time
+  evidence makes B4 unsafe.
 
 **Gate:** reviewer accepts source/derived hashes, contig policy, index
 provenance, smoke outputs, and observed disk/RAM. Do not yet run the 10,100
-queries.
+queries against the full reference and do not run either aligner on them.
 
 ### B4 — execute and review hg38
 
+- Every runner command must name exactly `--build hg38`; do not use
+  `--stage all` or include hg19.
 - Run hg38 BWA mapping, minimap2 splice mapping, SeqKit exact matching,
   per-build report, and reconciliation through the guarded runner.
-- Require successful reconciliation before cleanup.
+- Require both a zero process exit and `reconciliation.status == "passed"`
+  before cleanup.
 - Hash all outputs, then remove only reproducible hg38 mapper-index caches.
 - Preserve the filtered hg38 FASTA, reference manifest, reports, and raw
   mapping outputs until the combined review is complete.
@@ -203,14 +311,17 @@ exact-match discordance, runtime/memory, and disk before hg19 starts.
 ### B5 — prepare hg19
 
 Repeat B3 for GRCh37.p13 only after the hg38 index cleanup is verified.
+Every runner command must name exactly `--build hg19`.
 
 **Gate:** same preparation review as B3.
 
 ### B6 — execute hg19 and build the combined report
 
-Repeat B4 for hg19, then run `combined_report`. Confirm that every scientific
-table excludes controls except `control_alerts`, all four build/mode
-combinations reconcile, and the report remains recommendation-neutral.
+Repeat B4 with exactly `--build hg19`. Then run `combined_report` as a separate
+non-mapping invocation over the two already accepted per-build reports. Confirm
+that every scientific table excludes controls except `control_alerts`, all four
+build/mode combinations reconcile, and the report remains
+recommendation-neutral.
 
 **Gate:** technical execution accepted; no automatic Phase 2 decision.
 
@@ -228,18 +339,26 @@ manifests, and sanitized reports. Keep source/derived FASTAs, indexes, decoded
 sequences, SAM/PAF/BED outputs, and other large artifacts out of ordinary Git.
 Commit their hashes and local/shared artifact locations instead. The PR must
 state which artifacts another collaborator must obtain to reproduce the run.
+The final report must state the RefSeq-versus-UCSC label/mitochondrial
+difference above and note that pseudoautosomal chrY windows may correctly be
+classified as multi-locus rather than being a mapper defect.
 
 ## Acceptance checks
 
 - Every parent Task 001 acceptance check is satisfied or explicitly marked as
   a documented stop.
 - Tool and binary versions/hashes match the frozen versions.
+- The runner compares all frozen input hashes before reading the CSV.
 - Source files match NCBI upstream MD5 and recorded local SHA-256 hashes.
 - Derived references exactly implement the matched contig policy.
 - BWA/minimap2 indices are tied to the exact derived FASTA and parameters.
+- Minimap2 uses a single-part `splice:sr` index with `k=15`, `w=5`, non-HPC,
+  and `-I 8G`; tool stderr is preserved and hashed.
 - Peak observed new disk stays at or below 30 GiB and free disk never falls
   below 80 GiB.
 - Mapping/indexing uses at most four threads and one genome build at a time.
+- A failed or planning-only retry cannot overwrite a previously executed
+  checkpoint record, and report/reference mismatches fail closed.
 - Sample and report reconciliation passes without missing biological/control
   IDs or unknown categories.
 - Every BWA exact-unique result has independent SeqKit confirmation.
@@ -253,17 +372,23 @@ state which artifacts another collaborator must obtain to reproduce the run.
 Stop immediately and return evidence if:
 
 - any frozen input, source MD5, or recorded SHA-256 mismatches;
+- a live NCBI checksum listing disagrees with the authoritative plan values;
 - the real host is not Darwin/x86_64 with at least 16 GiB RAM;
 - fewer than 80 GiB are free or projected peak new disk exceeds 30 GiB;
 - an exact pinned tool version cannot be resolved in an isolated environment;
 - the two assemblies cannot be filtered under the same contig-role policy;
 - a derived contig is missing, duplicated, unexpected, or has the wrong length;
 - an index cannot be proven to derive from the exact reference and parameters;
+- minimap2 reports an overridden indexing parameter, a multipart index, or
+  settings other than `k=15`, `w=5`, and non-HPC;
 - SeqKit's installed behavior disagrees with the tiny both-strand/BED6 smoke
   contract;
+- the largest-contig SeqKit probe plus measured host baseline projects RAM
+  demand above 16 GiB or makes the full exact-match run unsafe;
 - sampling, decoding, control, or report reconciliation fails;
 - the same mapping/indexing mode fails twice for the same documented reason;
 - cleanup cannot identify a narrow, explicit index-only target;
+- real mapping is requested without exactly one explicit `--build`;
 - the next action would map the full dataset, construct folds, train a model,
   change a scientific threshold, or upload sequences to a service.
 
@@ -275,6 +400,8 @@ Return:
 2. commit hash and branch, if code changed;
 3. exact commands and exit status;
 4. hashes and byte sizes of every input/output touched;
-5. elapsed time, peak memory, and free disk before/after expensive work;
+5. elapsed time, peak memory, machine-readable `df`/memory snapshots, baseline
+   and observed new-disk bytes, and free disk before/after expensive work;
 6. tests and reconciliation results;
-7. stop-condition audit and the exact next action awaiting approval.
+7. resolved minimap2 index parameters and hashed stdout/stderr logs;
+8. stop-condition audit and the exact next action awaiting approval.

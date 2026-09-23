@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -18,6 +19,25 @@ from typing import Callable
 from rbpbench.data.audit import sha256_file
 
 Transport = Callable[[str, Path], None]
+
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+_URLLIB_TIMEOUT_SECONDS = 300
+
+
+def urllib_transport(url: str, dest_path: Path) -> None:
+    """The real network transport (B1-R7): streams ``url`` to ``dest_path``
+    in chunks, never loading the whole (potentially ~1 GB) response into
+    memory. This is the runner's *default* transport for a real B3+
+    checkpoint; B1 never calls it — every B1 test injects a local fake
+    transport instead (see the module docstring), and B1's own
+    authorization boundary forbids requesting any real NCBI URL.
+    """
+    with urllib.request.urlopen(url, timeout=_URLLIB_TIMEOUT_SECONDS) as response, dest_path.open("wb") as handle:
+        while True:
+            chunk = response.read(_DOWNLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            handle.write(chunk)
 
 
 def md5_file(path: Path) -> str:
@@ -115,4 +135,11 @@ def restart_safe_download(
     )
 
 
-__all__ = ["Transport", "DownloadResult", "DownloadVerificationError", "restart_safe_download", "md5_file"]
+__all__ = [
+    "Transport",
+    "DownloadResult",
+    "DownloadVerificationError",
+    "restart_safe_download",
+    "md5_file",
+    "urllib_transport",
+]

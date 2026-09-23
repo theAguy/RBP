@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from rbpbench.coordinates.commands import bwa_index_command, format_command, minimap2_index_command
+from rbpbench.coordinates.commands import bwa_index_command, format_command, minimap2_index_command, resolve_version
 from rbpbench.coordinates.provenance import BinaryProvenance, peak_rss_kib_of_children, resolve_binary_provenance
 from rbpbench.data.audit import sha256_file
 
@@ -176,6 +176,30 @@ def check_minimap2_index_stderr(
     return tuple(violations)
 
 
+def check_minimap2_mapping_stderr(stderr_text: str) -> tuple[str, ...]:
+    """Lightweight fail-closed check for minimap2 *mapping*-time stderr (the
+    ``align`` stage using a prebuilt ``.mmi``), distinct from
+    :func:`check_minimap2_index_stderr` (index-*creation*-time).
+
+    B1-R8: mapping against a prebuilt index can itself re-emit the same
+    parameter-override or multipart-index warnings, and capturing stderr is
+    not equivalent to stopping on it. Unlike the index-creation check, this
+    does *not* require the ``[M::mm_idx_stat]`` resolved-k/w/H line to be
+    present — ordinary mapping-mode stderr from a tiny fixture/fake tool
+    legitimately has none, and full k/w/H re-confirmation is only required at
+    index-creation time — so an empty or unrelated stderr yields no
+    violations, keeping this safe to run unconditionally on every real
+    mapping attempt.
+    """
+    violations: list[str] = []
+    if _OVERRIDE_MARKER in stderr_text.lower():
+        violations.append("minimap2 mapping stderr reports indexing parameters overridden by a prebuilt index")
+    parts = count_minimap2_index_parts(stderr_text)
+    if parts > 1:
+        violations.append(f"minimap2 mapping stderr indicates a {parts}-part index; the frozen policy requires exactly one part")
+    return tuple(violations)
+
+
 def prepare_bwa_index(reference: Path, prefix: Path, *, run_fn=_run) -> IndexBuildProvenance:
     """``bwa index -p prefix reference``, hashing every produced index file
     (``.amb``/``.ann``/``.bwt``/``.pac``/``.sa``) and capturing stdout/stderr
@@ -189,7 +213,11 @@ def prepare_bwa_index(reference: Path, prefix: Path, *, run_fn=_run) -> IndexBui
     cmd = bwa_index_command(reference, prefix)
     stdout_path = prefix.with_name(prefix.name + ".index_stdout.log")
     stderr_path = prefix.with_name(prefix.name + ".index_stderr.log")
-    binary = resolve_binary_provenance("bwa", version=None)
+    # Additional provenance correction: record the actually-detected pinned
+    # version (the same probe used by rbpbench.coordinates.preflight), never
+    # a hardcoded None — two builds can report the same version string while
+    # differing, but recording *no* version at all is strictly worse.
+    binary = resolve_binary_provenance("bwa", version=resolve_version(["bwa"]))
 
     start = time.monotonic()
     run_fn(cmd.argv, stdout_path=stdout_path, stderr_path=stderr_path)
@@ -230,7 +258,7 @@ def prepare_minimap2_index(reference: Path, output_mmi: Path, *, run_fn=_run) ->
     cmd = minimap2_index_command(reference, output_mmi)
     stdout_path = output_mmi.with_name(output_mmi.name + ".index_stdout.log")
     stderr_path = output_mmi.with_name(output_mmi.name + ".index_stderr.log")
-    binary = resolve_binary_provenance("minimap2", version=None)
+    binary = resolve_binary_provenance("minimap2", version=resolve_version(["minimap2", "--version"]))
 
     start = time.monotonic()
     run_fn(cmd.argv, stdout_path=stdout_path, stderr_path=stderr_path)
@@ -261,19 +289,39 @@ def prepare_minimap2_index(reference: Path, output_mmi: Path, *, run_fn=_run) ->
 
 
 def build_index_manifest(
-    *, build: str, bwa: IndexBuildProvenance | None, minimap2: IndexBuildProvenance | None
+    *,
+    build: str,
+    bwa: IndexBuildProvenance | dict | None,
+    minimap2: IndexBuildProvenance | dict | None,
+    reference_sha256: str | None = None,
+    reference_manifest_content_sha256: str | None = None,
 ) -> dict:
     """Creation-time index manifest: SHA-256 and byte size for every index
-    file, plus each tool's command/provenance. Restart checks may use
-    unchanged size/mtime to skip a full re-hash (see
+    file, plus each tool's command/provenance/resolved binary version+hash.
+    Restart checks may use unchanged size/mtime to skip a full re-hash (see
     :func:`index_manifest_is_current`), but this recorded manifest is always
     the authority a changed file must be re-verified against.
+
+    ``reference_sha256``/``reference_manifest_content_sha256`` (B1-R2) bind
+    this index to the exact reference FASTA and reference-manifest content it
+    was built from, so a later real-mapping attempt can refuse an index
+    that — even if internally self-consistent against its own recorded file
+    hashes — was never actually proven to derive from the *current*
+    reference (see :func:`verify_index_binding`).
     """
+
+    def _payload(entry: IndexBuildProvenance | dict | None) -> dict | None:
+        if entry is None:
+            return None
+        return entry.to_dict() if hasattr(entry, "to_dict") else dict(entry)
+
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "build": build,
-        "bwa_index": bwa.to_dict() if bwa is not None else None,
-        "minimap2_index": minimap2.to_dict() if minimap2 is not None else None,
+        "reference_sha256": reference_sha256,
+        "reference_manifest_content_sha256": reference_manifest_content_sha256,
+        "bwa_index": _payload(bwa),
+        "minimap2_index": _payload(minimap2),
     }
 
 
@@ -295,16 +343,46 @@ def index_manifest_is_current(manifest: dict, *, key: str) -> bool:
     return True
 
 
-def verify_index_files_against_manifest(manifest: dict, *, key: str) -> tuple[str, ...]:
+def verify_index_files_against_manifest(
+    manifest: dict, *, key: str, actual_path: Path | None = None
+) -> tuple[str, ...]:
     """Full SHA-256 re-verification of every file recorded under
     ``manifest[key]["files"]`` against the creation-time manifest — the
     "stale/foreign-index rejection" check. Returns violations (empty means
     every file still matches).
+
+    ``actual_path`` (B1-R2), when given, is the BWA prefix or minimap2
+    ``.mmi`` path the caller is actually about to use; the recorded file
+    path(s) in ``manifest[key]["files"]`` must equal exactly what
+    ``actual_path`` implies (the frozen ``BWA_INDEX_SUFFIXES`` set for
+    ``bwa_index``, the single ``.mmi`` path for ``minimap2_index``) — never
+    merely re-hashed from whatever paths happen to be *recorded*, which
+    previously let a split-directory or foreign-prefix override pass as long
+    as *some* index-manifest existed. Omitted (``None``), only the
+    content-hash check runs, for callers that have not resolved an actual
+    override path (e.g. direct unit tests of this function).
     """
     section = manifest.get(key)
     if not section or not section.get("files"):
         return (f"no {key} recorded in index manifest",)
     violations: list[str] = []
+
+    if actual_path is not None:
+        actual_path = Path(actual_path)
+        if key == "bwa_index":
+            expected_paths = {str(Path(str(actual_path) + suffix)) for suffix in BWA_INDEX_SUFFIXES}
+        elif key == "minimap2_index":
+            expected_paths = {str(actual_path)}
+        else:
+            expected_paths = None
+        if expected_paths is not None:
+            recorded_paths = {entry["path"] for entry in section["files"]}
+            if recorded_paths != expected_paths:
+                violations.append(
+                    f"{key}: actual index path(s) {sorted(expected_paths)} do not match index-manifest-recorded "
+                    f"path(s) {sorted(recorded_paths)} (split-directory or foreign-prefix override)"
+                )
+
     for entry in section["files"]:
         path = Path(entry["path"])
         if not path.is_file():
@@ -320,6 +398,41 @@ def verify_index_files_against_manifest(manifest: dict, *, key: str) -> tuple[st
     return tuple(violations)
 
 
+def verify_index_binding(
+    manifest: dict,
+    *,
+    key: str,
+    actual_path: Path,
+    expected_build: str,
+    expected_reference_sha256: str,
+    expected_reference_manifest_content_sha256: str,
+) -> tuple[str, ...]:
+    """Full B1-R2 binding check: the index-manifest's own declared build and
+    reference/reference-manifest content hashes must match what this run is
+    about to use, *and* its recorded files must match ``actual_path`` and
+    still hash correctly (:func:`verify_index_files_against_manifest`).
+
+    This is what actually prevents a self-consistent-but-foreign index
+    (built from a different reference, with its own manifest replaced to
+    match) from being silently accepted merely because its files match its
+    own recorded hashes: the manifest itself must also prove which
+    reference it was built from.
+    """
+    violations: list[str] = []
+    if manifest.get("build") != expected_build:
+        violations.append(f"{key}: index manifest build {manifest.get('build')!r} != expected {expected_build!r}")
+    if manifest.get("reference_sha256") != expected_reference_sha256:
+        violations.append(
+            f"{key}: index manifest reference_sha256 does not match the current reference (stale/foreign index)"
+        )
+    if manifest.get("reference_manifest_content_sha256") != expected_reference_manifest_content_sha256:
+        violations.append(
+            f"{key}: index manifest reference_manifest_content_sha256 does not match the current reference manifest"
+        )
+    violations.extend(verify_index_files_against_manifest(manifest, key=key, actual_path=actual_path))
+    return tuple(violations)
+
+
 __all__ = [
     "BWA_INDEX_SUFFIXES",
     "EXPECTED_K",
@@ -331,9 +444,11 @@ __all__ = [
     "count_minimap2_index_parts",
     "parse_minimap2_index_settings",
     "check_minimap2_index_stderr",
+    "check_minimap2_mapping_stderr",
     "prepare_bwa_index",
     "prepare_minimap2_index",
     "build_index_manifest",
     "index_manifest_is_current",
     "verify_index_files_against_manifest",
+    "verify_index_binding",
 ]

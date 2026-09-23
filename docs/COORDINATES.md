@@ -188,8 +188,13 @@ human reference, build a human-genome index, or run real mapping.
   length agreement; `build_reference_manifest` assembles a manifest
   satisfying `rbpbench.coordinates.manifest.REQUIRED_REFERENCE_MANIFEST_FIELDS`
   plus source/assembly-report hashes, an accession-to-chromosome-name table,
-  and masking (`soft`/`hard`/`none`) base counts — directly usable as the
-  runner's `--reference-manifest`.
+  and masking (`soft`/`none_detected`) base counts — directly usable as the
+  runner's `--reference-manifest`. Masking status is never inferred as
+  `hard` from an ambiguous-symbol (`N`) fraction alone: assembly gaps
+  produce the same base-count signature as hard-masked repeats, so an
+  uppercase assembly with ordinary gaps reports `none_detected`, not `hard`.
+  Whether the pinned NCBI RefSeq sources are actually soft- or hard-masked
+  is not claimed here as fact; B3 measures it against the real assemblies.
 - `rbpbench.coordinates.indexing`: `bwa index -p indices/<build>/<build>`
   and `minimap2 -x splice:sr -I 8G -d indices/<build>/<build>.mmi` with
   stdout/stderr captured *separately* (never `DEVNULL`) and hashed;

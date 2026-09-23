@@ -1,0 +1,54 @@
+# Fixture-only execution-source spec (B1-R6): required by every
+# fixture-based coordinate-runner test now that `--execution-sources` is
+# mandatory for any invocation that will read the CSV. Never the real
+# production spec (configs/coordinate_execution_sources.toml) — the
+# dataset_csv/study_config hashes below match this repo's tiny fixture
+# files, never the real 724 MB dataset. The dataset_audit/proteins_config
+# hashes match the real (small, already-committed, non-sensitive)
+# manifests/dataset_audit.json and configs/proteins.tsv files, since tests
+# do not override --dataset-audit/--proteins-config and the pipeline
+# already hashes those two files unconditionally in provenance.json
+# regardless of --execution-sources.
+
+git_base_commit = "fixture"
+
+[local_inputs.dataset_csv]
+path = "tests/fixtures/coordinates/tiny_coordinates_dataset.csv"
+sha256 = "c010b0a8a73c85d1cdb500bd93af258ff2a3e5ff718bbd86801be42597c39c8c"
+
+[local_inputs.dataset_audit]
+path = "manifests/dataset_audit.json"
+sha256 = "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"
+
+[local_inputs.proteins_config]
+path = "configs/proteins.tsv"
+sha256 = "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+
+[local_inputs.study_config]
+path = "tests/fixtures/coordinates/tiny_coordinate_feasibility.toml"
+sha256 = "dd31de5aec9c031cf4e6f289cf60ebe750f981a8e12b2eadff3dbb0f7dc2ebbf"
+
+[reference_sources.hg38]
+assembly = "TestAssembly38"
+refseq_assembly_accession = "GCF_TEST38"
+fasta_url = "https://example.invalid/hg38.fna.gz"
+fasta_compressed_byte_size = 1
+fasta_upstream_md5 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+assembly_report_url = "https://example.invalid/hg38_report.txt"
+assembly_report_md5 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+md5checksums_url = "https://example.invalid/hg38_md5.txt"
+
+[reference_sources.hg19]
+assembly = "TestAssembly37"
+refseq_assembly_accession = "GCF_TEST37"
+fasta_url = "https://example.invalid/hg19.fna.gz"
+fasta_compressed_byte_size = 1
+fasta_upstream_md5 = "cccccccccccccccccccccccccccccccc"
+assembly_report_url = "https://example.invalid/hg19_report.txt"
+assembly_report_md5 = "dddddddddddddddddddddddddddddddd"
+md5checksums_url = "https://example.invalid/hg19_md5.txt"
+
+[derived_reference_policy]
+include_sequence_roles_primary_assembly = ["assembled-molecule", "unlocalized-scaffold", "unplaced-scaffold"]
+include_non_nuclear_assembled_molecule = true
+accession_preference = ["refseq", "genbank"]

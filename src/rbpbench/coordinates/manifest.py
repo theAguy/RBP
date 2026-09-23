@@ -5,12 +5,27 @@ Reuses the project's existing SHA-256 helper rather than duplicating it.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from rbpbench.coordinates.hashing import content_fingerprint
 from rbpbench.data.audit import sha256_file
 
 SCHEMA_VERSION = 1
+
+
+def manifest_content_sha256(manifest: dict) -> str:
+    """Deterministic content hash of a reference-manifest dict (canonical
+    JSON, sorted keys), independent of incidental on-disk formatting.
+
+    Used to bind align/exact_match/report/index evidence to the exact
+    manifest *content* that was validated at the time (B1-R1/R2): a manifest
+    file re-written byte-for-byte differently but with unchanged content
+    still binds correctly, while any actual content change (even metadata
+    unrelated to sha256/byte_size) is detected.
+    """
+    return content_fingerprint(json.dumps(manifest, sort_keys=True, default=str))
 
 REQUIRED_REFERENCE_MANIFEST_FIELDS = (
     "build_id",

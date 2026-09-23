@@ -18,6 +18,7 @@ synthetic fixtures mirroring NCBI's real column layout.
 from __future__ import annotations
 
 import gzip
+import os
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
@@ -144,17 +145,22 @@ class ReferenceDerivation:
 
 def _masking_status(counts: dict[str, int]) -> str:
     """``soft`` when any lowercase base is present (NCBI RefSeq genomic
-    FASTA soft-masks repeats in lowercase); ``hard`` when no lowercase but a
-    non-trivial fraction of bases are the ambiguous symbol (hard-masked
-    repeats replaced with ``N``); ``none`` otherwise. This is a diagnostic
-    heuristic recorded for review, not a gate.
+    FASTA soft-masks repeats in lowercase); ``none_detected`` otherwise.
+
+    B1-R9: a high ``N`` (ambiguous-symbol) fraction never by itself
+    establishes ``hard`` masking — assembly gaps produce the same base-count
+    signature as hard-masked repeats, so an uppercase assembly with ordinary
+    gaps must not be mislabeled ``hard`` from base counts alone. ``hard``
+    would require authoritative source metadata (not available to B1's
+    streaming derivation) to actually confirm; until such metadata is wired
+    in, this heuristic only ever reports ``soft`` or ``none_detected``. Raw
+    upper/lower/ambiguous counts are always retained (see ``masking`` in the
+    returned manifest) so a reviewer can inspect the evidence directly rather
+    than trusting this label alone.
     """
     if counts.get("lower", 0) > 0:
         return "soft"
-    total = sum(counts.values()) or 1
-    if counts.get("ambiguous", 0) / total > 0.01:
-        return "hard"
-    return "none"
+    return "none_detected"
 
 
 def _open_text(path: Path) -> IO[str]:
@@ -178,7 +184,12 @@ def derive_reference_fasta(
     2. no unselected accession appears in the derived FASTA;
     3. every derived sequence length equals the assembly-report length.
 
-    Never loads the source FASTA whole: one line is held at a time.
+    Never loads the source FASTA whole: one line is held at a time. Writes to
+    an attempt-specific temporary file and only atomically promotes it onto
+    ``output_fasta`` after every verification check passes (B1-R7): a failed
+    derivation (a verification violation, or any exception mid-stream) must
+    never destroy a prior valid ``output_fasta`` left over from an earlier
+    successful derivation.
     """
     records = parse_assembly_report(assembly_report)
     selected: dict[str, AssemblyReportRecord] = {}
@@ -203,46 +214,54 @@ def derive_reference_fasta(
 
     output_fasta = Path(output_fasta)
     output_fasta.parent.mkdir(parents=True, exist_ok=True)
-    with _open_text(Path(source_fasta)) as src, output_fasta.open("w") as dst:
-        current: str | None = None
-        writing = False
-        for raw_line in src:
-            line = raw_line.rstrip("\n")
-            if line.startswith(">"):
-                current = line[1:].split()[0]
-                seen_counts[current] += 1
-                writing = current in selected
-                if writing:
-                    written_lengths.setdefault(current, 0)
-                    dst.write(f">{current}\n")
-                continue
-            if writing and current is not None:
-                dst.write(line + "\n")
-                written_lengths[current] += len(line)
-                for ch in line:
-                    if ch in "ACGT":
-                        mask_counts["upper"] += 1
-                    elif ch in "acgt":
-                        mask_counts["lower"] += 1
-                    else:
-                        mask_counts["ambiguous"] += 1
+    tmp_fasta = output_fasta.with_name(output_fasta.name + f".tmp{os.getpid()}")
+    try:
+        with _open_text(Path(source_fasta)) as src, tmp_fasta.open("w") as dst:
+            current: str | None = None
+            writing = False
+            for raw_line in src:
+                line = raw_line.rstrip("\n")
+                if line.startswith(">"):
+                    current = line[1:].split()[0]
+                    seen_counts[current] += 1
+                    writing = current in selected
+                    if writing:
+                        written_lengths.setdefault(current, 0)
+                        dst.write(f">{current}\n")
+                    continue
+                if writing and current is not None:
+                    dst.write(line + "\n")
+                    written_lengths[current] += len(line)
+                    for ch in line:
+                        if ch in "ACGT":
+                            mask_counts["upper"] += 1
+                        elif ch in "acgt":
+                            mask_counts["lower"] += 1
+                        else:
+                            mask_counts["ambiguous"] += 1
 
-    violations: list[str] = []
-    for accession in selected:
-        count = seen_counts.get(accession, 0)
-        if count != 1:
-            violations.append(f"accession {accession!r} occurs {count} time(s) in source FASTA (expected exactly 1)")
-    for accession in written_lengths:
-        if accession not in selected:
-            violations.append(f"unselected accession {accession!r} appeared in the derived FASTA")
-    for accession, record in selected.items():
-        actual = written_lengths.get(accession, 0)
-        if actual != record.sequence_length:
-            violations.append(
-                f"{accession}: derived length {actual} != assembly-report length {record.sequence_length}"
-            )
-    if violations:
-        raise DerivationError("derived-reference verification failed: " + "; ".join(violations))
+        violations: list[str] = []
+        for accession in selected:
+            count = seen_counts.get(accession, 0)
+            if count != 1:
+                violations.append(f"accession {accession!r} occurs {count} time(s) in source FASTA (expected exactly 1)")
+        for accession in written_lengths:
+            if accession not in selected:
+                violations.append(f"unselected accession {accession!r} appeared in the derived FASTA")
+        for accession, record in selected.items():
+            actual = written_lengths.get(accession, 0)
+            if actual != record.sequence_length:
+                violations.append(
+                    f"{accession}: derived length {actual} != assembly-report length {record.sequence_length}"
+                )
+        if violations:
+            raise DerivationError("derived-reference verification failed: " + "; ".join(violations))
+    except BaseException:
+        if tmp_fasta.exists():
+            tmp_fasta.unlink()
+        raise
+
+    os.replace(tmp_fasta, output_fasta)
 
     contigs = tuple(sorted(selected))
     category_counts = dict(Counter(category_of.values()))

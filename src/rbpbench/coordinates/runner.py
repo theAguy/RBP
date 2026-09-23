@@ -38,7 +38,11 @@ import csv
 import gzip
 import json
 import os
+import shutil
 import subprocess
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -53,7 +57,7 @@ from rbpbench.coordinates.alignment import (
     near_tied_secondary_fractions,
     parse_sam_line,
 )
-from rbpbench.coordinates.cleanup import CleanupRefused, execute_index_cleanup
+from rbpbench.coordinates.cleanup import CleanupRefused, execute_index_cleanup, plan_index_cleanup
 from rbpbench.coordinates.commands import (
     bwa_mem_command,
     format_command,
@@ -63,23 +67,31 @@ from rbpbench.coordinates.commands import (
 from rbpbench.coordinates.config import FeasibilityConfig, load_config
 from rbpbench.coordinates.controls import generate_control
 from rbpbench.coordinates.decode import decode_and_validate, fasta_record
+from rbpbench.coordinates.derive_reference import build_reference_manifest, current_git_commit, derive_reference_fasta
+from rbpbench.coordinates.download import Transport, restart_safe_download, urllib_transport
 from rbpbench.coordinates.diskbudget import (
     BUILD_OUTPUT_ALLOWANCE_GIB,
+    GIB,
     PLANNED_ALLOWANCES_GIB,
+    DiskBudgetExceeded,
     DiskBudgetLedger,
+    check_pinned_volumes,
     check_projected_peak,
     start_ledger,
 )
 from rbpbench.coordinates.exact_match import exact_occurrence_count, exact_unique_confirmed, parse_seqkit_bed
-from rbpbench.coordinates.execution_sources import load_execution_sources, verify_local_inputs
+from rbpbench.coordinates.execution_sources import ReferenceSourceSpec, load_execution_sources, verify_local_inputs
 from rbpbench.coordinates.hashing import content_fingerprint, control_seed
 from rbpbench.coordinates.indexing import (
+    BWA_INDEX_SUFFIXES,
     build_index_manifest,
+    check_minimap2_mapping_stderr,
     prepare_bwa_index,
     prepare_minimap2_index,
+    verify_index_binding,
     verify_index_files_against_manifest,
 )
-from rbpbench.coordinates.manifest import validate_reference_manifest
+from rbpbench.coordinates.manifest import manifest_content_sha256, validate_reference_manifest
 from rbpbench.coordinates.preflight import APPROVED_MAC, DEV_VM, run_preflight
 from rbpbench.coordinates.provenance import resolve_binary_provenance, run_tool_with_provenance
 from rbpbench.coordinates.reference import IndexedFastaReader, load_fasta_sequences, prepare_reference_index
@@ -94,8 +106,20 @@ from rbpbench.coordinates.report import (
 from rbpbench.coordinates.sampling import DatasetRow, SampleAssignment, SamplingResult, build_sample
 from rbpbench.data.audit import parse_labels, sha256_file
 
-STAGES = ("preflight", "sample", "decode", "controls", "index", "align", "exact_match", "report", "combined_report")
-BUILD_SCOPED_STAGES = ("index", "align", "exact_match", "report")
+STAGES = (
+    "preflight",
+    "sample",
+    "decode",
+    "controls",
+    "download",
+    "derive",
+    "index",
+    "align",
+    "exact_match",
+    "report",
+    "combined_report",
+)
+BUILD_SCOPED_STAGES = ("download", "derive", "index", "align", "exact_match", "report")
 DEFAULT_BUILDS = ("hg38", "hg19")
 
 CONTROL_ID_PREFIX = "control_"
@@ -217,12 +241,25 @@ def _guarded_write_record(path: Path, record: dict) -> None:
         except (json.JSONDecodeError, OSError):
             existing = None
         if existing is not None and existing.get("executed") and not record.get("executed"):
+            _append_rejected_attempt(path, record)
             raise SystemExit(
                 f"refusing to overwrite {path}: it already records executed=true, but this attempt did not "
                 f"execute real work ({record.get('skip_reason')!r}); a failed/dry-run/unauthorized retry must "
                 "never erase prior accepted checkpoint evidence"
             )
     _write_json(path, record)
+
+
+def _append_rejected_attempt(path: Path, record: dict) -> None:
+    """Durably record a refused non-executed attempt (B1-R3: "record failed
+    attempts separately") without touching the protected accepted record at
+    ``path``. Append-only, so every refused attempt is preserved, not just
+    the most recent one.
+    """
+    rejected_path = path.with_name(path.name + ".rejected_attempts.jsonl")
+    entry = {"rejected_at": datetime.now(timezone.utc).isoformat(), **record}
+    with rejected_path.open("a") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
 
 
 def _sample_state_path(output_dir: Path) -> Path:
@@ -400,7 +437,9 @@ def stage_controls(
 _MAPPING_TOOL_TIMEOUT_SECONDS = 6 * 60 * 60  # generous bound for a feasibility-scale run; never unbounded
 
 
-def _run_tool_to_file(argv: Sequence[str], *, output_path: Path, stderr_path: Path) -> None:
+def _run_tool_to_file(
+    argv: Sequence[str], *, output_path: Path, stderr_path: Path, max_output_bytes: int | None = None
+) -> None:
     """Execute a pinned mapper/matcher command, capturing stdout and stderr
     *separately*.
 
@@ -411,19 +450,77 @@ def _run_tool_to_file(argv: Sequence[str], *, output_path: Path, stderr_path: Pa
     is a list built by :mod:`rbpbench.coordinates.commands`, never an
     interpolated shell string. Bounded by a generous timeout so a wedged
     mapper process cannot hang the pipeline forever.
+
+    ``max_output_bytes`` (B1-R4), when given, is polled against the growing
+    ``output_path`` while the subprocess is still running; a breach kills the
+    process and raises :class:`DiskBudgetExceeded` rather than ever letting a
+    caller promote a silently-truncated-but-accepted file. A fast-finishing
+    process is still checked once more after it exits, so a tool that writes
+    its whole output before the first poll cannot slip through uncapped.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w") as out_handle, stderr_path.open("w") as err_handle:
-        subprocess.run(
-            list(argv),
-            shell=False,
-            stdout=out_handle,
-            stderr=err_handle,
-            check=True,
-            text=True,
-            timeout=_MAPPING_TOOL_TIMEOUT_SECONDS,
-        )
+        process = subprocess.Popen(list(argv), shell=False, stdout=out_handle, stderr=err_handle, text=True)
+        start = time.monotonic()
+        killed_for_budget = False
+        while True:
+            try:
+                process.wait(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                if (
+                    max_output_bytes is not None
+                    and output_path.exists()
+                    and output_path.stat().st_size > max_output_bytes
+                ):
+                    process.kill()
+                    process.wait()
+                    killed_for_budget = True
+                    break
+                if time.monotonic() - start > _MAPPING_TOOL_TIMEOUT_SECONDS:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(list(argv), _MAPPING_TOOL_TIMEOUT_SECONDS)
+        if not killed_for_budget and max_output_bytes is not None and output_path.stat().st_size > max_output_bytes:
+            killed_for_budget = True
+        if killed_for_budget:
+            raise DiskBudgetExceeded(
+                f"output at {output_path} exceeded the {max_output_bytes}-byte build-output allowance while "
+                "writing; the process was terminated before completion and this attempt's output must not be "
+                "promoted (previously accepted evidence, if any, is untouched)"
+            )
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, list(argv))
+
+
+def _attempt_dir(base_dir: Path, *, prefix: str) -> Path:
+    """A fresh, collision-free attempt-specific temporary directory under
+    ``base_dir`` (B1-R3): every real subprocess this attempt runs writes only
+    inside here, so a partial/failed attempt (killed by a budget breach,
+    subprocess failure, or an exception in a later step of the same attempt)
+    never touches a final, previously-accepted output path.
+    """
+    return base_dir / f".attempt_{prefix}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+
+
+def _relocate_provenance_dict(payload: dict, *, tmp_dir: Path, final_dir: Path) -> dict:
+    """Rewrite every path field in a provenance ``to_dict()`` payload from
+    its attempt-specific temporary location to the final, promoted location
+    (B1-R3): hashes/sizes are unaffected since promotion is a plain rename of
+    unchanged content, only the recorded paths need correcting.
+    """
+
+    def relocate(path_str: str) -> str:
+        return str(final_dir / Path(path_str).relative_to(tmp_dir))
+
+    payload = dict(payload)
+    for key in ("output_path", "stderr_path", "stdout_path"):
+        if key in payload and payload[key] is not None:
+            payload[key] = relocate(payload[key])
+    if "files" in payload and payload["files"] is not None:
+        payload["files"] = [{**entry, "path": relocate(entry["path"])} for entry in payload["files"]]
+    return payload
 
 
 def _mapping_capable(*, allow_mapping: bool, host_role: str, reference: Path | None, reads_fasta: Path | None) -> str | None:
@@ -464,6 +561,174 @@ def _check_disk_budget_or_fail(
     if not check.ok:
         raise SystemExit(f"disk-budget check failed before {label!r}: {list(check.violations)}")
     return check.to_dict()
+
+
+def _acquisition_capable(*, allow_mapping: bool, host_role: str) -> str | None:
+    """Same basic capability shape as ``_mapping_capable``/``_index_capable``
+    for download/derive, which need neither a reference file nor reads yet
+    (they *produce* the reference).
+    """
+    if not allow_mapping or host_role != APPROVED_MAC:
+        return (
+            "reference acquisition/derivation requires --allow-mapping together with --host-role=approved_mac "
+            f"(got allow_mapping={allow_mapping}, host_role={host_role!r})"
+        )
+    return None
+
+
+def stage_download(
+    *,
+    build: str,
+    source_spec: ReferenceSourceSpec,
+    sources_dir: Path,
+    allow_mapping: bool,
+    host_role: str,
+    dry_run: bool,
+    disk_ledger: DiskBudgetLedger | None = None,
+    transport: Transport = urllib_transport,
+) -> dict:
+    """B1-R7: restart-safe, disk-budget-gated acquisition of one reference
+    build's compressed source FASTA and assembly report, verified against
+    the execution-source spec's authoritative upstream MD5 *and* byte size
+    (never silently re-pinned on drift) before being recorded as executed.
+
+    ``transport`` defaults to the real network transport
+    (:func:`rbpbench.coordinates.download.urllib_transport`) for actual B3+
+    use; B1 itself never reaches that default — every B1 test passes an
+    injected local fake transport, and B1's authorization boundary forbids
+    requesting any real NCBI URL regardless.
+    """
+    fasta_dest = sources_dir / f"{source_spec.assembly}_genomic.fna.gz"
+    report_dest = sources_dir / f"{source_spec.assembly}_assembly_report.txt"
+    record = {
+        "planned": {"fasta_url": source_spec.fasta_url, "assembly_report_url": source_spec.assembly_report_url},
+        "executed": False,
+        "skip_reason": None,
+    }
+
+    if dry_run:
+        record["skip_reason"] = "--dry-run: real download is never executed under --dry-run"
+        _guarded_write_record(sources_dir / "download.json", record)
+        return record
+
+    skip_reason = _acquisition_capable(allow_mapping=allow_mapping, host_role=host_role)
+    if skip_reason is not None:
+        record["skip_reason"] = skip_reason
+        _guarded_write_record(sources_dir / "download.json", record)
+        return record
+
+    # The disk-budget snapshot requires an existing path; sources_dir may
+    # not exist yet on a genuinely first download.
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    _check_disk_budget_or_fail(
+        disk_ledger,
+        label=f"download:{build}",
+        allowance_gib=PLANNED_ALLOWANCES_GIB["source_packages_and_metadata"],
+        disk_path=sources_dir,
+    )
+
+    fasta_result = restart_safe_download(
+        source_spec.fasta_url, fasta_dest, expected_md5=source_spec.fasta_upstream_md5, transport=transport
+    )
+    report_result = restart_safe_download(
+        source_spec.assembly_report_url,
+        report_dest,
+        expected_md5=source_spec.assembly_report_md5,
+        transport=transport,
+    )
+    if disk_ledger is not None:
+        disk_ledger.record_step(f"download:{build}", path=sources_dir)
+
+    # Plan-time size/MD5 values are authoritative (second-review R11):
+    # upstream MD5 is already enforced fail-closed inside
+    # restart_safe_download; the authoritative byte size is checked here as
+    # a second, independent signal. Disagreement is a hard stop requiring a
+    # recorded decision, never silent re-pinning.
+    if fasta_result.byte_size != source_spec.fasta_compressed_byte_size:
+        record["skip_reason"] = (
+            f"downloaded FASTA byte size {fasta_result.byte_size} != authoritative plan size "
+            f"{source_spec.fasta_compressed_byte_size}; this disagreement is a hard stop requiring a recorded "
+            "decision in docs/DECISIONS.md, never silent re-pinning"
+        )
+        _guarded_write_record(sources_dir / "download.json", record)
+        return record
+
+    record["executed"] = True
+    record["fasta"] = fasta_result.to_dict()
+    record["assembly_report"] = report_result.to_dict()
+    _guarded_write_record(sources_dir / "download.json", record)
+    return record
+
+
+def stage_derive(
+    *,
+    build: str,
+    source_spec: ReferenceSourceSpec,
+    derived_dir: Path,
+    allow_mapping: bool,
+    host_role: str,
+    download_record: dict,
+    dry_run: bool,
+    disk_ledger: DiskBudgetLedger | None = None,
+) -> dict:
+    """B1-R7: streaming, restart-safe derivation of the frozen-contig-policy
+    reference FASTA + manifest from an already-downloaded/verified source
+    (see :mod:`rbpbench.coordinates.derive_reference`, whose own
+    ``derive_reference_fasta`` already atomically promotes its output —
+    never destroying a prior valid FASTA on a failed derivation attempt).
+    """
+    output_fasta = derived_dir / "reference.fna"
+    manifest_path = derived_dir / "reference_manifest.json"
+    record = {"executed": False, "skip_reason": None}
+
+    if dry_run:
+        record["skip_reason"] = "--dry-run: real derivation is never executed under --dry-run"
+        _guarded_write_record(derived_dir / "derive.json", record)
+        return record
+
+    skip_reason = _acquisition_capable(allow_mapping=allow_mapping, host_role=host_role)
+    if skip_reason is not None:
+        record["skip_reason"] = skip_reason
+        _guarded_write_record(derived_dir / "derive.json", record)
+        return record
+
+    if not download_record.get("executed"):
+        record["skip_reason"] = "download stage did not execute; nothing to derive from"
+        _guarded_write_record(derived_dir / "derive.json", record)
+        return record
+
+    derived_dir.mkdir(parents=True, exist_ok=True)
+    _check_disk_budget_or_fail(
+        disk_ledger,
+        label=f"derive:{build}",
+        allowance_gib=PLANNED_ALLOWANCES_GIB["derived_references_and_indices"],
+        disk_path=derived_dir,
+    )
+
+    source_fasta = Path(download_record["fasta"]["dest_path"])
+    assembly_report = Path(download_record["assembly_report"]["dest_path"])
+    derivation = derive_reference_fasta(source_fasta=source_fasta, assembly_report=assembly_report, output_fasta=output_fasta)
+    manifest = build_reference_manifest(
+        derivation,
+        build_id=build,
+        assembly_accession=source_spec.refseq_assembly_accession,
+        source_url=source_spec.fasta_url,
+        source_fasta_compressed=source_fasta,
+        source_fasta_compressed_upstream_md5=source_spec.fasta_upstream_md5,
+        assembly_report=assembly_report,
+        assembly_report_upstream_md5=source_spec.assembly_report_md5,
+        derivation_command=f"derive_reference_fasta(build={build!r})",
+        git_commit=current_git_commit(),
+    )
+    _write_json(manifest_path, manifest)
+    if disk_ledger is not None:
+        disk_ledger.record_step(f"derive:{build}", path=derived_dir)
+
+    record["executed"] = True
+    record["output_fasta"] = str(output_fasta)
+    record["reference_manifest_path"] = str(manifest_path)
+    _guarded_write_record(derived_dir / "derive.json", record)
+    return record
 
 
 def _index_capable(*, allow_mapping: bool, host_role: str, reference: Path | None) -> str | None:
@@ -527,15 +792,25 @@ def stage_index(
 
     if reference_manifest is None:
         record["skip_reason"] = f"reference manifest required for index preparation but not provided for build {build!r}"
-        _write_json(index_dir / "index.json", record)
+        _guarded_write_record(index_dir / "index.json", record)
         return record
     record["reference_manifest"] = reference_manifest
     manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
     record["reference_manifest_validation"] = {"provided": True, "violations": list(manifest_violations)}
     if manifest_violations:
         record["skip_reason"] = f"reference manifest invalid for build {build!r}: {list(manifest_violations)}"
-        _write_json(index_dir / "index.json", record)
+        _guarded_write_record(index_dir / "index.json", record)
         return record
+
+    # B1-R2: the current reference/manifest content hashes this index is
+    # about to be built from and bound to, recorded on the index manifest
+    # itself (never merely inferred later from whatever happens to be on
+    # disk) so a later real-mapping attempt can refuse a self-consistent but
+    # foreign index (see rbpbench.coordinates.indexing.verify_index_binding).
+    current_reference_sha256 = reference_manifest["sha256"]
+    current_manifest_hash = manifest_content_sha256(reference_manifest)
+    record["reference_sha256"] = current_reference_sha256
+    record["reference_manifest_content_sha256"] = current_manifest_hash
 
     index_dir.mkdir(parents=True, exist_ok=True)
     preflight_report = run_preflight(
@@ -551,30 +826,64 @@ def stage_index(
     record["preflight_ok"] = preflight_report.ok
     if not preflight_report.ok:
         record["skip_reason"] = f"preflight failed closed immediately before indexing: {list(preflight_report.violations)}"
-        _write_json(index_dir / "index.json", record)
+        _guarded_write_record(index_dir / "index.json", record)
         return record
 
-    _check_disk_budget_or_fail(
-        disk_ledger,
-        label=f"bwa_index:{build}",
-        allowance_gib=PLANNED_ALLOWANCES_GIB["active_build_bwa_index"],
-        disk_path=index_dir,
-    )
-    bwa_provenance = prepare_bwa_index(reference, bwa_prefix)
-    if disk_ledger is not None:
-        disk_ledger.record_step(f"bwa_index:{build}", path=index_dir)
+    # B1-R3: build both indices into an attempt-specific temporary directory
+    # and only atomically promote every produced file to its final location
+    # after BOTH bwa and minimap2 succeed — a failure after bwa succeeds but
+    # before minimap2 completes must never leave a half-replaced index set at
+    # the final paths while index.json still (correctly) records the prior
+    # accepted evidence.
+    attempt_dir = _attempt_dir(index_dir, prefix="index")
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    tmp_bwa_prefix = attempt_dir / build
+    tmp_mm2_index = attempt_dir / f"{build}.mmi"
+    try:
+        _check_disk_budget_or_fail(
+            disk_ledger,
+            label=f"bwa_index:{build}",
+            allowance_gib=PLANNED_ALLOWANCES_GIB["active_build_bwa_index"],
+            disk_path=index_dir,
+        )
+        bwa_provenance = prepare_bwa_index(reference, tmp_bwa_prefix)
+        if disk_ledger is not None:
+            disk_ledger.record_step(f"bwa_index:{build}", path=index_dir)
 
-    _check_disk_budget_or_fail(
-        disk_ledger,
-        label=f"minimap2_index:{build}",
-        allowance_gib=PLANNED_ALLOWANCES_GIB["active_build_minimap2_index"],
-        disk_path=index_dir,
-    )
-    mm2_provenance = prepare_minimap2_index(reference, mm2_index)
-    if disk_ledger is not None:
-        disk_ledger.record_step(f"minimap2_index:{build}", path=index_dir)
+        _check_disk_budget_or_fail(
+            disk_ledger,
+            label=f"minimap2_index:{build}",
+            allowance_gib=PLANNED_ALLOWANCES_GIB["active_build_minimap2_index"],
+            disk_path=index_dir,
+        )
+        mm2_provenance = prepare_minimap2_index(reference, tmp_mm2_index)
+        if disk_ledger is not None:
+            disk_ledger.record_step(f"minimap2_index:{build}", path=index_dir)
+    except BaseException:
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+        raise
 
-    manifest = build_index_manifest(build=build, bwa=bwa_provenance, minimap2=mm2_provenance)
+    for tmp_path, final_path in (
+        *((Path(str(tmp_bwa_prefix) + suffix), Path(str(bwa_prefix) + suffix)) for suffix in BWA_INDEX_SUFFIXES),
+        (tmp_bwa_prefix.with_name(tmp_bwa_prefix.name + ".index_stdout.log"), bwa_prefix.with_name(bwa_prefix.name + ".index_stdout.log")),
+        (tmp_bwa_prefix.with_name(tmp_bwa_prefix.name + ".index_stderr.log"), bwa_prefix.with_name(bwa_prefix.name + ".index_stderr.log")),
+        (tmp_mm2_index, mm2_index),
+        (tmp_mm2_index.with_name(tmp_mm2_index.name + ".index_stdout.log"), mm2_index.with_name(mm2_index.name + ".index_stdout.log")),
+        (tmp_mm2_index.with_name(tmp_mm2_index.name + ".index_stderr.log"), mm2_index.with_name(mm2_index.name + ".index_stderr.log")),
+    ):
+        os.replace(tmp_path, final_path)
+    shutil.rmtree(attempt_dir, ignore_errors=True)
+
+    bwa_payload = _relocate_provenance_dict(bwa_provenance.to_dict(), tmp_dir=attempt_dir, final_dir=index_dir)
+    mm2_payload = _relocate_provenance_dict(mm2_provenance.to_dict(), tmp_dir=attempt_dir, final_dir=index_dir)
+
+    manifest = build_index_manifest(
+        build=build,
+        bwa=bwa_payload,
+        minimap2=mm2_payload,
+        reference_sha256=current_reference_sha256,
+        reference_manifest_content_sha256=current_manifest_hash,
+    )
     _write_json(index_dir / "index_manifest.json", manifest)
 
     record["executed"] = True
@@ -645,7 +954,7 @@ def stage_align(
     # never be silently attributed to the current reference.
     if reference_manifest is None:
         record["skip_reason"] = f"reference manifest required for real mapping but not provided for build {build!r}"
-        _write_json(build_output_dir / "align.json", record)
+        _guarded_write_record(build_output_dir / "align.json", record)
         return record
     # Persisted regardless of validation outcome: provenance reads this
     # back (rather than whatever --reference-manifest happens to be passed
@@ -656,31 +965,52 @@ def stage_align(
     record["reference_manifest_validation"] = {"provided": True, "violations": list(manifest_violations)}
     if manifest_violations:
         record["skip_reason"] = f"reference manifest invalid for build {build!r}: {list(manifest_violations)}"
-        _write_json(build_output_dir / "align.json", record)
+        _guarded_write_record(build_output_dir / "align.json", record)
         return record
 
-    # Stale/foreign-index rejection (B1 required item 4): when a prepared
-    # index is being used, its creation-time manifest is re-verified against
-    # the files on disk right now — never trusted merely because the index
-    # stage completed at some point in the past.
-    index_dir = (bwa_index_prefix or minimap2_index).parent if (bwa_index_prefix or minimap2_index) else None
-    if index_dir is not None:
-        index_manifest_path = index_dir / "index_manifest.json"
-        if not index_manifest_path.is_file():
-            record["skip_reason"] = f"no index manifest found at {index_manifest_path} for the prepared index"
-            _write_json(build_output_dir / "align.json", record)
-            return record
-        index_manifest = json.loads(index_manifest_path.read_text())
-        index_violations: list[str] = []
-        if bwa_index_prefix is not None:
-            index_violations.extend(verify_index_files_against_manifest(index_manifest, key="bwa_index"))
-        if minimap2_index is not None:
-            index_violations.extend(verify_index_files_against_manifest(index_manifest, key="minimap2_index"))
-        record["index_manifest_validation"] = {"violations": list(index_violations)}
-        if index_violations:
-            record["skip_reason"] = f"prepared index failed manifest verification (stale/foreign index): {index_violations}"
-            _write_json(build_output_dir / "align.json", record)
-            return record
+    # B1-R1: the current reference/manifest content hashes this align
+    # attempt is about to use, recorded on the accepted record so
+    # exact_match/report can later refuse to combine themselves with a
+    # different reference (see stage_exact_match/stage_report).
+    current_reference_sha256 = reference_manifest["sha256"]
+    current_manifest_hash = manifest_content_sha256(reference_manifest)
+    record["reference_sha256"] = current_reference_sha256
+    record["reference_manifest_content_sha256"] = current_manifest_hash
+
+    # B1-R2: stale/foreign/split-directory-override index rejection. Each
+    # override (or the default indices/<build>/ pair) is verified against
+    # *its own* index_manifest.json, looked up from its own directory — a
+    # single shared index_dir inference previously let a minimap2-only
+    # override silently skip verification against a BWA override rooted
+    # elsewhere, or vice versa. Every check additionally proves the index
+    # manifest itself is bound to the *current* reference/manifest content,
+    # not merely that its own recorded files still hash correctly (a
+    # self-consistent but foreign index, rebuilt from a different FASTA with
+    # its own manifest replaced to match, must still be refused).
+    index_violations: list[str] = []
+    for override_path, key in ((bwa_index_prefix, "bwa_index"), (minimap2_index, "minimap2_index")):
+        if override_path is None:
+            continue
+        override_manifest_path = override_path.parent / "index_manifest.json"
+        if not override_manifest_path.is_file():
+            index_violations.append(f"{key}: no index manifest found at {override_manifest_path}")
+            continue
+        override_manifest = json.loads(override_manifest_path.read_text())
+        index_violations.extend(
+            verify_index_binding(
+                override_manifest,
+                key=key,
+                actual_path=override_path,
+                expected_build=build,
+                expected_reference_sha256=current_reference_sha256,
+                expected_reference_manifest_content_sha256=current_manifest_hash,
+            )
+        )
+    record["index_manifest_validation"] = {"violations": list(index_violations)}
+    if index_violations:
+        record["skip_reason"] = f"prepared index failed manifest verification (stale/foreign index): {index_violations}"
+        _guarded_write_record(build_output_dir / "align.json", record)
+        return record
 
     # Hard prerequisite (never bypassable by tests or callers): a *fresh*
     # preflight bound to the detected OS/architecture, resource limits,
@@ -700,7 +1030,7 @@ def stage_align(
     record["preflight_ok"] = preflight_report.ok
     if not preflight_report.ok:
         record["skip_reason"] = f"preflight failed closed immediately before mapping: {list(preflight_report.violations)}"
-        _write_json(build_output_dir / "align.json", record)
+        _guarded_write_record(build_output_dir / "align.json", record)
         return record
 
     # Fail-closed disk-budget check (B1 required item 8): both mapper output
@@ -709,32 +1039,73 @@ def stage_align(
     disk_budget_check = _check_disk_budget_or_fail(
         disk_ledger, label=f"align:{build}", allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB, disk_path=build_output_dir
     )
+    max_output_bytes = int(BUILD_OUTPUT_ALLOWANCE_GIB * GIB)
 
     bwa_binary = resolve_binary_provenance("bwa", version=preflight_report.tool_versions.get("bwa"))
     mm2_binary = resolve_binary_provenance("minimap2", version=preflight_report.tool_versions.get("minimap2"))
+
+    # B1-R3: write into an attempt-specific temporary directory and only
+    # atomically promote to the final SAM/stderr paths after BOTH bwa and
+    # minimap2 succeed (and, for minimap2, its mapping stderr is clean — see
+    # B1-R8 below) — a failure after bwa succeeds but before minimap2
+    # completes must never truncate/replace a previously-accepted final file.
+    attempt_dir = _attempt_dir(build_output_dir, prefix="align")
+    bwa_sam_tmp = attempt_dir / "align_bwa_mem.sam"
+    bwa_stderr_tmp = attempt_dir / "align_bwa_mem.stderr.log"
+    mm2_sam_tmp = attempt_dir / "align_minimap2_splice.sam"
+    mm2_stderr_tmp = attempt_dir / "align_minimap2_splice.stderr.log"
+    try:
+        bwa_provenance = run_tool_with_provenance(
+            bwa_cmd.argv,
+            tool="bwa_mem",
+            output_path=bwa_sam_tmp,
+            stderr_path=bwa_stderr_tmp,
+            command_text=format_command(bwa_cmd.argv),
+            binary=bwa_binary,
+            run_fn=_run_tool_to_file,
+            run_kwargs={"max_output_bytes": max_output_bytes},
+        )
+        mm2_provenance = run_tool_with_provenance(
+            mm2_cmd.argv,
+            tool="minimap2_splice",
+            output_path=mm2_sam_tmp,
+            stderr_path=mm2_stderr_tmp,
+            command_text=format_command(mm2_cmd.argv),
+            binary=mm2_binary,
+            run_fn=_run_tool_to_file,
+            run_kwargs={"max_output_bytes": max_output_bytes},
+        )
+    except BaseException:
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+        raise
+
+    # B1-R8: minimap2's own mapping-time stderr must be inspected for the
+    # same disqualifying parameter-override/multipart-index conditions
+    # required at index-build time — capturing the warning is not equivalent
+    # to stopping on it. Checked before promotion: a disqualified attempt's
+    # SAM output must never reach the final path.
+    mm2_mapping_stderr_violations = check_minimap2_mapping_stderr(mm2_stderr_tmp.read_text())
+    if mm2_mapping_stderr_violations:
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+        record["skip_reason"] = (
+            f"minimap2 mapping stderr indicates a disqualifying condition: {list(mm2_mapping_stderr_violations)}"
+        )
+        _guarded_write_record(build_output_dir / "align.json", record)
+        return record
 
     bwa_sam = build_output_dir / "align_bwa_mem.sam"
     bwa_stderr = build_output_dir / "align_bwa_mem.stderr.log"
     mm2_sam = build_output_dir / "align_minimap2_splice.sam"
     mm2_stderr = build_output_dir / "align_minimap2_splice.stderr.log"
-    bwa_provenance = run_tool_with_provenance(
-        bwa_cmd.argv,
-        tool="bwa_mem",
-        output_path=bwa_sam,
-        stderr_path=bwa_stderr,
-        command_text=format_command(bwa_cmd.argv),
-        binary=bwa_binary,
-        run_fn=_run_tool_to_file,
-    )
-    mm2_provenance = run_tool_with_provenance(
-        mm2_cmd.argv,
-        tool="minimap2_splice",
-        output_path=mm2_sam,
-        stderr_path=mm2_stderr,
-        command_text=format_command(mm2_cmd.argv),
-        binary=mm2_binary,
-        run_fn=_run_tool_to_file,
-    )
+    os.replace(bwa_sam_tmp, bwa_sam)
+    os.replace(bwa_stderr_tmp, bwa_stderr)
+    os.replace(mm2_sam_tmp, mm2_sam)
+    os.replace(mm2_stderr_tmp, mm2_stderr)
+    shutil.rmtree(attempt_dir, ignore_errors=True)
+
+    bwa_provenance_dict = _relocate_provenance_dict(bwa_provenance.to_dict(), tmp_dir=attempt_dir, final_dir=build_output_dir)
+    mm2_provenance_dict = _relocate_provenance_dict(mm2_provenance.to_dict(), tmp_dir=attempt_dir, final_dir=build_output_dir)
+
     if disk_ledger is not None:
         disk_ledger.record_step(f"align:{build}", path=build_output_dir)
 
@@ -748,8 +1119,8 @@ def stage_align(
     record["disk_budget_check"] = disk_budget_check
     record["provenance"] = {
         "input_hashes": preflight_report.input_hashes,
-        "bwa_mem": bwa_provenance.to_dict(),
-        "minimap2_splice": mm2_provenance.to_dict(),
+        "bwa_mem": bwa_provenance_dict,
+        "minimap2_splice": mm2_provenance_dict,
     }
     _guarded_write_record(build_output_dir / "align.json", record)
     return record
@@ -795,22 +1166,42 @@ def stage_exact_match(
 
     if not align_record.get("executed"):
         record["skip_reason"] = "align stage did not execute real mapping; nothing to confirm"
-        _write_json(build_output_dir / "exact_match.json", record)
+        _guarded_write_record(build_output_dir / "exact_match.json", record)
         return record
 
     # Same reference-manifest requirement/validation as stage_align — an
     # independent check, not a reused one.
     if reference_manifest is None:
         record["skip_reason"] = f"reference manifest required for real exact-match but not provided for build {build!r}"
-        _write_json(build_output_dir / "exact_match.json", record)
+        _guarded_write_record(build_output_dir / "exact_match.json", record)
         return record
     record["reference_manifest"] = reference_manifest
     manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
     record["reference_manifest_validation"] = {"provided": True, "violations": list(manifest_violations)}
     if manifest_violations:
         record["skip_reason"] = f"reference manifest invalid for build {build!r}: {list(manifest_violations)}"
-        _write_json(build_output_dir / "exact_match.json", record)
+        _guarded_write_record(build_output_dir / "exact_match.json", record)
         return record
+
+    # B1-R1: exact-match's active reference/manifest must equal the one
+    # align recorded — fail closed rather than silently combining BWA
+    # mapping evidence from one reference with SeqKit exact matches computed
+    # against a different one (the original second-review R3 failure).
+    current_reference_sha256 = reference_manifest["sha256"]
+    current_manifest_hash = manifest_content_sha256(reference_manifest)
+    if (
+        align_record.get("reference_sha256") != current_reference_sha256
+        or align_record.get("reference_manifest_content_sha256") != current_manifest_hash
+    ):
+        record["skip_reason"] = (
+            f"current reference/manifest for build {build!r} does not match the reference recorded by align "
+            "(stale/foreign reference); refusing to combine exact-match evidence with mapping from a different "
+            "reference"
+        )
+        _guarded_write_record(build_output_dir / "exact_match.json", record)
+        return record
+    record["reference_sha256"] = current_reference_sha256
+    record["reference_manifest_content_sha256"] = current_manifest_hash
 
     # Same hard, fresh preflight prerequisite as stage_align — exact-match
     # search gets its own independent binding check, not a reused one.
@@ -828,27 +1219,44 @@ def stage_exact_match(
     record["preflight_ok"] = preflight_report.ok
     if not preflight_report.ok:
         record["skip_reason"] = f"preflight failed closed immediately before exact-match: {list(preflight_report.violations)}"
-        _write_json(build_output_dir / "exact_match.json", record)
+        _guarded_write_record(build_output_dir / "exact_match.json", record)
         return record
 
     disk_budget_check = _check_disk_budget_or_fail(
         disk_ledger, label=f"exact_match:{build}", allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB, disk_path=build_output_dir
     )
+    max_output_bytes = int(BUILD_OUTPUT_ALLOWANCE_GIB * GIB)
 
     seqkit_binary = resolve_binary_provenance("seqkit", version=preflight_report.tool_versions.get("seqkit"))
 
+    # B1-R3: same attempt-dir-then-atomic-promote pattern as stage_align — a
+    # failed/killed seqkit run must never truncate a previously-accepted BED.
+    attempt_dir = _attempt_dir(build_output_dir, prefix="exact_match")
+    bed_tmp = attempt_dir / "exact_match_hits.bed"
+    stderr_tmp = attempt_dir / "exact_match_hits.stderr.log"
+    query_cmd = seqkit_locate_command(reads_fasta, reference)
+    try:
+        provenance = run_tool_with_provenance(
+            query_cmd.argv,
+            tool="seqkit_locate",
+            output_path=bed_tmp,
+            stderr_path=stderr_tmp,
+            command_text=format_command(query_cmd.argv),
+            binary=seqkit_binary,
+            run_fn=_run_tool_to_file,
+            run_kwargs={"max_output_bytes": max_output_bytes},
+        )
+    except BaseException:
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+        raise
+
     bed_path = build_output_dir / "exact_match_hits.bed"
     stderr_path = build_output_dir / "exact_match_hits.stderr.log"
-    query_cmd = seqkit_locate_command(reads_fasta, reference)
-    provenance = run_tool_with_provenance(
-        query_cmd.argv,
-        tool="seqkit_locate",
-        output_path=bed_path,
-        stderr_path=stderr_path,
-        command_text=format_command(query_cmd.argv),
-        binary=seqkit_binary,
-        run_fn=_run_tool_to_file,
-    )
+    os.replace(bed_tmp, bed_path)
+    os.replace(stderr_tmp, stderr_path)
+    shutil.rmtree(attempt_dir, ignore_errors=True)
+    provenance_dict = _relocate_provenance_dict(provenance.to_dict(), tmp_dir=attempt_dir, final_dir=build_output_dir)
+
     if disk_ledger is not None:
         disk_ledger.record_step(f"exact_match:{build}", path=build_output_dir)
 
@@ -858,7 +1266,7 @@ def stage_exact_match(
     record["disk_budget_check"] = disk_budget_check
     record["provenance"] = {
         "input_hashes": preflight_report.input_hashes,
-        "seqkit_locate": provenance.to_dict(),
+        "seqkit_locate": provenance_dict,
     }
     _guarded_write_record(build_output_dir / "exact_match.json", record)
     return record
@@ -1074,12 +1482,42 @@ def stage_report(
     align_record: dict,
     exact_match_record: dict,
     reference: Path | None,
+    reference_manifest: dict | None = None,
 ) -> dict:
     mapping_evaluated = bool(align_record.get("executed")) and bool(exact_match_record.get("executed"))
     mapping_results: tuple[MappingResult, ...] = ()
     expected_control_ids: tuple[str, ...] = ()
 
     if mapping_evaluated:
+        # B1-R1: report's active reference/manifest must equal both the
+        # reference align recorded and the one exact_match recorded — fail
+        # closed (hard stop, nothing written) rather than silently attaching
+        # the current reference/junction diagnostics to mapping/exact-match
+        # evidence produced under a different one. A forced re-run of just
+        # `report` against a swapped --reference is exactly the scenario this
+        # closes (the original second-review R3 failure).
+        if reference_manifest is None:
+            raise SystemExit(
+                f"reference manifest required for report's reference-binding check but not provided for build "
+                f"{build!r}"
+            )
+        report_manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
+        if report_manifest_violations:
+            raise SystemExit(
+                f"reference manifest invalid for build {build!r} at report time: {list(report_manifest_violations)}"
+            )
+        current_reference_sha256 = reference_manifest["sha256"]
+        current_manifest_hash = manifest_content_sha256(reference_manifest)
+        for label, upstream_record in (("align", align_record), ("exact_match", exact_match_record)):
+            if (
+                upstream_record.get("reference_sha256") != current_reference_sha256
+                or upstream_record.get("reference_manifest_content_sha256") != current_manifest_hash
+            ):
+                raise SystemExit(
+                    f"report refuses to combine build {build!r}: the current reference/manifest does not match "
+                    f"the reference recorded by {label} (stale/foreign reference); refusing to attach current "
+                    "evidence to older mapping evidence"
+                )
         representative_ids = sorted(sample.representative_ids)
         expected_control_ids = tuple(f"{CONTROL_ID_PREFIX}{sid}" for sid in representative_ids[: expected_controls])
         expected_ids = {a.sample_id: a.stratum for a in sample.assignments}
@@ -1233,6 +1671,8 @@ def _write_provenance(
     reference_manifests: dict[str, dict],
     state: dict,
     disk_ledger: DiskBudgetLedger | None = None,
+    download_records: dict[str, dict] | None = None,
+    derive_records: dict[str, dict] | None = None,
 ) -> dict:
     """Connect provenance to the runner: declared input hashes (dataset CSV,
     config, dataset audit, protein config), resolved binary hashes/versions,
@@ -1259,11 +1699,26 @@ def _write_provenance(
         "combined_report_md": _artifact_hash(output_dir / Path(cfg.outputs.report_md).name),
     }
 
-    builds_payload = {}
+    # Additional provenance correction: a real B1-B6 study spans several
+    # *separate* runner invocations, each typically naming only its own
+    # active --build. Starting from any provenance.json already on disk and
+    # only overwriting the builds this invocation actually touched means
+    # earlier checkpoints' build/disk evidence is preserved (cumulative)
+    # rather than silently dropped whenever a later invocation names a
+    # different --build subset.
+    existing_provenance_path = output_dir / "provenance.json"
+    builds_payload: dict = {}
+    if existing_provenance_path.exists():
+        try:
+            builds_payload = dict(json.loads(existing_provenance_path.read_text()).get("builds", {}))
+        except (json.JSONDecodeError, OSError):
+            builds_payload = {}
     for build in builds:
         build_dir = _build_dir(output_dir, build)
         reference_index_path = build_dir / "reference_index.json"
         builds_payload[build] = {
+            "download": (download_records or {}).get(build, {}),
+            "derive": (derive_records or {}).get(build, {}),
             "index": index_records.get(build, {}),
             "align": align_records.get(build, {}),
             "exact_match": exact_match_records.get(build, {}),
@@ -1363,6 +1818,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pinned root for disposable per-build mapper indices (indices/<build>/)",
     )
     parser.add_argument(
+        "--sources-dir",
+        type=Path,
+        default=Path("references") / "sources",
+        help="Pinned root for downloaded source packages (references/sources/<assembly>/)",
+    )
+    parser.add_argument(
+        "--derived-dir",
+        type=Path,
+        default=Path("references") / "derived",
+        help="Pinned root for derived reference FASTAs/manifests (references/derived/<build>/)",
+    )
+    parser.add_argument(
         "--bwa-index-prefix",
         action="append",
         default=None,
@@ -1420,17 +1887,69 @@ def _stage_is_valid(state: dict, key: str, fingerprint: str) -> bool:
     return state.get("stage_fingerprints", {}).get(key) == fingerprint
 
 
+def _hash_matches(path_str: str | None, expected_sha256: str | None) -> bool:
+    if not path_str or not expected_sha256:
+        return False
+    path = Path(path_str)
+    return path.is_file() and sha256_file(path) == expected_sha256
+
+
+def _verify_mapping_evidence_hashes(align_record: dict, exact_match_record: dict) -> tuple[str, ...]:
+    """B1-R5: prove the actual mapping/exact-match artifacts still exist and
+    match their own recorded hashes — never merely trust the ``executed``
+    JSON booleans, which say nothing about whether the underlying SAM/BED
+    files still exist or were altered since.
+    """
+    violations: list[str] = []
+    if not align_record.get("executed"):
+        violations.append("align.json does not record executed=true")
+    else:
+        sam_paths = align_record.get("sam_paths", {})
+        provenance = align_record.get("provenance", {})
+        for tool, sam_key in (("bwa_mem", "bwa_mem"), ("minimap2_splice", "minimap2_splice")):
+            expected = (provenance.get(tool) or {}).get("output_sha256")
+            if not _hash_matches(sam_paths.get(sam_key), expected):
+                violations.append(f"align {tool} output missing or hash mismatch (recorded evidence has drifted)")
+    if not exact_match_record.get("executed"):
+        violations.append("exact_match.json does not record executed=true")
+    else:
+        expected = (exact_match_record.get("provenance", {}).get("seqkit_locate") or {}).get("output_sha256")
+        if not _hash_matches(exact_match_record.get("bed_path"), expected):
+            violations.append("exact_match seqkit_locate output missing or hash mismatch (recorded evidence has drifted)")
+    return tuple(violations)
+
+
 def _run_cleanup_index(cfg: FeasibilityConfig, *, build: str, indices_dir: Path, output_dir: Path) -> None:
-    """``--cleanup-index BUILD`` entry point (B1 required item 8 / R2):
-    resolve exactly what evidence already exists on disk for ``build`` and
-    delegate the actual safety checks to
-    :func:`rbpbench.coordinates.cleanup.execute_index_cleanup`, which refuses
-    (deleting nothing) unless index provenance, successful mapping outputs,
-    and a passed reconciliation are all already recorded.
+    """``--cleanup-index BUILD`` entry point (B1 required item 8 / R2 / R5):
+    resolve exactly what evidence already exists on disk for ``build``,
+    verify it goes beyond mere JSON booleans (actual mapping/exact-match
+    artifact hashes, and the index manifest's own files), print and durably
+    persist the preview *before* anything is deleted, then delegate the
+    actual deletion to
+    :func:`rbpbench.coordinates.cleanup.execute_index_cleanup`, which
+    refuses (deleting nothing) unless index provenance, successful mapping
+    outputs, and a passed reconciliation are all already recorded.
     """
     index_dir = indices_dir / build
     build_dir = _build_dir(output_dir, build)
-    index_manifest_present = (index_dir / "index_manifest.json").is_file()
+    reference_path = Path("references") / "derived" / build / "reference.fna"
+
+    index_manifest_path = index_dir / "index_manifest.json"
+    index_manifest: dict | None = None
+    index_manifest_present = index_manifest_path.is_file()
+    if index_manifest_present:
+        try:
+            index_manifest = json.loads(index_manifest_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            index_manifest = None
+            index_manifest_present = False
+    if index_manifest_present and index_manifest is not None:
+        index_file_violations = (
+            *verify_index_files_against_manifest(index_manifest, key="bwa_index"),
+            *verify_index_files_against_manifest(index_manifest, key="minimap2_index"),
+        )
+        if index_file_violations:
+            index_manifest_present = False
 
     align_path = build_dir / "align.json"
     exact_path = build_dir / "exact_match.json"
@@ -1439,8 +1958,26 @@ def _run_cleanup_index(cfg: FeasibilityConfig, *, build: str, indices_dir: Path,
     exact_match_record = json.loads(exact_path.read_text()) if exact_path.exists() else {}
     report_payload = json.loads(report_path.read_text()) if report_path.exists() else {}
 
-    mapping_outputs_present = bool(align_record.get("executed")) and bool(exact_match_record.get("executed"))
+    # B1-R5: evidence goes beyond the naive `executed: true` booleans — the
+    # actual SAM/BED artifacts must still exist and hash-match what was
+    # recorded at the time.
+    mapping_evidence_violations = _verify_mapping_evidence_hashes(align_record, exact_match_record)
+    mapping_outputs_present = not mapping_evidence_violations
     reconciliation_passed = report_payload.get("reconciliation", {}).get("status") == "passed"
+
+    # Preview resolved and printed/persisted *before* any deletion decision
+    # is acted on (B1-R5: the CLI previously printed only after deletion).
+    try:
+        preview = plan_index_cleanup(index_dir, reference=reference_path, output_dir=output_dir)
+    except CleanupRefused as exc:
+        raise SystemExit(f"cleanup refused for build {build!r}: {exc}") from exc
+    print(f"cleanup preview for build {build!r}: {preview.resolved_target} ({len(preview.files)} file(s))")
+    for f in preview.files:
+        print(f"  - {f}")
+    if mapping_evidence_violations:
+        print(f"  mapping-evidence violations: {list(mapping_evidence_violations)}")
+
+    receipt_path = build_dir / "cleanup_receipts" / f"{build}_index_cleanup_receipt.json"
 
     try:
         plan = execute_index_cleanup(
@@ -1448,12 +1985,15 @@ def _run_cleanup_index(cfg: FeasibilityConfig, *, build: str, indices_dir: Path,
             index_manifest_present=index_manifest_present,
             mapping_outputs_present=mapping_outputs_present,
             reconciliation_passed=reconciliation_passed,
-            reference=None,
+            reference=reference_path,
             output_dir=output_dir,
+            build=build,
+            index_manifest=index_manifest,
+            receipt_path=receipt_path,
         )
     except CleanupRefused as exc:
         raise SystemExit(f"cleanup refused for build {build!r}: {exc}") from exc
-    print(f"removed {plan.resolved_target} ({len(plan.files)} file(s))")
+    print(f"removed {plan.resolved_target} ({len(plan.files)} file(s)); receipt at {receipt_path}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -1467,6 +2007,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise SystemExit(
             f"--allow-mapping requires exactly one explicit --build, got {list(builds)}; "
             "process one reference build at a time"
+        )
+
+    # B1-R6: real mapping must never be requested with an omitted or "all"
+    # --stage list — that convenience path could cross index/align/
+    # exact_match/report/combined_report review gates in a single
+    # invocation, exactly what the checkpointed execution model forbids.
+    if args.allow_mapping and (not args.stage or "all" in args.stage):
+        raise SystemExit(
+            "--allow-mapping requires an explicit --stage allowlist naming only the stage(s) the active "
+            "checkpoint authorizes; --stage all (or an omitted --stage, which defaults to every stage) is "
+            "refused so a single invocation cannot cross review gates"
         )
 
     references: dict[str, Path] = {}
@@ -1494,13 +2045,24 @@ def main(argv: Sequence[str] | None = None) -> None:
         build, path = _parse_key_value_path(spec, flag="--minimap2-index")
         minimap2_index_overrides[build] = path
 
-    # Fail-closed local-input verification (B1 required item 1 / B2's actual
-    # gate): compare the four frozen dataset/audit/protein/config hashes
-    # before the real CSV can be opened for row-by-row reading. Opt-in via
-    # --execution-sources so 001A's tiny-fixture tests (whose hashes
-    # intentionally do not match the frozen production spec) are unaffected;
-    # a real Task 001B invocation must pass
-    # --execution-sources configs/coordinate_execution_sources.toml.
+    # Fail-closed local-input verification (B1-R6 / B2's actual gate):
+    # compare the four frozen dataset/audit/protein/config hashes before the
+    # real CSV can be opened for row-by-row reading. --execution-sources is
+    # now mandatory for any invocation that will reach the CSV: the runner
+    # itself must guarantee this gate, never merely offer it as an optional
+    # flag a caller could forget. Fixture-only tests must supply their own
+    # fixture spec (never rely on a silent bypass); a real Task 001B
+    # invocation passes --execution-sources
+    # configs/coordinate_execution_sources.toml. --cleanup-index-only
+    # invocations are exempt: they return before the CSV is ever opened.
+    if args.cleanup_index is None and args.execution_sources is None:
+        raise SystemExit(
+            "--execution-sources is required (B1-R6): this invocation would read the dataset CSV, and the "
+            "runner no longer permits a silent production bypass. Pass a checked-in spec — a real Task 001B "
+            "run uses configs/coordinate_execution_sources.toml; fixture-only tests must supply their own "
+            "fixture spec with matching fixture hashes."
+        )
+    execution_source_spec = None
     if args.execution_sources is not None:
         execution_source_spec = load_execution_sources(args.execution_sources)
         local_input_violations = verify_local_inputs(
@@ -1538,6 +2100,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         build: (sha256_file(path) if path.is_file() else None) for build, path in references.items()
     }
     base_fingerprint = content_fingerprint("sample_decode_controls", dataset_csv_hash, config_hash)
+
+    def download_fingerprint(build: str) -> str:
+        source_spec = execution_source_spec.reference_sources.get(build) if execution_source_spec else None
+        return content_fingerprint(
+            "download", base_fingerprint, build, source_spec, args.allow_mapping, args.host_role, args.dry_run
+        )
+
+    def derive_fingerprint(build: str) -> str:
+        recorded_download_fp = state.get("stage_fingerprints", {}).get(_stage_key("download", build), "never_run")
+        return content_fingerprint(
+            "derive", recorded_download_fp, bool(download_records.get(build, {}).get("executed")), args.dry_run
+        )
 
     def index_fingerprint(build: str) -> str:
         return content_fingerprint(
@@ -1587,13 +2161,29 @@ def main(argv: Sequence[str] | None = None) -> None:
         # align's current executed status, so any upstream change — a
         # changed input, or align actually executing after being merely
         # planned — propagates without guessing at flags this call never
-        # received.
+        # received. B1-R1: also includes the *current* reference/manifest
+        # hashes directly (not merely chained through align), so a
+        # --reference override on an invocation that does not touch align
+        # still invalidates a stale exact_match completion rather than
+        # silently skipping it as "already completed with matching inputs".
         recorded_align_fp = state.get("stage_fingerprints", {}).get(_stage_key("align", build), "never_run")
-        return content_fingerprint("exact_match", recorded_align_fp, bool(align_records[build].get("executed")))
+        return content_fingerprint(
+            "exact_match",
+            recorded_align_fp,
+            bool(align_records[build].get("executed")),
+            reference_hashes.get(build),
+            reference_manifest_hashes.get(build),
+        )
 
     def report_fingerprint(build: str) -> str:
         recorded_exact_fp = state.get("stage_fingerprints", {}).get(_stage_key("exact_match", build), "never_run")
-        return content_fingerprint("report", recorded_exact_fp, bool(exact_match_records[build].get("executed")))
+        return content_fingerprint(
+            "report",
+            recorded_exact_fp,
+            bool(exact_match_records[build].get("executed")),
+            reference_hashes.get(build),
+            reference_manifest_hashes.get(build),
+        )
 
     def preflight_fingerprint() -> str:
         return content_fingerprint(
@@ -1629,15 +2219,29 @@ def main(argv: Sequence[str] | None = None) -> None:
     # exact_match may have executed real work in a prior process. Reload
     # their recorded results rather than defaulting to "not executed" and
     # silently losing real evidence when a later stage runs standalone.
+    download_records: dict[str, dict] = {}
+    derive_records: dict[str, dict] = {}
     index_records: dict[str, dict] = {}
     align_records: dict[str, dict] = {}
     exact_match_records: dict[str, dict] = {}
     index_dirs: dict[str, Path] = {build: args.indices_dir / build for build in builds}
+    sources_dirs: dict[str, Path] = {
+        build: args.sources_dir / execution_source_spec.reference_sources[build].assembly
+        for build in builds
+        if execution_source_spec is not None and build in execution_source_spec.reference_sources
+    }
+    derived_dirs: dict[str, Path] = {build: args.derived_dir / build for build in builds}
     for build in builds:
         build_dir = _build_dir(args.output_dir, build)
         index_path = index_dirs[build] / "index.json"
         align_path = build_dir / "align.json"
         exact_path = build_dir / "exact_match.json"
+        download_path = sources_dirs[build] / "download.json" if build in sources_dirs else None
+        derive_path = derived_dirs[build] / "derive.json"
+        download_records[build] = (
+            json.loads(download_path.read_text()) if download_path is not None and download_path.exists() else {"executed": False}
+        )
+        derive_records[build] = json.loads(derive_path.read_text()) if derive_path.exists() else {"executed": False}
         index_records[build] = json.loads(index_path.read_text()) if index_path.exists() else {"executed": False}
         align_records[build] = json.loads(align_path.read_text()) if align_path.exists() else {"executed": False}
         exact_match_records[build] = (
@@ -1658,17 +2262,38 @@ def main(argv: Sequence[str] | None = None) -> None:
             return Path(index_records[build]["minimap2_index"])
         return None
 
-    # One disk-budget ledger per invocation (B1 required item 8), baselined
-    # once before any expensive step; every download/derivation/indexing/
-    # mapping subprocess checks the *remaining* budget against it and
-    # records its own observed new bytes afterward.
-    disk_ledger = start_ledger(args.disk_budget_path) if args.allow_mapping and not args.dry_run else None
+    # One disk-budget ledger, persisted across separate B1-B6 checkpoint
+    # invocations (B1-R4): its baseline/entries are reloaded from
+    # <output-dir>/disk_budget_ledger.json when present, so files/bytes
+    # retained from an earlier checkpoint's own invocation are never dropped
+    # from the accounting merely because this is a new process. Every
+    # download/derivation/indexing/mapping subprocess checks the *remaining*
+    # budget against it and records its own observed new bytes afterward.
+    disk_ledger = (
+        start_ledger(args.disk_budget_path, state_path=args.output_dir / "disk_budget_ledger.json")
+        if args.allow_mapping and not args.dry_run
+        else None
+    )
+    if disk_ledger is not None:
+        # B1-R4: every pinned output/reference/index path must resolve onto
+        # the same filesystem volume as the ledger's own baseline, unless
+        # separately budgeted — merely checking free disk on one volume
+        # cannot enforce a ceiling on bytes actually written to another.
+        volume_check_paths = {"output_dir": args.output_dir, "indices_dir": args.indices_dir}
+        volume_check_paths.update({f"reference:{b}": p for b, p in references.items()})
+        volume_violations = check_pinned_volumes(volume_check_paths, primary=args.disk_budget_path)
+        if volume_violations:
+            raise SystemExit(f"disk-budget volume check failed: {list(volume_violations)}")
 
     for stage in stages:
         if stage in BUILD_SCOPED_STAGES:
             for build in builds:
                 key = _stage_key(stage, build)
-                if stage == "index":
+                if stage == "download":
+                    fingerprint = download_fingerprint(build)
+                elif stage == "derive":
+                    fingerprint = derive_fingerprint(build)
+                elif stage == "index":
                     fingerprint = index_fingerprint(build)
                 elif stage == "align":
                     fingerprint = align_fingerprint(build)
@@ -1684,7 +2309,49 @@ def main(argv: Sequence[str] | None = None) -> None:
                     print(f"{key}: declared inputs/config/reference/authorization changed since it last completed; re-running")
 
                 build_dir = _build_dir(args.output_dir, build)
-                if stage == "index":
+                if stage == "download":
+                    source_spec = execution_source_spec.reference_sources.get(build) if execution_source_spec else None
+                    if source_spec is None:
+                        raise SystemExit(
+                            f"download stage requires --execution-sources to supply a reference source spec for "
+                            f"build {build!r}"
+                        )
+                    download_record = stage_download(
+                        build=build,
+                        source_spec=source_spec,
+                        sources_dir=sources_dirs[build],
+                        allow_mapping=args.allow_mapping,
+                        host_role=args.host_role,
+                        dry_run=args.dry_run,
+                        disk_ledger=disk_ledger,
+                        transport=urllib_transport,
+                    )
+                    download_records[build] = download_record
+                    executed = bool(download_record.get("executed"))
+                    state["mapping_executed"].setdefault(build, {})["download"] = executed
+                    retryable = args.allow_mapping and not executed
+                elif stage == "derive":
+                    source_spec = execution_source_spec.reference_sources.get(build) if execution_source_spec else None
+                    if source_spec is None:
+                        raise SystemExit(
+                            f"derive stage requires --execution-sources to supply a reference source spec for "
+                            f"build {build!r}"
+                        )
+                    derive_record = stage_derive(
+                        build=build,
+                        source_spec=source_spec,
+                        derived_dir=derived_dirs[build],
+                        allow_mapping=args.allow_mapping,
+                        host_role=args.host_role,
+                        download_record=download_records.get(build, {"executed": False}),
+                        dry_run=args.dry_run,
+                        disk_ledger=disk_ledger,
+                    )
+                    derive_records[build] = derive_record
+                    executed = bool(derive_record.get("executed"))
+                    state["mapping_executed"].setdefault(build, {})["derive"] = executed
+                    retryable = args.allow_mapping and not executed
+                elif stage == "index":
                     index_record = stage_index(
                         cfg,
                         build=build,
@@ -1758,14 +2425,18 @@ def main(argv: Sequence[str] | None = None) -> None:
                         align_record=align_records.get(build, {"executed": False}),
                         exact_match_record=exact_match_records.get(build, {"executed": False}),
                         reference=references.get(build),
+                        reference_manifest=reference_manifests.get(build),
                     )
                     retryable = False
-                    # B1 required item 9: a failed reconciliation must make
-                    # the runner exit nonzero, checked directly against
-                    # reconciliation.status rather than trusting that a
-                    # process reaching this point implies success.
+                    # B1 required item 9 / B1-R8: a failed reconciliation
+                    # must make the runner exit nonzero, checked directly
+                    # against reconciliation.status rather than trusting that
+                    # a process reaching this point implies success. This
+                    # stage key must NOT be marked complete on failure: doing
+                    # so would let a later, non-forced invocation with the
+                    # same fingerprint silently skip the still-failed report
+                    # as "already completed with matching inputs".
                     if build_report_payload["reconciliation"]["status"] == "failed":
-                        _mark_stage_complete(state, key, fingerprint)
                         _save_state(state_path, state)
                         raise SystemExit(
                             f"reconciliation failed for build {build!r}: "
@@ -1862,6 +2533,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         reference_manifests=persisted_reference_manifests,
         state=state,
         disk_ledger=disk_ledger,
+        download_records=download_records,
+        derive_records=derive_records,
     )
 
     if args.dry_run:

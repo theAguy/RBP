@@ -20,6 +20,7 @@ from rbpbench.data.audit import sha256_file
 from test_coordinates_runner import (
     FIXTURE_CONFIG,
     FIXTURE_CSV,
+    FIXTURE_EXECUTION_SOURCES,
     _FAKE_BWA,
     _FAKE_MINIMAP2,
     _FAKE_SEQKIT,
@@ -90,6 +91,7 @@ class SingleBuildEnforcementTests(unittest.TestCase):
                     [
                         "--config", str(FIXTURE_CONFIG),
                         "--csv", str(FIXTURE_CSV),
+                        "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(Path(tmp)),
                         "--allow-mapping",
                         "--host-role", "approved_mac",
@@ -105,6 +107,7 @@ class SingleBuildEnforcementTests(unittest.TestCase):
                     [
                         "--config", str(FIXTURE_CONFIG),
                         "--csv", str(FIXTURE_CSV),
+                        "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(Path(tmp)),
                         "--allow-mapping",
                         "--host-role", "approved_mac",
@@ -124,6 +127,7 @@ class SingleBuildEnforcementTests(unittest.TestCase):
                 [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(Path(tmp)),
                     "--stage", "all",
                     "--dry-run",
@@ -152,6 +156,7 @@ class ExecutedRecordProtectionTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--host-role", "approved_mac",
                 "--reference", f"hg38={reference}",
@@ -192,6 +197,7 @@ class ExecutedRecordProtectionTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
@@ -234,6 +240,7 @@ class ReportStageFailedReconciliationExitTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
@@ -350,6 +357,7 @@ class DiskBudgetWiringTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
@@ -379,51 +387,157 @@ class DiskBudgetWiringTests(unittest.TestCase):
             self.assertFalse((output_dir / "hg38" / "align_bwa_mem.sam").exists())
 
 
+def _write_realistic_cleanup_evidence(*, output_dir: Path, index_dir: Path, build: str, reconciliation_status: str):
+    """B1-R5: cleanup now verifies actual artifact hashes, not merely the
+    ``executed`` JSON booleans, so every cleanup fixture must provide real,
+    hash-matching index/mapping evidence rather than empty placeholders.
+    """
+    build_dir = output_dir / build
+    index_dir.mkdir(parents=True)
+    build_dir.mkdir(parents=True)
+
+    bwt_path = index_dir / f"{build}.bwt"
+    mmi_path = index_dir / f"{build}.mmi"
+    bwt_path.write_bytes(b"fake bwt bytes")
+    mmi_path.write_bytes(b"fake mmi bytes")
+    (index_dir / "index_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "build": build,
+                "bwa_index": {"files": [{"path": str(bwt_path), "byte_size": bwt_path.stat().st_size, "sha256": sha256_file(bwt_path)}]},
+                "minimap2_index": {"files": [{"path": str(mmi_path), "byte_size": mmi_path.stat().st_size, "sha256": sha256_file(mmi_path)}]},
+            }
+        )
+    )
+
+    bwa_sam = build_dir / "align_bwa_mem.sam"
+    mm2_sam = build_dir / "align_minimap2_splice.sam"
+    bed_path = build_dir / "exact_match_hits.bed"
+    bwa_sam.write_text("fake bwa sam\n")
+    mm2_sam.write_text("fake mm2 sam\n")
+    bed_path.write_text("fake bed\n")
+
+    (build_dir / "align.json").write_text(
+        json.dumps(
+            {
+                "executed": True,
+                "sam_paths": {"bwa_mem": str(bwa_sam), "minimap2_splice": str(mm2_sam)},
+                "provenance": {
+                    "bwa_mem": {"output_sha256": sha256_file(bwa_sam)},
+                    "minimap2_splice": {"output_sha256": sha256_file(mm2_sam)},
+                },
+            }
+        )
+    )
+    (build_dir / "exact_match.json").write_text(
+        json.dumps(
+            {
+                "executed": True,
+                "bed_path": str(bed_path),
+                "provenance": {"seqkit_locate": {"output_sha256": sha256_file(bed_path)}},
+            }
+        )
+    )
+    (build_dir / "report.json").write_text(json.dumps({"reconciliation": {"status": reconciliation_status}}))
+
+
 class CleanupCliWiringTests(unittest.TestCase):
     def test_cleanup_index_removes_directory_when_evidence_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "out"
             indices_dir = Path(tmp) / "indices"
-            build_dir = output_dir / "hg38"
             index_dir = indices_dir / "hg38"
-            index_dir.mkdir(parents=True)
-            build_dir.mkdir(parents=True)
-            (index_dir / "hg38.bwt").write_bytes(b"x")
-            (index_dir / "index_manifest.json").write_text("{}")
-            (build_dir / "align.json").write_text(json.dumps({"executed": True}))
-            (build_dir / "exact_match.json").write_text(json.dumps({"executed": True}))
-            (build_dir / "report.json").write_text(json.dumps({"reconciliation": {"status": "passed"}}))
+            _write_realistic_cleanup_evidence(
+                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed"
+            )
 
             main(
                 [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--indices-dir", str(indices_dir),
                     "--cleanup-index", "hg38",
                 ]
             )
             self.assertFalse(index_dir.exists())
+            receipt_path = output_dir / "hg38" / "cleanup_receipts" / "hg38_index_cleanup_receipt.json"
+            self.assertTrue(receipt_path.is_file())
+            receipt = json.loads(receipt_path.read_text())
+            self.assertTrue(receipt["completed"])
+            self.assertIsNotNone(receipt["index_manifest"])
 
     def test_cleanup_index_refuses_without_passed_reconciliation(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "out"
             indices_dir = Path(tmp) / "indices"
-            build_dir = output_dir / "hg38"
             index_dir = indices_dir / "hg38"
-            index_dir.mkdir(parents=True)
-            build_dir.mkdir(parents=True)
-            (index_dir / "hg38.bwt").write_bytes(b"x")
-            (index_dir / "index_manifest.json").write_text("{}")
-            (build_dir / "align.json").write_text(json.dumps({"executed": True}))
-            (build_dir / "exact_match.json").write_text(json.dumps({"executed": True}))
-            (build_dir / "report.json").write_text(json.dumps({"reconciliation": {"status": "failed"}}))
+            _write_realistic_cleanup_evidence(
+                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="failed"
+            )
 
             with self.assertRaises(SystemExit):
                 main(
                     [
                         "--config", str(FIXTURE_CONFIG),
                         "--csv", str(FIXTURE_CSV),
+                        "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
+                        "--output-dir", str(output_dir),
+                        "--indices-dir", str(indices_dir),
+                        "--cleanup-index", "hg38",
+                    ]
+                )
+            self.assertTrue(index_dir.exists())
+
+    def test_cleanup_index_refuses_when_recorded_evidence_hash_has_drifted(self):
+        """B1-R5: an `executed: true` boolean alone must not authorize
+        deletion when the actual mapping artifact no longer matches its
+        recorded hash (e.g. silently truncated/edited after the fact).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            indices_dir = Path(tmp) / "indices"
+            index_dir = indices_dir / "hg38"
+            _write_realistic_cleanup_evidence(
+                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed"
+            )
+            # Mutate the BED file after its hash was recorded.
+            (output_dir / "hg38" / "exact_match_hits.bed").write_text("tampered\n")
+
+            with self.assertRaises(SystemExit):
+                main(
+                    [
+                        "--config", str(FIXTURE_CONFIG),
+                        "--csv", str(FIXTURE_CSV),
+                        "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
+                        "--output-dir", str(output_dir),
+                        "--indices-dir", str(indices_dir),
+                        "--cleanup-index", "hg38",
+                    ]
+                )
+            self.assertTrue(index_dir.exists())
+
+    def test_cleanup_index_refuses_a_non_pinned_indices_root(self):
+        """B1-R5: the target must have exactly the pinned indices/<build>/
+        shape — a directory not literally named 'indices' is refused even
+        with otherwise-valid evidence.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            indices_dir = Path(tmp) / "not_indices"
+            index_dir = indices_dir / "hg38"
+            _write_realistic_cleanup_evidence(
+                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed"
+            )
+
+            with self.assertRaises(SystemExit):
+                main(
+                    [
+                        "--config", str(FIXTURE_CONFIG),
+                        "--csv", str(FIXTURE_CSV),
+                        "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--indices-dir", str(indices_dir),
                         "--cleanup-index", "hg38",
@@ -458,6 +572,7 @@ class IndexStageRealBinaryEndToEndTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--indices-dir", str(indices_dir),
                 "--allow-mapping",
@@ -503,6 +618,7 @@ class IndexStageRealBinaryEndToEndTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--indices-dir", str(indices_dir),
                 "--allow-mapping",
@@ -548,6 +664,7 @@ class StderrCaptureTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",

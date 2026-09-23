@@ -18,6 +18,10 @@ from rbpbench.data.audit import sha256_file
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_CONFIG = REPO_ROOT / "tests" / "fixtures" / "coordinates" / "tiny_coordinate_feasibility.toml"
 FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "coordinates" / "tiny_coordinates_dataset.csv"
+# B1-R6: --execution-sources is now mandatory for any invocation that reads
+# the CSV, so every fixture-based test must supply its own fixture spec
+# rather than relying on a silent production bypass.
+FIXTURE_EXECUTION_SOURCES = REPO_ROOT / "tests" / "fixtures" / "coordinates" / "tiny_execution_sources.toml"
 
 
 # Tiny fake mapper/matcher executables (bash + awk, no human data): a
@@ -98,6 +102,57 @@ def _write_fake_executable(bin_dir: Path, name: str, source: str) -> None:
                 raise
 
 
+def _write_matching_execution_sources(
+    path: Path, *, dataset_csv: Path, dataset_audit: Path, proteins_config: Path, study_config: Path
+) -> Path:
+    """B1-R6: build a fixture execution-source spec whose four local-input
+    hashes match whatever fixture files a specific test is actually using
+    (which may differ from the shared FIXTURE_EXECUTION_SOURCES when a test
+    overrides --dataset-audit/--proteins-config/--csv/--config with its own
+    tiny files, or deliberately mutates one at the same path across calls).
+    """
+    path.write_text(
+        f"""
+git_base_commit = "fixture"
+[local_inputs.dataset_csv]
+path = "{dataset_csv}"
+sha256 = "{sha256_file(dataset_csv)}"
+[local_inputs.dataset_audit]
+path = "{dataset_audit}"
+sha256 = "{sha256_file(dataset_audit)}"
+[local_inputs.proteins_config]
+path = "{proteins_config}"
+sha256 = "{sha256_file(proteins_config)}"
+[local_inputs.study_config]
+path = "{study_config}"
+sha256 = "{sha256_file(study_config)}"
+[reference_sources.hg38]
+assembly = "T38"
+refseq_assembly_accession = "GCF_T38"
+fasta_url = "https://example.invalid/hg38.fna.gz"
+fasta_compressed_byte_size = 1
+fasta_upstream_md5 = "{'a' * 32}"
+assembly_report_url = "https://example.invalid/hg38_report.txt"
+assembly_report_md5 = "{'b' * 32}"
+md5checksums_url = "https://example.invalid/hg38_md5.txt"
+[reference_sources.hg19]
+assembly = "T37"
+refseq_assembly_accession = "GCF_T37"
+fasta_url = "https://example.invalid/hg19.fna.gz"
+fasta_compressed_byte_size = 1
+fasta_upstream_md5 = "{'c' * 32}"
+assembly_report_url = "https://example.invalid/hg19_report.txt"
+assembly_report_md5 = "{'d' * 32}"
+md5checksums_url = "https://example.invalid/hg19_md5.txt"
+[derived_reference_policy]
+include_sequence_roles_primary_assembly = ["assembled-molecule"]
+include_non_nuclear_assembled_molecule = true
+accession_preference = ["refseq", "genbank"]
+"""
+    )
+    return path
+
+
 def _write_reference_manifest(manifest_path: Path, *, build: str, reference: Path) -> Path:
     """Write a valid reference manifest matching ``reference``'s real hash
     and size — required (review item 4b) for any real align/exact_match
@@ -146,6 +201,8 @@ class RunnerIntegrationTests(unittest.TestCase):
                     str(FIXTURE_CONFIG),
                     "--csv",
                     str(FIXTURE_CSV),
+                    "--execution-sources",
+                    str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir",
                     str(output_dir),
                     "--stage",
@@ -180,7 +237,7 @@ class RunnerIntegrationTests(unittest.TestCase):
             state = json.loads((output_dir / "state.json").read_text())
             expected_keys = {"preflight", "sample", "decode", "controls", "combined_report"} | {
                 f"{stage}:{build}"
-                for stage in ("index", "align", "exact_match", "report")
+                for stage in ("download", "derive", "index", "align", "exact_match", "report")
                 for build in ("hg38", "hg19")
             }
             self.assertEqual(set(state["completed_stages"]), expected_keys)
@@ -191,6 +248,7 @@ class RunnerIntegrationTests(unittest.TestCase):
             argv = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--stage", "all",
             ]
@@ -208,6 +266,7 @@ class RunnerIntegrationTests(unittest.TestCase):
                 [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--stage", "align",
                     "--stage", "exact_match",
@@ -241,6 +300,7 @@ class AuthorizedDryRunGuaranteeTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
@@ -316,6 +376,7 @@ class RestartStateValidityTests(unittest.TestCase):
                 [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--stage", "all",
                     "--dry-run",
@@ -332,6 +393,7 @@ class RestartStateValidityTests(unittest.TestCase):
                     [
                         "--config", str(FIXTURE_CONFIG),
                         "--csv", str(FIXTURE_CSV),
+                        "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--allow-mapping",
                         "--host-role", "approved_mac",
@@ -351,19 +413,33 @@ class RestartStateValidityTests(unittest.TestCase):
             self.assertIn("representative_stratum_gate", combined_after_real_run["per_build"]["hg38"])
 
     def test_changed_csv_invalidates_sample_decode_controls(self):
+        # B1-R6: --execution-sources is now mandatory, so this test's own
+        # spec must be regenerated to match csv_copy's *current* content
+        # before each call — this test exercises restart-fingerprint
+        # invalidation, not the execution-source hash gate itself (which is
+        # exercised separately in ExecutionSourceVerificationWiringTests).
+        def _spec_for(csv_path: Path) -> Path:
+            return _write_matching_execution_sources(
+                csv_path.with_name("execution_sources.toml"),
+                dataset_csv=csv_path,
+                dataset_audit=REPO_ROOT / "manifests" / "dataset_audit.json",
+                proteins_config=REPO_ROOT / "configs" / "proteins.tsv",
+                study_config=FIXTURE_CONFIG,
+            )
+
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             csv_copy = Path(tmp) / "dataset.csv"
             csv_copy.write_text(FIXTURE_CSV.read_text())
             common = ["--config", str(FIXTURE_CONFIG), "--csv", str(csv_copy), "--output-dir", str(output_dir)]
 
-            main([*common, "--stage", "sample", "--stage", "decode"])
+            main([*common, "--execution-sources", str(_spec_for(csv_copy)), "--stage", "sample", "--stage", "decode"])
             fasta_path = output_dir / "sample_sequences.fasta"
             first_mtime = fasta_path.stat().st_mtime_ns
             first_ids_hash = sha256_file(output_dir / "sample_ids.tsv")
 
             # Re-running unchanged is a no-op (skip).
-            main([*common, "--stage", "sample", "--stage", "decode"])
+            main([*common, "--execution-sources", str(_spec_for(csv_copy)), "--stage", "sample", "--stage", "decode"])
             self.assertEqual(fasta_path.stat().st_mtime_ns, first_mtime)
 
             # Change the CSV content at the same path: sample/decode must
@@ -373,7 +449,7 @@ class RestartStateValidityTests(unittest.TestCase):
             lines[1] = lines[1].replace(",1;2", ",2;1")
             csv_copy.write_text("".join(lines))
 
-            main([*common, "--stage", "sample", "--stage", "decode"])
+            main([*common, "--execution-sources", str(_spec_for(csv_copy)), "--stage", "sample", "--stage", "decode"])
             self.assertNotEqual(sha256_file(output_dir / "sample_ids.tsv"), first_ids_hash)
 
     def test_changed_reference_invalidates_align_even_with_identical_flags(self):
@@ -391,6 +467,7 @@ class RestartStateValidityTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
@@ -408,14 +485,17 @@ class RestartStateValidityTests(unittest.TestCase):
                 first_reference_hash = align_record["provenance"]["input_hashes"]["reference"]
 
                 # Same path, different content, same manifest (now stale —
-                # but stage_align validates the manifest against the *new*
-                # content and must reject it, exercising the manifest check
-                # rather than silently reusing the old completion).
+                # stage_align validates the manifest against the *new*
+                # content and must reject it). B1-R3: a rejected attempt must
+                # never overwrite the prior executed:true record — it raises
+                # rather than silently downgrading align.json to executed:false.
                 reference.write_text(">chr1\n" + "C" * 20 + "\n")
-                main([*common, "--stage", "align"])
+                with self.assertRaises(SystemExit) as ctx:
+                    main([*common, "--stage", "align"])
+                self.assertIn("refusing to overwrite", str(ctx.exception))
                 align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
-                self.assertFalse(align_record["executed"])
-                self.assertIn("manifest", align_record["skip_reason"])
+                self.assertTrue(align_record["executed"])
+                self.assertEqual(align_record["provenance"]["input_hashes"]["reference"], first_reference_hash)
 
                 # With a manifest that matches the new content, align must
                 # actually re-run rather than being skipped as already
@@ -444,6 +524,7 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
         return [
             "--config", str(FIXTURE_CONFIG),
             "--csv", str(FIXTURE_CSV),
+            "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
             "--output-dir", str(tmp),
             "--allow-mapping",
             "--host-role", "approved_mac",
@@ -483,15 +564,25 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
                 manifest_payload["sha256"] = "0" * 64
                 manifest_path.write_text(json.dumps(manifest_payload))
 
-                main([*common, "--stage", "align"])
+                # B1-R3: a manifest-invalid attempt must never overwrite the
+                # prior executed:true record — it raises rather than
+                # silently downgrading align.json to executed:false. The
+                # rejected attempt is instead durably recorded separately
+                # (see the .rejected_attempts.jsonl sidecar).
+                with self.assertRaises(SystemExit) as ctx:
+                    main([*common, "--stage", "align"])
+                self.assertIn("refusing to overwrite", str(ctx.exception))
 
             align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
-            self.assertFalse(align_record["executed"])
-            self.assertIn("manifest", align_record["skip_reason"])
-            self.assertIn("sha256", " ".join(align_record["reference_manifest_validation"]["violations"]))
-            # The invalid attempt's own (rejected) manifest is what's
-            # persisted, not silently kept as the old valid one.
-            self.assertEqual(align_record["reference_manifest"]["sha256"], "0" * 64)
+            self.assertTrue(align_record["executed"])
+            rejected_path = output_dir / "hg38" / "align.json.rejected_attempts.jsonl"
+            self.assertTrue(rejected_path.is_file())
+            rejected_entries = [json.loads(line) for line in rejected_path.read_text().splitlines()]
+            self.assertIn("manifest", rejected_entries[-1]["skip_reason"])
+            self.assertIn("sha256", " ".join(rejected_entries[-1]["reference_manifest_validation"]["violations"]))
+            # The rejected attempt's own manifest is what's recorded in the
+            # sidecar, not silently discarded.
+            self.assertEqual(rejected_entries[-1]["reference_manifest"]["sha256"], "0" * 64)
 
     def test_contig_category_metadata_change_with_unchanged_fasta_reruns_combined_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -591,6 +682,7 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
                 argv = [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--allow-mapping",
                     "--host-role", "approved_mac",
@@ -638,6 +730,7 @@ class PreflightHardPrerequisiteTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
@@ -683,6 +776,7 @@ class PreflightHardPrerequisiteTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
@@ -718,6 +812,7 @@ class RunnerRestartTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
             ]
             # First "process": only the sample stage runs, then exits.
@@ -746,6 +841,7 @@ class RunnerRestartTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--allow-mapping",
                 "--host-role", "approved_mac",
@@ -793,6 +889,7 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
         argv = [
             "--config", str(FIXTURE_CONFIG),
             "--csv", str(FIXTURE_CSV),
+            "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
             "--output-dir", str(output_dir),
             "--allow-mapping",
             "--host-role", "approved_mac",
@@ -894,6 +991,7 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
                 argv = [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--allow-mapping",
                     "--host-role", "approved_mac",
@@ -917,6 +1015,7 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
                 [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--stage", "all",
                     "--dry-run",
@@ -959,6 +1058,7 @@ class SequentialTwoBuildProcessingTests(unittest.TestCase):
             common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                 "--output-dir", str(output_dir),
                 "--host-role", "approved_mac",
                 "--reference", f"hg38={ref_hg38}",
@@ -1256,10 +1356,23 @@ class ProvenanceCompletenessTests(unittest.TestCase):
             dataset_audit.write_text(json.dumps({"ok": True}))
             proteins_config = Path(tmp) / "proteins.tsv"
             proteins_config.write_text("protein_id\tname\n1\tTEST\n")
+            # B1-R6: this test overrides --dataset-audit/--proteins-config
+            # with its own tiny fixtures, so the mandatory --execution-sources
+            # spec must match *those*, not the shared FIXTURE_EXECUTION_SOURCES
+            # (which pins the real manifests/dataset_audit.json and
+            # configs/proteins.tsv hashes).
+            custom_sources = _write_matching_execution_sources(
+                Path(tmp) / "execution_sources.toml",
+                dataset_csv=FIXTURE_CSV,
+                dataset_audit=dataset_audit,
+                proteins_config=proteins_config,
+                study_config=FIXTURE_CONFIG,
+            )
 
             argv = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(custom_sources),
                 "--output-dir", str(output_dir),
                 "--dataset-audit", str(dataset_audit),
                 "--proteins-config", str(proteins_config),

@@ -102,6 +102,7 @@ def run_tool_with_provenance(
     command_text: str,
     binary: BinaryProvenance,
     run_fn,
+    run_kwargs: dict | None = None,
 ) -> ToolRunProvenance:
     """Run ``run_fn(argv, output_path=output_path, stderr_path=stderr_path)``
     and capture provenance.
@@ -113,10 +114,12 @@ def run_tool_with_provenance(
     warnings (e.g. minimap2's parameter-override or multipart-index
     warnings) are load-bearing evidence, not noise. This function only wraps
     that call with timing/memory/output-and-stderr-hash bookkeeping so the
-    subprocess-invocation code path stays in one place.
+    subprocess-invocation code path stays in one place. ``run_kwargs`` is
+    forwarded to ``run_fn`` unchanged (e.g. a ``max_output_bytes`` cap; see
+    B1-R4's live build-output-allowance enforcement).
     """
     start = time.monotonic()
-    run_fn(argv, output_path=output_path, stderr_path=stderr_path)
+    run_fn(argv, output_path=output_path, stderr_path=stderr_path, **(run_kwargs or {}))
     elapsed = time.monotonic() - start
     return ToolRunProvenance(
         tool=tool,

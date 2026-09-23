@@ -1,0 +1,60 @@
+# Frozen Task 001B execution-source specification.
+#
+# Every value here is taken directly from the reviewed, reconciled task:
+#   docs/tasks/001b_coordinate_feasibility_execution.md
+#   docs/reviews/001b_coordinate_execution_reconciliation.md
+#
+# The four local-input hashes below MUST be compared against the real files
+# before the real CSV is opened (see
+# rbpbench.coordinates.execution_sources.verify_local_inputs). The two
+# reference sources are immutable NCBI RefSeq source packages; B1 must not
+# request either URL. Any change to a value below requires a recorded
+# decision in docs/DECISIONS.md; silent re-pinning is prohibited.
+
+git_base_commit = "ad3686414d9bf5b9c305434665f7d65ec9ae20c7"
+
+[local_inputs.dataset_csv]
+path = "dataset_K562_multilabel_with_NEGs.csv"
+sha256 = "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945"
+
+[local_inputs.dataset_audit]
+path = "manifests/dataset_audit.json"
+sha256 = "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"
+
+[local_inputs.proteins_config]
+path = "configs/proteins.tsv"
+sha256 = "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+
+[local_inputs.study_config]
+path = "configs/coordinate_feasibility.toml"
+sha256 = "91c88168225648d16835f0a0d322dcb0317ce9baaa4a4a8bdb4907f917b4ec5c"
+
+[reference_sources.hg38]
+assembly = "GRCh38.p14"
+refseq_assembly_accession = "GCF_000001405.40"
+fasta_url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.fna.gz"
+fasta_compressed_byte_size = 972898531
+fasta_upstream_md5 = "c30471567037b2b2389d43c908c653e1"
+assembly_report_url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GCF_000001405.40_GRCh38.p14_assembly_report.txt"
+assembly_report_md5 = "21f3ac4aa8245a99eb874082051b9dde"
+md5checksums_url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/md5checksums.txt"
+
+[reference_sources.hg19]
+assembly = "GRCh37.p13"
+refseq_assembly_accession = "GCF_000001405.25"
+fasta_url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.25_GRCh37.p13/GCF_000001405.25_GRCh37.p13_genomic.fna.gz"
+fasta_compressed_byte_size = 943912841
+fasta_upstream_md5 = "faf040d8b57cc04f1a4d5b23cccbb5ce"
+assembly_report_url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.25_GRCh37.p13/GCF_000001405.25_GRCh37.p13_assembly_report.txt"
+assembly_report_md5 = "5ded666a3acfcf7262370b7b4328badd"
+md5checksums_url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.25_GRCh37.p13/md5checksums.txt"
+
+[derived_reference_policy]
+# Sequence-Role values (from the assembly report) included when
+# Assembly-Unit == "Primary Assembly".
+include_sequence_roles_primary_assembly = ["assembled-molecule", "unlocalized-scaffold", "unplaced-scaffold"]
+# Plus the mitochondrial assembled-molecule from the "non-nuclear" unit.
+include_non_nuclear_assembled_molecule = true
+# Preserve the source accession as the FASTA identifier: RefSeq when
+# present, otherwise GenBank. Never rename to a convenience alias.
+accession_preference = ["refseq", "genbank"]

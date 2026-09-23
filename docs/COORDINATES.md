@@ -129,28 +129,118 @@ PYTHONPATH=src python3 -m rbpbench.coordinates.runner \
 This writes `sample_ids.tsv`, `sample_sequences.fasta`,
 `control_sequences.fasta`, `preflight.json`, `provenance.json`, `state.json`,
 and `dry_run.json` to `--output-dir`, plus per build (default `hg38` and
-`hg19`) `<output-dir>/<build>/align.json` (mapping skipped and recorded why)
-and `<output-dir>/<build>/exact_match.json` (search skipped and recorded
-why), and finally the combined `report.json`
+`hg19`) `<indices-dir>/<build>/index.json` (index preparation skipped and
+recorded why), `<output-dir>/<build>/align.json` (mapping skipped and
+recorded why), and `<output-dir>/<build>/exact_match.json` (search skipped
+and recorded why), and finally the combined `report.json`
 (`per_build.<build>.mapping_evaluated = false`, since mapping never ran) and
 `report.md` at the top level. Re-running without `--force` skips stages
-already recorded in `state.json`; build-scoped stages (`align`,
+already recorded in `state.json`; build-scoped stages (`index`, `align`,
 `exact_match`, `report`) are tracked per build (e.g. `"align:hg38"`) so
 processing one build never skips or overwrites another's.
 
 Real mapping only runs when `--allow-mapping`, `--host-role=approved_mac`,
-and a `--reference <build>=<path>` pointing at an existing FASTA for that
-build are all given, `--dry-run` is *not* given, and a fresh preflight check
-bound to that exact reference/reads pair passes; on any other host, or
-without those flags, `align`/`exact_match` only construct and log the
+exactly one explicit `--build` (Task 001B checkpoint B1: real mapping never
+authorizes zero or multiple builds in one invocation), and a
+`--reference <build>=<path>` pointing at an existing FASTA for that build
+are all given, `--dry-run` is *not* given, and a fresh preflight check bound
+to that exact reference/reads pair passes; on any other host, or without
+those flags, `index`/`align`/`exact_match` only construct and log the
 commands that *would* run, and the combined report's
 `per_build.<build>.mapping_evaluated` is explicitly `false` rather than a
 hollow `passed`.
 
-## Known assumption to confirm in Task 001B
+## Confirmed assumption (Task 001B checkpoint B1)
 
 `rbpbench.coordinates.commands.seqkit_locate_command` and
-`rbpbench.coordinates.exact_match.parse_seqkit_bed` encode an assumed SeqKit
-2.13.0 CLI contract (`--use-fmi --bed --pattern-file`, BED6 output columns)
-that could not be verified against a real SeqKit binary in this environment.
-Confirm with `seqkit locate --help` before relying on it in Task 001B.
+`rbpbench.coordinates.exact_match.parse_seqkit_bed`'s assumed SeqKit 2.13.0
+CLI contract (`--use-fmi --bed --pattern-file`, BED6 output columns, both
+strands covered by one invocation) is now **confirmed** against the real
+pinned binary — see `tests/test_coordinates_real_binaries.py`.
+
+## Task 001B checkpoint B1 — readiness layer (implemented here)
+
+B1 added the execution layer Task 001A intentionally stopped before, tested
+only against tiny synthetic fixtures and the real pinned tool binaries in an
+isolated project environment; it does **not** open the real CSV, download a
+human reference, build a human-genome index, or run real mapping.
+
+- `configs/coordinate_execution_sources.toml` +
+  `rbpbench.coordinates.execution_sources`: the checked-in execution-source
+  specification (frozen four local-input hashes, both NCBI RefSeq reference
+  sources, and the derived-reference contig policy) and the fail-closed
+  `verify_local_inputs` comparison. The runner's `--execution-sources PATH`
+  flag wires this in *before* the CSV is opened for row-by-row reading; it
+  is opt-in so 001A's tiny-fixture tests (whose hashes intentionally do not
+  match the frozen production spec) are unaffected. A real Task 001B B2+
+  invocation must pass `--execution-sources configs/coordinate_execution_sources.toml`.
+- `rbpbench.coordinates.download.restart_safe_download`: writes to a
+  `.partial` sibling via an injected `transport` callable, verifies the
+  upstream MD5 before atomically promoting (`os.replace`) onto the final
+  path, and never touches the network itself — B1's tests use only a local
+  fake transport.
+- `rbpbench.coordinates.derive_reference`: a single-sequential-pass
+  assembly-report parser and streaming FASTA filter implementing the frozen
+  contig policy (`assembled-molecule`/`unlocalized-scaffold`/
+  `unplaced-scaffold` from `Primary Assembly`, plus the mitochondrial
+  `assembled-molecule` from `non-nuclear`), verifying exactly-once source
+  occurrence, no unselected accession leaking through, and assembly-report
+  length agreement; `build_reference_manifest` assembles a manifest
+  satisfying `rbpbench.coordinates.manifest.REQUIRED_REFERENCE_MANIFEST_FIELDS`
+  plus source/assembly-report hashes, an accession-to-chromosome-name table,
+  and masking (`soft`/`hard`/`none`) base counts — directly usable as the
+  runner's `--reference-manifest`.
+- `rbpbench.coordinates.indexing`: `bwa index -p indices/<build>/<build>`
+  and `minimap2 -x splice:sr -I 8G -d indices/<build>/<build>.mmi` with
+  stdout/stderr captured *separately* (never `DEVNULL`) and hashed;
+  minimap2's own stderr is parsed for its resolved `kmer size`/`skip`/
+  `is_hpc` stat line (confirmed `k=15`, `w=5`, non-HPC against the real
+  2.31 binary) and for the parameter-override / multi-part-index
+  conditions, either of which raises `IndexBuildError` rather than
+  producing a usable index. `build_index_manifest` records creation-time
+  SHA-256/size for every index file; `verify_index_files_against_manifest`
+  re-verifies them (never trusting size/mtime alone) before a prepared
+  index is used for real mapping — see the runner's `index` stage.
+- The runner's new build-scoped `index` stage (`preflight` → `sample` →
+  `decode` → `controls` → **`index`** → `align` → `exact_match` → `report` →
+  `combined_report`) prepares both indices under `indices/<build>/` with
+  the same `--dry-run`/`--allow-mapping`/`--host-role`/reference-manifest/
+  fresh-preflight gating as `align`/`exact_match`. `align` then passes the
+  prepared BWA index prefix and minimap2 `.mmi` to the mappers instead of
+  the bare FASTA whenever the `index` stage has actually executed for that
+  build (falling back to the FASTA otherwise, e.g. in 001A's fixture-only
+  tests); SeqKit, reference-manifest validation, and the canonical-junction
+  lookup continue to use the plain FASTA regardless.
+- `rbpbench.coordinates.cleanup`: `execute_index_cleanup` (wired to the
+  runner's `--cleanup-index BUILD` flag) removes exactly
+  `indices/<build>/` — refusing a symlinked target and any target equal to,
+  containing, or contained by the reference or output directory — and only
+  after index provenance, successful mapping outputs, and a passed
+  reconciliation are already recorded on disk.
+- `rbpbench.coordinates.diskbudget`: a per-invocation `DiskBudgetLedger`
+  baselined once at start; `check_projected_peak` is a fail-closed gate run
+  before every real index-build/mapping subprocess (never merely a free-disk
+  check), comparing observed-new-bytes-so-far plus the next step's planned
+  allowance against the frozen 30-GiB B6 ledger, and refusing if projected
+  free disk would fall under 80 GiB. Recorded in `provenance.json`'s
+  `disk_budget` key.
+- Real mapping now requires **exactly one** explicit `--build`; the runner
+  refuses `--allow-mapping` with zero or multiple builds.
+- A plainly unauthorized retry (`--dry-run`, or missing
+  `--allow-mapping`/wrong `--host-role`) can never overwrite a prior
+  `executed: true` `align.json`/`exact_match.json`/`index.json` — it raises
+  rather than silently erasing prior accepted checkpoint evidence. A fully
+  authorized attempt whose *declared inputs actually changed* (a new
+  reference, a since-invalidated manifest, a preflight that now fails) is
+  not treated as "a retry" in this sense: its outcome is still recorded, so
+  restart-fingerprint invalidation (Task 001A) keeps working exactly as
+  before.
+- A failed per-build reconciliation now makes the `report` stage's `main()`
+  invocation exit nonzero directly (not only discoverable later via
+  `combined_report`), while still recording `reconciliation.status` in
+  `report.json` for the reviewer to inspect independently of the exit code.
+- `manifests/coordinate_execution_environment_001b.{yml,explicit.txt,json}`:
+  the reproducible exact environment export (conda channels/package
+  builds), plus machine-readable host/RAM/CPU/disk/volume-identity and
+  resolved binary versions/SHA-256 hashes, and the minimap2 2.31 resolved
+  `k=15`/`w=5`/non-HPC/single-part confirmation.

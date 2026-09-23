@@ -1,0 +1,82 @@
+{
+  "conda_environment": {
+    "channels": [
+      "bioconda",
+      "conda-forge"
+    ],
+    "name": "rbpbench-coord-001b",
+    "prefix": "/opt/miniconda3/envs/rbpbench-coord-001b",
+    "solver": "classic (libmamba failed on a pre-existing local libffi solver conflict unrelated to these packages; recorded as a resolved gap, not silently worked around)"
+  },
+  "disk": {
+    "df_-h": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk1s2   932Gi   753Gi   153Gi    84%    3.9M  1.6G    0%   /System/Volumes/Data",
+    "free_gib": 153.07,
+    "mount_point": "/System/Volumes/Data",
+    "path_measured": "/Users/guyassa/Desktop/Technion_courses/winter_2026/bioinformatics",
+    "total_gib": 931.547,
+    "used_gib": 778.477,
+    "volume_name": "Macintosh HD - Data",
+    "volume_uuid": "37053723-DACF-43CD-B656-4AA8994869A1"
+  },
+  "generated_at_utc": "2026-09-23T06:44:30Z",
+  "host": {
+    "architecture": "x86_64",
+    "cpu_count_logical": 8,
+    "cpu_count_physical": 4,
+    "kernel_version": "23.4.0",
+    "os_name": "Darwin",
+    "os_version": "14.4.1",
+    "physical_ram_bytes": 17179869184,
+    "physical_ram_gib": 16.0
+  },
+  "minimap2_resolved_index_settings": {
+    "note": "Confirmed by building a tiny synthetic 50,000 nt single-contig reference with `minimap2 -x splice:sr -I 8G -d out.mmi ref.fa` and parsing its own stderr (see rbpbench.coordinates.indexing.parse_minimap2_index_settings / tests/test_coordinates_indexing.py::RealBinaryIndexPreparationTests).",
+    "raw_stat_line": "[M::mm_idx_stat] kmer size: 15; skip: 5; is_hpc: 0; #seq: 1",
+    "resolved_is_hpc": false,
+    "resolved_k": 15,
+    "resolved_w": 5,
+    "single_part_confirmed": true
+  },
+  "osx_64_package_availability_first_stop_check": {
+    "bwa=0.7.19": [
+      "h7f84b70_0",
+      "h7f84b70_1"
+    ],
+    "checked_via": "conda search -c bioconda -c conda-forge <pkg>=<version> --subdir osx-64",
+    "minimap2=2.31": [
+      "h17d07ba_0"
+    ],
+    "result": "all three exact pinned versions available; proceeded past the first stop check",
+    "seqkit=2.13.0": [
+      "h193322a_0"
+    ]
+  },
+  "pinned_tools": {
+    "bwa": {
+      "binary_sha256": "9242c72ea1b403233cfcf9d7efe625479d1dfefae6d74ac277bd9ee559745e89",
+      "expected_version": "0.7.19",
+      "reported_version_output": "Contact: Heng Li <hli@ds.dfci.harvard.edu>",
+      "resolved_conda_build": "bwa=0.7.19=h7f84b70_1",
+      "resolved_path": "/opt/miniconda3/envs/rbpbench-coord-001b/bin/bwa"
+    },
+    "minimap2": {
+      "binary_sha256": "a051598fff1cea18ce305570dea63e0dd26df6428af2f355e261c90904c1cddc",
+      "expected_version": "2.31",
+      "reported_version_output": "2.31-r1302",
+      "resolved_conda_build": "minimap2=2.31=h17d07ba_0",
+      "resolved_path": "/opt/miniconda3/envs/rbpbench-coord-001b/bin/minimap2"
+    },
+    "seqkit": {
+      "binary_sha256": "1920cba96278dc11a37b26e11a69903da427f3b2453d3cb52ef356ca52ab1dd3",
+      "expected_version": "2.13.0",
+      "reported_version_output": "seqkit v2.13.0",
+      "resolved_conda_build": "seqkit=2.13.0=h193322a_0",
+      "resolved_path": "/opt/miniconda3/envs/rbpbench-coord-001b/bin/seqkit"
+    }
+  },
+  "purpose": "Task 001B checkpoint B1 environment/host/tool evidence",
+  "python": {
+    "executable": "/opt/miniconda3/envs/rbpbench-coord-001b/bin/python3",
+    "version": "3.11.16 (main, Sep  2 2026, 23:48:39) [Clang 21.1.8 ]"
+  }
+}

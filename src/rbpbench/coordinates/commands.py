@@ -43,6 +43,26 @@ def bwa_mem_command(reference_fasta: Path, reads_fasta: Path, *, threads: int) -
     return ToolCommand(tool="bwa", argv=argv, pinned_version="0.7.19")
 
 
+def bwa_index_command(reference_fasta: Path, prefix: Path) -> ToolCommand:
+    """``bwa index -p PREFIX REFERENCE``: a build-specific index prefix under
+    a disposable ``indices/<build>/`` directory, never bwa's default
+    in-place index next to the reference FASTA. Pass ``PREFIX`` (not the
+    FASTA) as the reference argument to :func:`bwa_mem_command` afterward.
+    """
+    argv = ("bwa", "index", "-p", str(prefix), str(reference_fasta))
+    return ToolCommand(tool="bwa", argv=argv, pinned_version="0.7.19")
+
+
+def minimap2_index_command(reference_fasta: Path, output_mmi: Path) -> ToolCommand:
+    """``minimap2 -x splice:sr -I 8G -d OUTPUT REFERENCE``: the frozen
+    one-part index shape (preset before ``-d``; resolves to ``k=15``,
+    ``w=5``, non-HPC minimizers — verified against the installed binary's
+    own stderr, see :mod:`rbpbench.coordinates.indexing`).
+    """
+    argv = ("minimap2", "-x", "splice:sr", "-I", "8G", "-d", str(output_mmi), str(reference_fasta))
+    return ToolCommand(tool="minimap2", argv=argv, pinned_version="2.31")
+
+
 def minimap2_splice_command(reference_fasta: Path, reads_fasta: Path, *, threads: int) -> ToolCommand:
     """``minimap2 -ax splice:sr --secondary=yes -N 20 --MD --eqx -t N REF READS``."""
     if threads < 1:

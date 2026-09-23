@@ -37,6 +37,7 @@ import argparse
 import csv
 import gzip
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Sequence
@@ -52,6 +53,7 @@ from rbpbench.coordinates.alignment import (
     near_tied_secondary_fractions,
     parse_sam_line,
 )
+from rbpbench.coordinates.cleanup import CleanupRefused, execute_index_cleanup
 from rbpbench.coordinates.commands import (
     bwa_mem_command,
     format_command,
@@ -61,8 +63,22 @@ from rbpbench.coordinates.commands import (
 from rbpbench.coordinates.config import FeasibilityConfig, load_config
 from rbpbench.coordinates.controls import generate_control
 from rbpbench.coordinates.decode import decode_and_validate, fasta_record
+from rbpbench.coordinates.diskbudget import (
+    BUILD_OUTPUT_ALLOWANCE_GIB,
+    PLANNED_ALLOWANCES_GIB,
+    DiskBudgetLedger,
+    check_projected_peak,
+    start_ledger,
+)
 from rbpbench.coordinates.exact_match import exact_occurrence_count, exact_unique_confirmed, parse_seqkit_bed
+from rbpbench.coordinates.execution_sources import load_execution_sources, verify_local_inputs
 from rbpbench.coordinates.hashing import content_fingerprint, control_seed
+from rbpbench.coordinates.indexing import (
+    build_index_manifest,
+    prepare_bwa_index,
+    prepare_minimap2_index,
+    verify_index_files_against_manifest,
+)
 from rbpbench.coordinates.manifest import validate_reference_manifest
 from rbpbench.coordinates.preflight import APPROVED_MAC, DEV_VM, run_preflight
 from rbpbench.coordinates.provenance import resolve_binary_provenance, run_tool_with_provenance
@@ -78,8 +94,8 @@ from rbpbench.coordinates.report import (
 from rbpbench.coordinates.sampling import DatasetRow, SampleAssignment, SamplingResult, build_sample
 from rbpbench.data.audit import parse_labels, sha256_file
 
-STAGES = ("preflight", "sample", "decode", "controls", "align", "exact_match", "report", "combined_report")
-BUILD_SCOPED_STAGES = ("align", "exact_match", "report")
+STAGES = ("preflight", "sample", "decode", "controls", "index", "align", "exact_match", "report", "combined_report")
+BUILD_SCOPED_STAGES = ("index", "align", "exact_match", "report")
 DEFAULT_BUILDS = ("hg38", "hg19")
 
 CONTROL_ID_PREFIX = "control_"
@@ -168,8 +184,45 @@ def _save_state(state_path: Path, state: dict) -> None:
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    """Write JSON atomically: a partial write (crash, disk-full) can never
+    leave ``path`` holding truncated/corrupt content, and a concurrent
+    reader can never observe a half-written file — required for "successful
+    replacements remain atomic" (B1 required item 6).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp_path = path.with_name(path.name + f".tmp{os.getpid()}")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp_path, path)
+
+
+def _guarded_write_record(path: Path, record: dict) -> None:
+    """Write an ``align.json``/``exact_match.json``/``index.json``-shaped
+    record, refusing to silently overwrite a prior ``executed: true`` record
+    with a *plainly unauthorized* attempt's record (``--dry-run``, or the
+    basic capability check failing — missing ``--allow-mapping``, wrong
+    ``--host-role``, or a missing reference/reads file). Used only for those
+    two absolute-guard branches: a fully authorized re-attempt that
+    legitimately re-validates a *changed* declared input (a new reference
+    whose manifest is now stale, a preflight that now fails against updated
+    content, ...) is not "a retry" in this sense — restart fingerprints
+    already force it to re-run, and its outcome must be recorded even when
+    that outcome is "invalid", so those branches write plainly via
+    ``_write_json``. This guard exists only to stop an accidental
+    unauthorized re-run (e.g. forgetting ``--allow-mapping``) from silently
+    erasing previously accepted checkpoint evidence.
+    """
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing = None
+        if existing is not None and existing.get("executed") and not record.get("executed"):
+            raise SystemExit(
+                f"refusing to overwrite {path}: it already records executed=true, but this attempt did not "
+                f"execute real work ({record.get('skip_reason')!r}); a failed/dry-run/unauthorized retry must "
+                "never erase prior accepted checkpoint evidence"
+            )
+    _write_json(path, record)
 
 
 def _sample_state_path(output_dir: Path) -> Path:
@@ -347,21 +400,26 @@ def stage_controls(
 _MAPPING_TOOL_TIMEOUT_SECONDS = 6 * 60 * 60  # generous bound for a feasibility-scale run; never unbounded
 
 
-def _run_tool_to_file(argv: Sequence[str], *, output_path: Path) -> None:
-    """Execute a pinned mapper/matcher command and capture its stdout.
+def _run_tool_to_file(argv: Sequence[str], *, output_path: Path, stderr_path: Path) -> None:
+    """Execute a pinned mapper/matcher command, capturing stdout and stderr
+    *separately*.
 
-    Always ``shell=False``: ``argv`` is a list built by
-    :mod:`rbpbench.coordinates.commands`, never an interpolated shell string.
-    Bounded by a generous timeout so a wedged mapper process cannot hang the
-    pipeline forever.
+    stderr is never sent to ``DEVNULL``: a mapper's own diagnostic warnings
+    (e.g. minimap2's parameter-override or multipart-index warnings) are
+    load-bearing evidence, not noise, and must be preserved and hashed (see
+    :mod:`rbpbench.coordinates.provenance`). Always ``shell=False``: ``argv``
+    is a list built by :mod:`rbpbench.coordinates.commands`, never an
+    interpolated shell string. Bounded by a generous timeout so a wedged
+    mapper process cannot hang the pipeline forever.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w") as handle:
+    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as out_handle, stderr_path.open("w") as err_handle:
         subprocess.run(
             list(argv),
             shell=False,
-            stdout=handle,
-            stderr=subprocess.DEVNULL,
+            stdout=out_handle,
+            stderr=err_handle,
             check=True,
             text=True,
             timeout=_MAPPING_TOOL_TIMEOUT_SECONDS,
@@ -390,6 +448,143 @@ def _mapping_capable(*, allow_mapping: bool, host_role: str, reference: Path | N
     return None
 
 
+def _check_disk_budget_or_fail(
+    ledger: DiskBudgetLedger | None, *, label: str, allowance_gib: float, disk_path: Path
+) -> dict | None:
+    """Fail-closed projected-peak check (review item 5 / B1 required item 8)
+    run before every download/derivation/indexing/mapping subprocess. Raises
+    ``SystemExit`` (never proceeds) when the projected total new disk would
+    exceed the 30-GiB ceiling or free disk would fall below 80 GiB. Returns
+    ``None`` when no ledger is supplied (direct unit-test calls of a single
+    stage function without a shared runner-level ledger).
+    """
+    if ledger is None:
+        return None
+    check = check_projected_peak(ledger, next_step_allowance_gib=allowance_gib, disk_path=disk_path)
+    if not check.ok:
+        raise SystemExit(f"disk-budget check failed before {label!r}: {list(check.violations)}")
+    return check.to_dict()
+
+
+def _index_capable(*, allow_mapping: bool, host_role: str, reference: Path | None) -> str | None:
+    """Same basic capability shape as ``_mapping_capable`` but for index
+    preparation, which needs a reference but not a reads FASTA.
+    """
+    if not allow_mapping or host_role != APPROVED_MAC:
+        return (
+            "index preparation requires --allow-mapping together with --host-role=approved_mac "
+            f"(got allow_mapping={allow_mapping}, host_role={host_role!r})"
+        )
+    if reference is None or not Path(reference).is_file():
+        return f"reference FASTA not found or not provided ({reference})"
+    return None
+
+
+def stage_index(
+    cfg: FeasibilityConfig,
+    *,
+    build: str,
+    index_dir: Path,
+    allow_mapping: bool,
+    host_role: str,
+    threads: int,
+    reference: Path | None,
+    reference_manifest: dict | None,
+    dry_run: bool,
+    disk_ledger: DiskBudgetLedger | None = None,
+) -> dict:
+    """Prepare the build-specific BWA index prefix and minimap2 ``.mmi`` index
+    under ``index_dir`` (the pinned ``indices/<build>/`` directory), with
+    creation-time provenance (commands, output-file hashes/sizes, elapsed
+    time, peak memory) and minimap2's resolved-parameter/single-part
+    verification. Gated identically to ``stage_align``/``stage_exact_match``:
+    ``--dry-run`` is an absolute guard checked first, then the same
+    allow-mapping/host-role/reference-manifest/fresh-preflight chain.
+    """
+    bwa_prefix = index_dir / build
+    mm2_index = index_dir / f"{build}.mmi"
+    record = {
+        "planned_commands": {
+            "bwa_index": format_command(("bwa", "index", "-p", str(bwa_prefix), str(reference or Path("reference.fasta")))),
+            "minimap2_index": format_command(
+                ("minimap2", "-x", "splice:sr", "-I", "8G", "-d", str(mm2_index), str(reference or Path("reference.fasta")))
+            ),
+        },
+        "executed": False,
+        "skip_reason": None,
+    }
+
+    if dry_run:
+        record["skip_reason"] = "--dry-run: real index preparation is never executed under --dry-run"
+        _guarded_write_record(index_dir / "index.json", record)
+        return record
+
+    skip_reason = _index_capable(allow_mapping=allow_mapping, host_role=host_role, reference=reference)
+    if skip_reason is not None:
+        record["skip_reason"] = skip_reason
+        _guarded_write_record(index_dir / "index.json", record)
+        return record
+
+    if reference_manifest is None:
+        record["skip_reason"] = f"reference manifest required for index preparation but not provided for build {build!r}"
+        _write_json(index_dir / "index.json", record)
+        return record
+    record["reference_manifest"] = reference_manifest
+    manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
+    record["reference_manifest_validation"] = {"provided": True, "violations": list(manifest_violations)}
+    if manifest_violations:
+        record["skip_reason"] = f"reference manifest invalid for build {build!r}: {list(manifest_violations)}"
+        _write_json(index_dir / "index.json", record)
+        return record
+
+    index_dir.mkdir(parents=True, exist_ok=True)
+    preflight_report = run_preflight(
+        host_role=host_role,
+        resources=cfg.resources,
+        disk_path=index_dir,
+        allow_mapping=True,
+        tools=cfg.tools,
+        threads=threads,
+        required_input_paths={"reference": reference},
+    )
+    _write_json(index_dir / "preflight_at_index_time.json", preflight_report.to_dict())
+    record["preflight_ok"] = preflight_report.ok
+    if not preflight_report.ok:
+        record["skip_reason"] = f"preflight failed closed immediately before indexing: {list(preflight_report.violations)}"
+        _write_json(index_dir / "index.json", record)
+        return record
+
+    _check_disk_budget_or_fail(
+        disk_ledger,
+        label=f"bwa_index:{build}",
+        allowance_gib=PLANNED_ALLOWANCES_GIB["active_build_bwa_index"],
+        disk_path=index_dir,
+    )
+    bwa_provenance = prepare_bwa_index(reference, bwa_prefix)
+    if disk_ledger is not None:
+        disk_ledger.record_step(f"bwa_index:{build}", path=index_dir)
+
+    _check_disk_budget_or_fail(
+        disk_ledger,
+        label=f"minimap2_index:{build}",
+        allowance_gib=PLANNED_ALLOWANCES_GIB["active_build_minimap2_index"],
+        disk_path=index_dir,
+    )
+    mm2_provenance = prepare_minimap2_index(reference, mm2_index)
+    if disk_ledger is not None:
+        disk_ledger.record_step(f"minimap2_index:{build}", path=index_dir)
+
+    manifest = build_index_manifest(build=build, bwa=bwa_provenance, minimap2=mm2_provenance)
+    _write_json(index_dir / "index_manifest.json", manifest)
+
+    record["executed"] = True
+    record["bwa_index_prefix"] = str(bwa_prefix)
+    record["minimap2_index"] = str(mm2_index)
+    record["index_manifest_path"] = str(index_dir / "index_manifest.json")
+    _guarded_write_record(index_dir / "index.json", record)
+    return record
+
+
 def stage_align(
     cfg: FeasibilityConfig,
     *,
@@ -402,11 +597,22 @@ def stage_align(
     reference_manifest: dict | None,
     reads_fasta: Path | None,
     dry_run: bool,
+    bwa_index_prefix: Path | None = None,
+    minimap2_index: Path | None = None,
+    disk_ledger: DiskBudgetLedger | None = None,
 ) -> dict:
     placeholder_ref = reference or Path("reference.fasta")
     placeholder_reads = reads_fasta or Path("sample_sequences.fasta")
-    bwa_cmd = bwa_mem_command(placeholder_ref, placeholder_reads, threads=threads)
-    mm2_cmd = minimap2_splice_command(placeholder_ref, placeholder_reads, threads=threads)
+    # bwa mem takes the prepared build-specific index *prefix* (never the
+    # bare FASTA) once one has been built by the `index` stage; minimap2
+    # likewise takes the prepared `.mmi` in place of the FASTA when
+    # available. SeqKit, manifest validation, and the junction-lookup
+    # reference reader continue to use the plain FASTA (see stage_exact_match
+    # and stage_report) regardless of whether indices were prepared.
+    bwa_ref_arg = bwa_index_prefix or placeholder_ref
+    mm2_ref_arg = minimap2_index or placeholder_ref
+    bwa_cmd = bwa_mem_command(bwa_ref_arg, placeholder_reads, threads=threads)
+    mm2_cmd = minimap2_splice_command(mm2_ref_arg, placeholder_reads, threads=threads)
 
     record = {
         "planned_commands": {
@@ -422,7 +628,7 @@ def stage_align(
     # other authorization flags were also given.
     if dry_run:
         record["skip_reason"] = "--dry-run: real mapping is never executed under --dry-run"
-        _write_json(build_output_dir / "align.json", record)
+        _guarded_write_record(build_output_dir / "align.json", record)
         return record
 
     skip_reason = _mapping_capable(
@@ -430,7 +636,7 @@ def stage_align(
     )
     if skip_reason is not None:
         record["skip_reason"] = skip_reason
-        _write_json(build_output_dir / "align.json", record)
+        _guarded_write_record(build_output_dir / "align.json", record)
         return record
 
     # A reference manifest is now required (not merely recorded when
@@ -453,6 +659,29 @@ def stage_align(
         _write_json(build_output_dir / "align.json", record)
         return record
 
+    # Stale/foreign-index rejection (B1 required item 4): when a prepared
+    # index is being used, its creation-time manifest is re-verified against
+    # the files on disk right now — never trusted merely because the index
+    # stage completed at some point in the past.
+    index_dir = (bwa_index_prefix or minimap2_index).parent if (bwa_index_prefix or minimap2_index) else None
+    if index_dir is not None:
+        index_manifest_path = index_dir / "index_manifest.json"
+        if not index_manifest_path.is_file():
+            record["skip_reason"] = f"no index manifest found at {index_manifest_path} for the prepared index"
+            _write_json(build_output_dir / "align.json", record)
+            return record
+        index_manifest = json.loads(index_manifest_path.read_text())
+        index_violations: list[str] = []
+        if bwa_index_prefix is not None:
+            index_violations.extend(verify_index_files_against_manifest(index_manifest, key="bwa_index"))
+        if minimap2_index is not None:
+            index_violations.extend(verify_index_files_against_manifest(index_manifest, key="minimap2_index"))
+        record["index_manifest_validation"] = {"violations": list(index_violations)}
+        if index_violations:
+            record["skip_reason"] = f"prepared index failed manifest verification (stale/foreign index): {index_violations}"
+            _write_json(build_output_dir / "align.json", record)
+            return record
+
     # Hard prerequisite (never bypassable by tests or callers): a *fresh*
     # preflight bound to the detected OS/architecture, resource limits,
     # pinned tool versions, and hashes of this exact reference/reads pair,
@@ -474,15 +703,25 @@ def stage_align(
         _write_json(build_output_dir / "align.json", record)
         return record
 
+    # Fail-closed disk-budget check (B1 required item 8): both mapper output
+    # writers share the build's combined SAM/BED/report allowance, checked
+    # once before either subprocess starts.
+    disk_budget_check = _check_disk_budget_or_fail(
+        disk_ledger, label=f"align:{build}", allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB, disk_path=build_output_dir
+    )
+
     bwa_binary = resolve_binary_provenance("bwa", version=preflight_report.tool_versions.get("bwa"))
     mm2_binary = resolve_binary_provenance("minimap2", version=preflight_report.tool_versions.get("minimap2"))
 
     bwa_sam = build_output_dir / "align_bwa_mem.sam"
+    bwa_stderr = build_output_dir / "align_bwa_mem.stderr.log"
     mm2_sam = build_output_dir / "align_minimap2_splice.sam"
+    mm2_stderr = build_output_dir / "align_minimap2_splice.stderr.log"
     bwa_provenance = run_tool_with_provenance(
         bwa_cmd.argv,
         tool="bwa_mem",
         output_path=bwa_sam,
+        stderr_path=bwa_stderr,
         command_text=format_command(bwa_cmd.argv),
         binary=bwa_binary,
         run_fn=_run_tool_to_file,
@@ -491,20 +730,28 @@ def stage_align(
         mm2_cmd.argv,
         tool="minimap2_splice",
         output_path=mm2_sam,
+        stderr_path=mm2_stderr,
         command_text=format_command(mm2_cmd.argv),
         binary=mm2_binary,
         run_fn=_run_tool_to_file,
     )
+    if disk_ledger is not None:
+        disk_ledger.record_step(f"align:{build}", path=build_output_dir)
 
     record["executed"] = True
     record["tool_versions"] = {"bwa": bwa_binary.version, "minimap2": mm2_binary.version}
     record["sam_paths"] = {"bwa_mem": str(bwa_sam), "minimap2_splice": str(mm2_sam)}
+    record["index_paths"] = {
+        "bwa_index_prefix": str(bwa_index_prefix) if bwa_index_prefix else None,
+        "minimap2_index": str(minimap2_index) if minimap2_index else None,
+    }
+    record["disk_budget_check"] = disk_budget_check
     record["provenance"] = {
         "input_hashes": preflight_report.input_hashes,
         "bwa_mem": bwa_provenance.to_dict(),
         "minimap2_splice": mm2_provenance.to_dict(),
     }
-    _write_json(build_output_dir / "align.json", record)
+    _guarded_write_record(build_output_dir / "align.json", record)
     return record
 
 
@@ -521,6 +768,7 @@ def stage_exact_match(
     reads_fasta: Path | None,
     align_record: dict,
     dry_run: bool,
+    disk_ledger: DiskBudgetLedger | None = None,
 ) -> dict:
     placeholder_query = reads_fasta or Path("sample_sequences.fasta")
     placeholder_ref = reference or Path("reference.fasta")
@@ -534,7 +782,7 @@ def stage_exact_match(
     # Same absolute --dry-run guard as stage_align, checked first.
     if dry_run:
         record["skip_reason"] = "--dry-run: real exact-match search is never executed under --dry-run"
-        _write_json(build_output_dir / "exact_match.json", record)
+        _guarded_write_record(build_output_dir / "exact_match.json", record)
         return record
 
     skip_reason = _mapping_capable(
@@ -542,7 +790,7 @@ def stage_exact_match(
     )
     if skip_reason is not None:
         record["skip_reason"] = skip_reason
-        _write_json(build_output_dir / "exact_match.json", record)
+        _guarded_write_record(build_output_dir / "exact_match.json", record)
         return record
 
     if not align_record.get("executed"):
@@ -583,27 +831,36 @@ def stage_exact_match(
         _write_json(build_output_dir / "exact_match.json", record)
         return record
 
+    disk_budget_check = _check_disk_budget_or_fail(
+        disk_ledger, label=f"exact_match:{build}", allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB, disk_path=build_output_dir
+    )
+
     seqkit_binary = resolve_binary_provenance("seqkit", version=preflight_report.tool_versions.get("seqkit"))
 
     bed_path = build_output_dir / "exact_match_hits.bed"
+    stderr_path = build_output_dir / "exact_match_hits.stderr.log"
     query_cmd = seqkit_locate_command(reads_fasta, reference)
     provenance = run_tool_with_provenance(
         query_cmd.argv,
         tool="seqkit_locate",
         output_path=bed_path,
+        stderr_path=stderr_path,
         command_text=format_command(query_cmd.argv),
         binary=seqkit_binary,
         run_fn=_run_tool_to_file,
     )
+    if disk_ledger is not None:
+        disk_ledger.record_step(f"exact_match:{build}", path=build_output_dir)
 
     record["executed"] = True
     record["tool_version"] = seqkit_binary.version
     record["bed_path"] = str(bed_path)
+    record["disk_budget_check"] = disk_budget_check
     record["provenance"] = {
         "input_hashes": preflight_report.input_hashes,
         "seqkit_locate": provenance.to_dict(),
     }
-    _write_json(build_output_dir / "exact_match.json", record)
+    _guarded_write_record(build_output_dir / "exact_match.json", record)
     return record
 
 
@@ -970,10 +1227,12 @@ def _write_provenance(
     dataset_audit_path: Path | None,
     proteins_config_path: Path | None,
     builds: Sequence[str],
+    index_records: dict[str, dict],
     align_records: dict[str, dict],
     exact_match_records: dict[str, dict],
     reference_manifests: dict[str, dict],
     state: dict,
+    disk_ledger: DiskBudgetLedger | None = None,
 ) -> dict:
     """Connect provenance to the runner: declared input hashes (dataset CSV,
     config, dataset audit, protein config), resolved binary hashes/versions,
@@ -1005,6 +1264,7 @@ def _write_provenance(
         build_dir = _build_dir(output_dir, build)
         reference_index_path = build_dir / "reference_index.json"
         builds_payload[build] = {
+            "index": index_records.get(build, {}),
             "align": align_records.get(build, {}),
             "exact_match": exact_match_records.get(build, {}),
             "reference_manifest": reference_manifests.get(build),
@@ -1026,6 +1286,7 @@ def _write_provenance(
         # _mark_stage_complete): current inputs cannot be silently
         # attributed to stale outputs from a previous, differing run.
         "state_fingerprints": dict(state.get("stage_fingerprints", {})),
+        "disk_budget": disk_ledger.to_dict() if disk_ledger is not None else None,
     }
     _write_json(output_dir / "provenance.json", payload)
     return payload
@@ -1082,6 +1343,55 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("configs/proteins.tsv"),
         help="Declared-input path to hash into provenance.json (parent-task protein configuration)",
     )
+    parser.add_argument(
+        "--execution-sources",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a checked-in execution-source spec (see "
+            "rbpbench.coordinates.execution_sources); when given, its four frozen local-input "
+            "hashes are compared against --csv/--dataset-audit/--proteins-config/--config before "
+            "the CSV is opened for row-by-row reading, failing closed on any mismatch. Required "
+            "for a real Task 001B run against configs/coordinate_execution_sources.toml; omitted "
+            "by 001A fixture-only tests, which use hashes that intentionally do not match it."
+        ),
+    )
+    parser.add_argument(
+        "--indices-dir",
+        type=Path,
+        default=Path("indices"),
+        help="Pinned root for disposable per-build mapper indices (indices/<build>/)",
+    )
+    parser.add_argument(
+        "--bwa-index-prefix",
+        action="append",
+        default=None,
+        metavar="BUILD=PATH",
+        help="Override the default indices/<build>/<build> BWA index prefix for one build",
+    )
+    parser.add_argument(
+        "--minimap2-index",
+        action="append",
+        default=None,
+        metavar="BUILD=PATH",
+        help="Override the default indices/<build>/<build>.mmi minimap2 index path for one build",
+    )
+    parser.add_argument(
+        "--disk-budget-path",
+        type=Path,
+        default=Path("."),
+        help="Filesystem volume to measure the disk-budget ledger's baseline/free-space against",
+    )
+    parser.add_argument(
+        "--cleanup-index",
+        default=None,
+        metavar="BUILD",
+        help=(
+            "Remove indices/<build>/ for exactly this build and exit, after confirming index "
+            "provenance, successful mapping outputs, and a passed reconciliation are all already "
+            "recorded on disk; refuses (deleting nothing) otherwise. Bypasses --stage entirely."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Guarantee no external tool ever executes; plan commands only")
     return parser
 
@@ -1110,10 +1420,54 @@ def _stage_is_valid(state: dict, key: str, fingerprint: str) -> bool:
     return state.get("stage_fingerprints", {}).get(key) == fingerprint
 
 
+def _run_cleanup_index(cfg: FeasibilityConfig, *, build: str, indices_dir: Path, output_dir: Path) -> None:
+    """``--cleanup-index BUILD`` entry point (B1 required item 8 / R2):
+    resolve exactly what evidence already exists on disk for ``build`` and
+    delegate the actual safety checks to
+    :func:`rbpbench.coordinates.cleanup.execute_index_cleanup`, which refuses
+    (deleting nothing) unless index provenance, successful mapping outputs,
+    and a passed reconciliation are all already recorded.
+    """
+    index_dir = indices_dir / build
+    build_dir = _build_dir(output_dir, build)
+    index_manifest_present = (index_dir / "index_manifest.json").is_file()
+
+    align_path = build_dir / "align.json"
+    exact_path = build_dir / "exact_match.json"
+    report_path = build_dir / Path(cfg.outputs.report_json).name
+    align_record = json.loads(align_path.read_text()) if align_path.exists() else {}
+    exact_match_record = json.loads(exact_path.read_text()) if exact_path.exists() else {}
+    report_payload = json.loads(report_path.read_text()) if report_path.exists() else {}
+
+    mapping_outputs_present = bool(align_record.get("executed")) and bool(exact_match_record.get("executed"))
+    reconciliation_passed = report_payload.get("reconciliation", {}).get("status") == "passed"
+
+    try:
+        plan = execute_index_cleanup(
+            index_dir,
+            index_manifest_present=index_manifest_present,
+            mapping_outputs_present=mapping_outputs_present,
+            reconciliation_passed=reconciliation_passed,
+            reference=None,
+            output_dir=output_dir,
+        )
+    except CleanupRefused as exc:
+        raise SystemExit(f"cleanup refused for build {build!r}: {exc}") from exc
+    print(f"removed {plan.resolved_target} ({len(plan.files)} file(s))")
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     stages = STAGES if not args.stage or "all" in args.stage else tuple(args.stage)
     builds = tuple(args.build) if args.build else DEFAULT_BUILDS
+
+    # Exactly-one-build enforcement (B1 required item 7): real mapping must
+    # never run against zero or multiple builds in one invocation.
+    if args.allow_mapping and len(builds) != 1:
+        raise SystemExit(
+            f"--allow-mapping requires exactly one explicit --build, got {list(builds)}; "
+            "process one reference build at a time"
+        )
 
     references: dict[str, Path] = {}
     for spec in args.reference or ():
@@ -1130,7 +1484,46 @@ def main(argv: Sequence[str] | None = None) -> None:
         # whitespace) is still detected — see the fingerprint wiring below.
         reference_manifest_hashes[build] = sha256_file(Path(path))
 
+    bwa_index_prefix_overrides: dict[str, Path] = {}
+    for spec in args.bwa_index_prefix or ():
+        build, path = _parse_key_value_path(spec, flag="--bwa-index-prefix")
+        bwa_index_prefix_overrides[build] = path
+
+    minimap2_index_overrides: dict[str, Path] = {}
+    for spec in args.minimap2_index or ():
+        build, path = _parse_key_value_path(spec, flag="--minimap2-index")
+        minimap2_index_overrides[build] = path
+
+    # Fail-closed local-input verification (B1 required item 1 / B2's actual
+    # gate): compare the four frozen dataset/audit/protein/config hashes
+    # before the real CSV can be opened for row-by-row reading. Opt-in via
+    # --execution-sources so 001A's tiny-fixture tests (whose hashes
+    # intentionally do not match the frozen production spec) are unaffected;
+    # a real Task 001B invocation must pass
+    # --execution-sources configs/coordinate_execution_sources.toml.
+    if args.execution_sources is not None:
+        execution_source_spec = load_execution_sources(args.execution_sources)
+        local_input_violations = verify_local_inputs(
+            execution_source_spec,
+            paths={
+                "dataset_csv": args.csv,
+                "dataset_audit": args.dataset_audit,
+                "proteins_config": args.proteins_config,
+                "study_config": args.config,
+            },
+        )
+        if local_input_violations:
+            raise SystemExit(
+                "execution-source verification failed closed before opening the CSV: "
+                f"{[f'{v.key}: {v.detail}' for v in local_input_violations]}"
+            )
+
     cfg = load_config(args.config)
+
+    if args.cleanup_index is not None:
+        _run_cleanup_index(cfg, build=args.cleanup_index, indices_dir=args.indices_dir, output_dir=args.output_dir)
+        return
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
     state_path = args.output_dir / "state.json"
     state = _load_state(state_path)
@@ -1146,6 +1539,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     }
     base_fingerprint = content_fingerprint("sample_decode_controls", dataset_csv_hash, config_hash)
 
+    def index_fingerprint(build: str) -> str:
+        return content_fingerprint(
+            "index",
+            base_fingerprint,
+            reference_hashes.get(build),
+            reference_manifest_hashes.get(build),
+            args.allow_mapping,
+            args.host_role,
+            args.threads,
+            args.dry_run,
+        )
+
     def align_fingerprint(build: str) -> str:
         # Includes the reference *manifest's* own content hash (not just the
         # reference FASTA's), so any manifest-only change — the manifest
@@ -1156,11 +1561,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         # exact content. This also means align.json (and therefore
         # provenance.json's reference_manifest) can never be produced under
         # one manifest and then silently re-labeled with a newer one.
+        # Also chained from index's *last recorded* fingerprint plus its
+        # current executed status (B1 required item 6: restart fingerprints
+        # must include the BWA prefix/minimap2 index manifest), so a
+        # rebuilt/changed index invalidates and forces align to re-run rather
+        # than reusing SAM output built against a stale index.
+        recorded_index_fp = state.get("stage_fingerprints", {}).get(_stage_key("index", build), "never_run")
         return content_fingerprint(
             "align",
             base_fingerprint,
             reference_hashes.get(build),
             reference_manifest_hashes.get(build),
+            recorded_index_fp,
+            bool(index_records.get(build, {}).get("executed")),
             args.allow_mapping,
             args.host_role,
             args.threads,
@@ -1212,26 +1625,52 @@ def main(argv: Sequence[str] | None = None) -> None:
     # re-run in this same process before `decode`/`controls`/`report` can see it.
     sample: SamplingResult | None = _load_sample_state(args.output_dir)
 
-    # Same resume-safety concern as `sample`, per build: align/exact_match
-    # may have executed real mapping in a prior process. Reload their
-    # recorded results rather than defaulting to "not executed" and silently
-    # losing real mapping evidence when `report` runs standalone later.
+    # Same resume-safety concern as `sample`, per build: index/align/
+    # exact_match may have executed real work in a prior process. Reload
+    # their recorded results rather than defaulting to "not executed" and
+    # silently losing real evidence when a later stage runs standalone.
+    index_records: dict[str, dict] = {}
     align_records: dict[str, dict] = {}
     exact_match_records: dict[str, dict] = {}
+    index_dirs: dict[str, Path] = {build: args.indices_dir / build for build in builds}
     for build in builds:
         build_dir = _build_dir(args.output_dir, build)
+        index_path = index_dirs[build] / "index.json"
         align_path = build_dir / "align.json"
         exact_path = build_dir / "exact_match.json"
+        index_records[build] = json.loads(index_path.read_text()) if index_path.exists() else {"executed": False}
         align_records[build] = json.loads(align_path.read_text()) if align_path.exists() else {"executed": False}
         exact_match_records[build] = (
             json.loads(exact_path.read_text()) if exact_path.exists() else {"executed": False}
         )
 
+    def _resolved_bwa_index_prefix(build: str) -> Path | None:
+        if build in bwa_index_prefix_overrides:
+            return bwa_index_prefix_overrides[build]
+        if index_records.get(build, {}).get("executed"):
+            return Path(index_records[build]["bwa_index_prefix"])
+        return None
+
+    def _resolved_minimap2_index(build: str) -> Path | None:
+        if build in minimap2_index_overrides:
+            return minimap2_index_overrides[build]
+        if index_records.get(build, {}).get("executed"):
+            return Path(index_records[build]["minimap2_index"])
+        return None
+
+    # One disk-budget ledger per invocation (B1 required item 8), baselined
+    # once before any expensive step; every download/derivation/indexing/
+    # mapping subprocess checks the *remaining* budget against it and
+    # records its own observed new bytes afterward.
+    disk_ledger = start_ledger(args.disk_budget_path) if args.allow_mapping and not args.dry_run else None
+
     for stage in stages:
         if stage in BUILD_SCOPED_STAGES:
             for build in builds:
                 key = _stage_key(stage, build)
-                if stage == "align":
+                if stage == "index":
+                    fingerprint = index_fingerprint(build)
+                elif stage == "align":
                     fingerprint = align_fingerprint(build)
                 elif stage == "exact_match":
                     fingerprint = exact_match_fingerprint(build)
@@ -1245,7 +1684,24 @@ def main(argv: Sequence[str] | None = None) -> None:
                     print(f"{key}: declared inputs/config/reference/authorization changed since it last completed; re-running")
 
                 build_dir = _build_dir(args.output_dir, build)
-                if stage == "align":
+                if stage == "index":
+                    index_record = stage_index(
+                        cfg,
+                        build=build,
+                        index_dir=index_dirs[build],
+                        allow_mapping=args.allow_mapping,
+                        host_role=args.host_role,
+                        threads=args.threads,
+                        reference=references.get(build),
+                        reference_manifest=reference_manifests.get(build),
+                        dry_run=args.dry_run,
+                        disk_ledger=disk_ledger,
+                    )
+                    index_records[build] = index_record
+                    executed = bool(index_record.get("executed"))
+                    state["mapping_executed"].setdefault(build, {})["index"] = executed
+                    retryable = args.allow_mapping and not executed
+                elif stage == "align":
                     align_record = stage_align(
                         cfg,
                         build=build,
@@ -1257,6 +1713,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                         reference_manifest=reference_manifests.get(build),
                         reads_fasta=_prepare_mapping_reads(args.output_dir),
                         dry_run=args.dry_run,
+                        bwa_index_prefix=_resolved_bwa_index_prefix(build),
+                        minimap2_index=_resolved_minimap2_index(build),
+                        disk_ledger=disk_ledger,
                     )
                     align_records[build] = align_record
                     executed = bool(align_record.get("executed"))
@@ -1279,6 +1738,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                         reads_fasta=_prepare_mapping_reads(args.output_dir),
                         align_record=align_records.get(build, {"executed": False}),
                         dry_run=args.dry_run,
+                        disk_ledger=disk_ledger,
                     )
                     exact_match_records[build] = exact_match_record
                     executed = bool(exact_match_record.get("executed"))
@@ -1287,7 +1747,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 else:  # "report"
                     if sample is None:
                         raise SystemExit("report stage requires sample stage state; run --stage sample first")
-                    stage_report(
+                    build_report_payload = stage_report(
                         sample,
                         cfg=cfg,
                         build_output_dir=build_dir,
@@ -1300,6 +1760,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                         reference=references.get(build),
                     )
                     retryable = False
+                    # B1 required item 9: a failed reconciliation must make
+                    # the runner exit nonzero, checked directly against
+                    # reconciliation.status rather than trusting that a
+                    # process reaching this point implies success.
+                    if build_report_payload["reconciliation"]["status"] == "failed":
+                        _mark_stage_complete(state, key, fingerprint)
+                        _save_state(state_path, state)
+                        raise SystemExit(
+                            f"reconciliation failed for build {build!r}: "
+                            f"{build_report_payload['reconciliation']['issues']}"
+                        )
 
                 if not retryable:
                     _mark_stage_complete(state, key, fingerprint)
@@ -1385,10 +1856,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         dataset_audit_path=args.dataset_audit,
         proteins_config_path=args.proteins_config,
         builds=builds,
+        index_records=index_records,
         align_records=align_records,
         exact_match_records=exact_match_records,
         reference_manifests=persisted_reference_manifests,
         state=state,
+        disk_ledger=disk_ledger,
     )
 
     if args.dry_run:

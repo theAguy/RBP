@@ -179,7 +179,9 @@ class RunnerIntegrationTests(unittest.TestCase):
 
             state = json.loads((output_dir / "state.json").read_text())
             expected_keys = {"preflight", "sample", "decode", "controls", "combined_report"} | {
-                f"{stage}:{build}" for stage in ("align", "exact_match", "report") for build in ("hg38", "hg19")
+                f"{stage}:{build}"
+                for stage in ("index", "align", "exact_match", "report")
+                for build in ("hg38", "hg19")
             }
             self.assertEqual(set(state["completed_stages"]), expected_keys)
 
@@ -510,7 +512,7 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
                 common = self._authorized_common(output_dir, reference, manifest_path)
                 for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
                     main([*common, "--stage", stage])
-                main([*common, "--build", "hg38", "--stage", "combined_report"])
+                main([*common, "--stage", "combined_report"])
 
                 combined_before = json.loads((output_dir / "report.json").read_text())
                 self.assertIsNone(combined_before["per_build"]["hg38"]["retention"]["combined"]["by_contig_category"])
@@ -530,7 +532,7 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
 
                 for stage in ("align", "exact_match", "report"):
                     main([*common, "--stage", stage])
-                main([*common, "--build", "hg38", "--stage", "combined_report"])
+                main([*common, "--stage", "combined_report"])
 
             align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
             self.assertTrue(align_record["executed"])
@@ -954,25 +956,37 @@ class SequentialTwoBuildProcessingTests(unittest.TestCase):
             manifest_hg38 = _write_reference_manifest(output_dir / "hg38_manifest.json", build="hg38", reference=ref_hg38)
             manifest_hg19 = _write_reference_manifest(output_dir / "hg19_manifest.json", build="hg19", reference=ref_hg19)
 
-            argv = [
+            common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
                 "--output-dir", str(output_dir),
-                "--allow-mapping",
                 "--host-role", "approved_mac",
                 "--reference", f"hg38={ref_hg38}",
                 "--reference", f"hg19={ref_hg19}",
                 "--reference-manifest", f"hg38={manifest_hg38}",
                 "--reference-manifest", f"hg19={manifest_hg19}",
-                "--build", "hg38",
-                "--build", "hg19",
-                "--stage", "sample", "--stage", "decode", "--stage", "controls",
-                "--stage", "align", "--stage", "exact_match", "--stage", "report",
-                "--stage", "combined_report",
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
             with mock.patch.dict(os.environ, env), _approved_host_context():
-                main(argv)
+                # Single-build enforcement (B1 required item 7): each
+                # authorized real-mapping invocation names exactly one build,
+                # processed sequentially into its own subdirectory. `sample`/
+                # `decode`/`controls` are build-independent and restart-skip
+                # (matching fingerprint) on the second invocation.
+                for build in ("hg38", "hg19"):
+                    main(
+                        [
+                            *common,
+                            "--allow-mapping",
+                            "--build", build,
+                            "--stage", "sample", "--stage", "decode", "--stage", "controls",
+                            "--stage", "align", "--stage", "exact_match", "--stage", "report",
+                        ]
+                    )
+                # combined_report reads both already-produced per-build
+                # reports back from disk; it does not itself map anything, so
+                # it is exempt from the single-build rule.
+                main([*common, "--build", "hg38", "--build", "hg19", "--stage", "combined_report"])
 
             # Collision-safe: each build kept its own SAM/BED/mappings/report.
             hg38_sam = (output_dir / "hg38" / "align_bwa_mem.sam").read_text()

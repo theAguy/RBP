@@ -33,6 +33,15 @@ papers/
 *.sa
 *.fai
 
+# Task 001B: FASTA/BED/compressed-TSV outputs, in case one is ever produced
+# outside the already-ignored artifacts/references/indices/ directories.
+*.fa
+*.fasta
+*.fna
+*.fna.gz
+*.bed
+*.tsv.gz
+
 # Local editor and environment files.
 .env
 .idea/

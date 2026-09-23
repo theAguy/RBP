@@ -51,7 +51,7 @@ def resolve_binary_provenance(exe_name: str, *, version: str | None) -> BinaryPr
     return BinaryProvenance(exe_name=exe_name, resolved_path=resolved, sha256=digest, version=version)
 
 
-def _peak_rss_kib_of_children() -> int:
+def peak_rss_kib_of_children() -> int:
     """Approximate peak RSS (KiB) across all reaped child processes so far.
 
     ``ru_maxrss`` is itself already a running maximum over every child this
@@ -75,6 +75,8 @@ class ToolRunProvenance:
     peak_rss_kib_of_children: int
     output_path: str
     output_sha256: str
+    stderr_path: str
+    stderr_sha256: str
     binary: BinaryProvenance
 
     def to_dict(self) -> dict:
@@ -85,6 +87,8 @@ class ToolRunProvenance:
             "peak_rss_kib_of_children": self.peak_rss_kib_of_children,
             "output_path": self.output_path,
             "output_sha256": self.output_sha256,
+            "stderr_path": self.stderr_path,
+            "stderr_sha256": self.stderr_sha256,
             "binary": self.binary.to_dict(),
         }
 
@@ -94,27 +98,35 @@ def run_tool_with_provenance(
     *,
     tool: str,
     output_path: Path,
+    stderr_path: Path,
     command_text: str,
     binary: BinaryProvenance,
     run_fn,
 ) -> ToolRunProvenance:
-    """Run ``run_fn(argv, output_path=output_path)`` and capture provenance.
+    """Run ``run_fn(argv, output_path=output_path, stderr_path=stderr_path)``
+    and capture provenance.
 
     ``run_fn`` performs the actual ``subprocess.run(argv, shell=False, ...)``
-    call (see ``rbpbench.coordinates.runner._run_tool_to_file``); this
-    function only wraps it with timing/memory/output-hash bookkeeping so the
+    call (see ``rbpbench.coordinates.runner._run_tool_to_file``), writing
+    stdout to ``output_path`` and stderr *separately* to ``stderr_path`` —
+    stderr must never be sent to ``DEVNULL``, since a mapper's diagnostic
+    warnings (e.g. minimap2's parameter-override or multipart-index
+    warnings) are load-bearing evidence, not noise. This function only wraps
+    that call with timing/memory/output-and-stderr-hash bookkeeping so the
     subprocess-invocation code path stays in one place.
     """
     start = time.monotonic()
-    run_fn(argv, output_path=output_path)
+    run_fn(argv, output_path=output_path, stderr_path=stderr_path)
     elapsed = time.monotonic() - start
     return ToolRunProvenance(
         tool=tool,
         command=command_text,
         elapsed_seconds=elapsed,
-        peak_rss_kib_of_children=_peak_rss_kib_of_children(),
+        peak_rss_kib_of_children=peak_rss_kib_of_children(),
         output_path=str(output_path),
         output_sha256=sha256_file(output_path),
+        stderr_path=str(stderr_path),
+        stderr_sha256=sha256_file(stderr_path),
         binary=binary,
     )
 
@@ -124,4 +136,5 @@ __all__ = [
     "ToolRunProvenance",
     "resolve_binary_provenance",
     "run_tool_with_provenance",
+    "peak_rss_kib_of_children",
 ]

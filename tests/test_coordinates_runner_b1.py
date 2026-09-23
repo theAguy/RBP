@@ -388,9 +388,11 @@ class DiskBudgetWiringTests(unittest.TestCase):
 
 
 def _write_realistic_cleanup_evidence(*, output_dir: Path, index_dir: Path, build: str, reconciliation_status: str):
-    """B1-R5: cleanup now verifies actual artifact hashes, not merely the
-    ``executed`` JSON booleans, so every cleanup fixture must provide real,
-    hash-matching index/mapping evidence rather than empty placeholders.
+    """B1-C4: cleanup now verifies actual artifact hashes (index files via
+    ``index.json``'s own recorded manifest path, mapping outputs, and the
+    accepted report/provenance hashes), never merely the ``executed`` JSON
+    booleans, so every cleanup fixture must provide real, hash-matching
+    evidence throughout rather than empty placeholders.
     """
     build_dir = output_dir / build
     index_dir.mkdir(parents=True)
@@ -400,13 +402,26 @@ def _write_realistic_cleanup_evidence(*, output_dir: Path, index_dir: Path, buil
     mmi_path = index_dir / f"{build}.mmi"
     bwt_path.write_bytes(b"fake bwt bytes")
     mmi_path.write_bytes(b"fake mmi bytes")
-    (index_dir / "index_manifest.json").write_text(
+    index_manifest_path = index_dir / "index_manifest.json"
+    index_manifest_path.write_text(
         json.dumps(
             {
                 "schema_version": 2,
                 "build": build,
                 "bwa_index": {"files": [{"path": str(bwt_path), "byte_size": bwt_path.stat().st_size, "sha256": sha256_file(bwt_path)}]},
                 "minimap2_index": {"files": [{"path": str(mmi_path), "byte_size": mmi_path.stat().st_size, "sha256": sha256_file(mmi_path)}]},
+            }
+        )
+    )
+    # B1-C2: the index manifest is now resolved from index.json's own
+    # recorded path, never a hardcoded index_dir/index_manifest.json.
+    (index_dir / "index.json").write_text(
+        json.dumps(
+            {
+                "executed": True,
+                "bwa_index_prefix": str(index_dir / build),
+                "minimap2_index": str(mmi_path),
+                "index_manifest_path": str(index_manifest_path),
             }
         )
     )
@@ -439,7 +454,27 @@ def _write_realistic_cleanup_evidence(*, output_dir: Path, index_dir: Path, buil
             }
         )
     )
-    (build_dir / "report.json").write_text(json.dumps({"reconciliation": {"status": reconciliation_status}}))
+    report_path = build_dir / "report.json"
+    report_path.write_text(json.dumps({"reconciliation": {"status": reconciliation_status}}))
+    mappings_path = build_dir / "mappings.tsv.gz"
+    mappings_path.write_bytes(b"fake mappings gz bytes")
+
+    # B1-C4: cleanup also verifies the accepted report/mappings hashes
+    # against provenance.json, never a bare reconciliation-status string.
+    (output_dir / "provenance.json").write_text(
+        json.dumps(
+            {
+                "builds": {
+                    build: {
+                        "generated_artifacts": {
+                            "report_json": {"path": str(report_path), "sha256": sha256_file(report_path)},
+                            "mappings_tsv_gz": {"path": str(mappings_path), "sha256": sha256_file(mappings_path)},
+                        }
+                    }
+                }
+            }
+        )
+    )
 
 
 class CleanupCliWiringTests(unittest.TestCase):
@@ -459,6 +494,7 @@ class CleanupCliWiringTests(unittest.TestCase):
                     "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--indices-dir", str(indices_dir),
+                    "--repo-root", str(Path(tmp)),
                     "--cleanup-index", "hg38",
                 ]
             )
@@ -486,6 +522,7 @@ class CleanupCliWiringTests(unittest.TestCase):
                         "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--indices-dir", str(indices_dir),
+                        "--repo-root", str(Path(tmp)),
                         "--cleanup-index", "hg38",
                     ]
                 )
@@ -514,6 +551,7 @@ class CleanupCliWiringTests(unittest.TestCase):
                         "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--indices-dir", str(indices_dir),
+                        "--repo-root", str(Path(tmp)),
                         "--cleanup-index", "hg38",
                     ]
                 )
@@ -540,6 +578,7 @@ class CleanupCliWiringTests(unittest.TestCase):
                         "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--indices-dir", str(indices_dir),
+                        "--repo-root", str(Path(tmp)),
                         "--cleanup-index", "hg38",
                     ]
                 )
@@ -591,7 +630,7 @@ class IndexStageRealBinaryEndToEndTests(unittest.TestCase):
                 self.assertTrue(index_record["executed"])
                 self.assertTrue(Path(index_record["bwa_index_prefix"] + ".bwt").is_file())
                 self.assertTrue(Path(index_record["minimap2_index"]).is_file())
-                self.assertTrue((indices_dir / "hg38" / "index_manifest.json").is_file())
+                self.assertTrue(Path(index_record["index_manifest_path"]).is_file())
 
                 main([*common, "--stage", "align"])
                 align_record = json.loads((output_dir / "hg38" / "align.json").read_text())

@@ -33,6 +33,14 @@ BWA_INDEX_SUFFIXES = (".amb", ".ann", ".bwt", ".pac", ".sa")
 
 _STAT_LINE_RE = re.compile(r"kmer size:\s*(\d+);\s*skip:\s*(\d+);\s*is_hpc:\s*(\d+)")
 _OVERRIDE_MARKER = "overridden"
+# B1-C6: minimap2's own literal mapping-time warning text (e.g. "For a
+# multi-part index, no @SQ lines will be outputted.") must be rejected
+# outright, independent of the [M::mm_idx_stat] line count: a single mapping
+# invocation only ever emits ONE such stat line even when the index itself
+# has multiple parts (the multi-part condition is instead signaled by this
+# prose warning), so counting stat lines alone previously let this literal
+# warning through unflagged.
+_MULTIPART_WARNING_MARKERS = ("multi-part index", "multipart index")
 
 EXPECTED_K = 15
 EXPECTED_W = 5
@@ -192,11 +200,17 @@ def check_minimap2_mapping_stderr(stderr_text: str) -> tuple[str, ...]:
     mapping attempt.
     """
     violations: list[str] = []
-    if _OVERRIDE_MARKER in stderr_text.lower():
+    lowered = stderr_text.lower()
+    if _OVERRIDE_MARKER in lowered:
         violations.append("minimap2 mapping stderr reports indexing parameters overridden by a prebuilt index")
     parts = count_minimap2_index_parts(stderr_text)
     if parts > 1:
         violations.append(f"minimap2 mapping stderr indicates a {parts}-part index; the frozen policy requires exactly one part")
+    if any(marker in lowered for marker in _MULTIPART_WARNING_MARKERS):
+        violations.append(
+            "minimap2 mapping stderr contains the literal multi-part index warning; the frozen policy requires "
+            "exactly one part"
+        )
     return tuple(violations)
 
 

@@ -68,7 +68,13 @@ from rbpbench.coordinates.config import FeasibilityConfig, load_config
 from rbpbench.coordinates.controls import generate_control
 from rbpbench.coordinates.decode import decode_and_validate, fasta_record
 from rbpbench.coordinates.derive_reference import build_reference_manifest, current_git_commit, derive_reference_fasta
-from rbpbench.coordinates.download import Transport, restart_safe_download, urllib_transport
+from rbpbench.coordinates.download import (
+    DownloadVerificationError,
+    Transport,
+    parse_md5checksums,
+    restart_safe_download,
+    urllib_transport,
+)
 from rbpbench.coordinates.diskbudget import (
     BUILD_OUTPUT_ALLOWANCE_GIB,
     GIB,
@@ -121,6 +127,18 @@ STAGES = (
 )
 BUILD_SCOPED_STAGES = ("download", "derive", "index", "align", "exact_match", "report")
 DEFAULT_BUILDS = ("hg38", "hg19")
+
+# B1-C5: stages that may freely accompany the single authorized build-scoped
+# stage in one --allow-mapping invocation without crossing a checkpoint
+# review gate — plain data preparation (sample/decode/controls are
+# build-independent and not gated by any B3-B6 checkpoint), preflight (a
+# read-only readiness check), and combined_report (reads already-produced
+# per-build reports back from disk and never itself branches on
+# allow_mapping, so its presence or absence changes nothing about what
+# combined_report does; it typically runs in its own separate,
+# unauthorized invocation, but tolerating --allow-mapping alongside it here
+# is not itself a checkpoint-crossing risk).
+_ALWAYS_ALLOWED_WITH_MAPPING = frozenset({"preflight", "sample", "decode", "controls", "combined_report"})
 
 CONTROL_ID_PREFIX = "control_"
 
@@ -494,33 +512,62 @@ def _run_tool_to_file(
             raise subprocess.CalledProcessError(process.returncode, list(argv))
 
 
-def _attempt_dir(base_dir: Path, *, prefix: str) -> Path:
-    """A fresh, collision-free attempt-specific temporary directory under
-    ``base_dir`` (B1-R3): every real subprocess this attempt runs writes only
-    inside here, so a partial/failed attempt (killed by a budget breach,
-    subprocess failure, or an exception in a later step of the same attempt)
-    never touches a final, previously-accepted output path.
+def _new_generation_dir(base_dir: Path, *, prefix: str) -> Path:
+    """A fresh, uniquely-named, immutable home for one attempt's complete
+    multi-file output set (B1-C2: "genuinely transactional artifact
+    generations for every multi-file set"). Every file this attempt produces
+    is written directly here and NEVER at a fixed, reused final path, so
+    promotion is nothing more than the stage's own JSON record (written last,
+    atomically — see ``_guarded_write_record``/``_write_json``) naming this
+    directory's paths. No file is ever renamed on top of a previously
+    accepted one: a failure at any point before that record write leaves the
+    prior accepted generation (if any), still referenced by the prior
+    record, completely untouched — the "inject a failure at every
+    member/pointer/record transition" requirement follows directly, since
+    there is no shared mutable final path for a partial attempt to corrupt.
     """
-    return base_dir / f".attempt_{prefix}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    gen_dir = base_dir / "generations" / f"{prefix}_{uuid.uuid4().hex[:16]}"
+    gen_dir.mkdir(parents=True, exist_ok=False)
+    return gen_dir
 
 
-def _relocate_provenance_dict(payload: dict, *, tmp_dir: Path, final_dir: Path) -> dict:
-    """Rewrite every path field in a provenance ``to_dict()`` payload from
-    its attempt-specific temporary location to the final, promoted location
-    (B1-R3): hashes/sizes are unaffected since promotion is a plain rename of
-    unchanged content, only the recorded paths need correcting.
+def _discard_generation(generation_dir: Path | None) -> None:
+    if generation_dir is not None:
+        shutil.rmtree(generation_dir, ignore_errors=True)
+
+
+def _prune_superseded_generation(old_record: dict, *, path_fields: Sequence[str], new_generation_dir: Path) -> None:
+    """Best-effort disk hygiene, never required for correctness: once a new
+    generation has been durably accepted (the caller's new JSON record has
+    already been written), the OLD generation directory a just-replaced
+    ``executed: true`` record pointed at is no longer referenced by anything
+    and is safe to remove, keeping real disk usage bounded across repeated
+    real B3-B6 retries. Only ever called AFTER the new record write
+    succeeds; defensively never removes anything outside a ``generations/``
+    directory this module itself created.
     """
-
-    def relocate(path_str: str) -> str:
-        return str(final_dir / Path(path_str).relative_to(tmp_dir))
-
-    payload = dict(payload)
-    for key in ("output_path", "stderr_path", "stdout_path"):
-        if key in payload and payload[key] is not None:
-            payload[key] = relocate(payload[key])
-    if "files" in payload and payload["files"] is not None:
-        payload["files"] = [{**entry, "path": relocate(entry["path"])} for entry in payload["files"]]
-    return payload
+    if not old_record.get("executed"):
+        return
+    old_dir: Path | None = None
+    for field_name in path_fields:
+        value = old_record.get(field_name)
+        if isinstance(value, dict):
+            # A nested {"dest_path": "...", "byte_size": ..., ...}-shaped
+            # entry (download's "fasta"/"assembly_report") always names its
+            # path via "dest_path"; a plain {tool: path, ...}-shaped mapping
+            # (align's "sam_paths") has no such key, so fall back to the
+            # first string value. Picking "any truthy value" without this
+            # distinction previously picked a nonzero byte_size *int* over
+            # the actual path string, since JSON round-tripping sorts keys
+            # alphabetically ("byte_size" before "dest_path").
+            value = value.get("dest_path") or next((v for v in value.values() if isinstance(v, str) and v), None)
+        if isinstance(value, str) and value:
+            old_dir = Path(value).parent
+            break
+    if old_dir is None or old_dir == new_generation_dir:
+        return
+    if old_dir.parent.name == "generations" and old_dir.is_dir():
+        shutil.rmtree(old_dir, ignore_errors=True)
 
 
 def _mapping_capable(*, allow_mapping: bool, host_role: str, reference: Path | None, reads_fasta: Path | None) -> str | None:
@@ -543,6 +590,25 @@ def _mapping_capable(*, allow_mapping: bool, host_role: str, reference: Path | N
     if reads_fasta is None or not Path(reads_fasta).is_file():
         return f"reads FASTA not found ({reads_fasta}); run the decode/controls stages first"
     return None
+
+
+def _current_output_bytes(paths: Sequence[str | Path | None]) -> int:
+    """Sum of the on-disk byte sizes of every existing path in ``paths``
+    (B1-C3): used to compute how much of a build's combined output
+    allowance a LATER writer (e.g. SeqKit in ``stage_exact_match``) has
+    remaining, given what an EARLIER writer (e.g. BWA/minimap2 in
+    ``stage_align``) already accepted for the same build — a single shared
+    live counter across writers, never each independently granted its own
+    full allowance. Missing/None entries contribute zero, never raise.
+    """
+    total = 0
+    for entry in paths:
+        if entry is None:
+            continue
+        path = Path(entry)
+        if path.is_file():
+            total += path.stat().st_size
+    return total
 
 
 def _check_disk_budget_or_fail(
@@ -587,10 +653,18 @@ def stage_download(
     disk_ledger: DiskBudgetLedger | None = None,
     transport: Transport = urllib_transport,
 ) -> dict:
-    """B1-R7: restart-safe, disk-budget-gated acquisition of one reference
-    build's compressed source FASTA and assembly report, verified against
-    the execution-source spec's authoritative upstream MD5 *and* byte size
-    (never silently re-pinned on drift) before being recorded as executed.
+    """B1-C1: restart-safe, disk-budget-gated acquisition of one reference
+    build's compressed source FASTA, assembly report, AND the live
+    ``md5checksums.txt`` listing (fetched through the same injected-transport
+    interface), cross-checked against the execution-source spec's
+    authoritative upstream MD5s/byte size (never silently re-pinned on
+    drift) before being recorded as executed. The whole source set is
+    promoted as one immutable generation (B1-C2): every file is written
+    directly into a fresh ``sources_dir/generations/<id>/`` directory (see
+    ``_new_generation_dir``) and only becomes "accepted" once
+    ``download.json`` is written pointing at it — a failure at any point
+    before that write (including a checksum-listing mismatch) leaves the
+    previously accepted generation, if any, completely untouched.
 
     ``transport`` defaults to the real network transport
     (:func:`rbpbench.coordinates.download.urllib_transport`) for actual B3+
@@ -598,23 +672,26 @@ def stage_download(
     injected local fake transport, and B1's authorization boundary forbids
     requesting any real NCBI URL regardless.
     """
-    fasta_dest = sources_dir / f"{source_spec.assembly}_genomic.fna.gz"
-    report_dest = sources_dir / f"{source_spec.assembly}_assembly_report.txt"
+    old_record_path = sources_dir / "download.json"
     record = {
-        "planned": {"fasta_url": source_spec.fasta_url, "assembly_report_url": source_spec.assembly_report_url},
+        "planned": {
+            "fasta_url": source_spec.fasta_url,
+            "assembly_report_url": source_spec.assembly_report_url,
+            "md5checksums_url": source_spec.md5checksums_url,
+        },
         "executed": False,
         "skip_reason": None,
     }
 
     if dry_run:
         record["skip_reason"] = "--dry-run: real download is never executed under --dry-run"
-        _guarded_write_record(sources_dir / "download.json", record)
+        _guarded_write_record(old_record_path, record)
         return record
 
     skip_reason = _acquisition_capable(allow_mapping=allow_mapping, host_role=host_role)
     if skip_reason is not None:
         record["skip_reason"] = skip_reason
-        _guarded_write_record(sources_dir / "download.json", record)
+        _guarded_write_record(old_record_path, record)
         return record
 
     # The disk-budget snapshot requires an existing path; sources_dir may
@@ -627,36 +704,88 @@ def stage_download(
         disk_path=sources_dir,
     )
 
-    fasta_result = restart_safe_download(
-        source_spec.fasta_url, fasta_dest, expected_md5=source_spec.fasta_upstream_md5, transport=transport
-    )
-    report_result = restart_safe_download(
-        source_spec.assembly_report_url,
-        report_dest,
-        expected_md5=source_spec.assembly_report_md5,
-        transport=transport,
-    )
+    generation_dir = _new_generation_dir(sources_dir, prefix="download")
+    try:
+        fasta_dest = generation_dir / f"{source_spec.assembly}_genomic.fna.gz"
+        report_dest = generation_dir / f"{source_spec.assembly}_assembly_report.txt"
+        checksum_dest = generation_dir / "md5checksums.txt"
+
+        fasta_result = restart_safe_download(
+            source_spec.fasta_url, fasta_dest, expected_md5=source_spec.fasta_upstream_md5, transport=transport
+        )
+        report_result = restart_safe_download(
+            source_spec.assembly_report_url,
+            report_dest,
+            expected_md5=source_spec.assembly_report_md5,
+            transport=transport,
+        )
+        # B1-C1: the live checksum listing is fetched through the SAME
+        # injected-transport interface used for the FASTA/report above —
+        # never a bare, ungated network call of its own.
+        transport(source_spec.md5checksums_url, checksum_dest)
+        if not checksum_dest.is_file():
+            raise DownloadVerificationError(
+                f"transport for {source_spec.md5checksums_url!r} did not produce a file at {checksum_dest}"
+            )
+        live_entries = parse_md5checksums(checksum_dest.read_text())
+
+        # B1-C1: require exactly the two intended entries, then compare the
+        # live listing against both the frozen plan MD5 and the freshly
+        # downloaded file's own MD5. Plan-time size/MD5 values remain
+        # authoritative (second-review R11): any disagreement is a hard stop
+        # requiring a recorded decision, never silent re-pinning.
+        violations: list[str] = []
+        for label, dest, frozen_md5, downloaded_md5 in (
+            ("fasta", fasta_dest, source_spec.fasta_upstream_md5, fasta_result.md5),
+            ("assembly_report", report_dest, source_spec.assembly_report_md5, report_result.md5),
+        ):
+            live_md5 = live_entries.get(dest.name)
+            if live_md5 is None:
+                violations.append(f"live md5checksums.txt has no entry for {dest.name!r} ({label})")
+                continue
+            if live_md5 != frozen_md5:
+                violations.append(
+                    f"live md5checksums.txt entry for {dest.name!r} ({label}) is {live_md5!r}, but the "
+                    f"authoritative plan value is {frozen_md5!r}; this disagreement is a hard stop requiring a "
+                    "recorded decision in docs/DECISIONS.md, never silent re-pinning"
+                )
+            if live_md5 != downloaded_md5:
+                violations.append(
+                    f"live md5checksums.txt entry for {dest.name!r} ({label}) is {live_md5!r}, but the "
+                    f"downloaded file's own MD5 is {downloaded_md5!r}"
+                )
+        if fasta_result.byte_size != source_spec.fasta_compressed_byte_size:
+            violations.append(
+                f"downloaded FASTA byte size {fasta_result.byte_size} != authoritative plan size "
+                f"{source_spec.fasta_compressed_byte_size}; this disagreement is a hard stop requiring a recorded "
+                "decision in docs/DECISIONS.md, never silent re-pinning"
+            )
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
+
+    if violations:
+        _discard_generation(generation_dir)
+        record["skip_reason"] = "; ".join(violations)
+        _guarded_write_record(old_record_path, record)
+        return record
+
     if disk_ledger is not None:
         disk_ledger.record_step(f"download:{build}", path=sources_dir)
 
-    # Plan-time size/MD5 values are authoritative (second-review R11):
-    # upstream MD5 is already enforced fail-closed inside
-    # restart_safe_download; the authoritative byte size is checked here as
-    # a second, independent signal. Disagreement is a hard stop requiring a
-    # recorded decision, never silent re-pinning.
-    if fasta_result.byte_size != source_spec.fasta_compressed_byte_size:
-        record["skip_reason"] = (
-            f"downloaded FASTA byte size {fasta_result.byte_size} != authoritative plan size "
-            f"{source_spec.fasta_compressed_byte_size}; this disagreement is a hard stop requiring a recorded "
-            "decision in docs/DECISIONS.md, never silent re-pinning"
-        )
-        _guarded_write_record(sources_dir / "download.json", record)
-        return record
+    old_record = json.loads(old_record_path.read_text()) if old_record_path.is_file() else {}
 
     record["executed"] = True
     record["fasta"] = fasta_result.to_dict()
     record["assembly_report"] = report_result.to_dict()
-    _guarded_write_record(sources_dir / "download.json", record)
+    record["checksum_listing"] = {
+        "dest_path": str(checksum_dest),
+        "sha256": sha256_file(checksum_dest),
+        "byte_size": checksum_dest.stat().st_size,
+        "url": source_spec.md5checksums_url,
+    }
+    _guarded_write_record(old_record_path, record)
+    _prune_superseded_generation(old_record, path_fields=("fasta", "assembly_report"), new_generation_dir=generation_dir)
     return record
 
 
@@ -671,30 +800,48 @@ def stage_derive(
     dry_run: bool,
     disk_ledger: DiskBudgetLedger | None = None,
 ) -> dict:
-    """B1-R7: streaming, restart-safe derivation of the frozen-contig-policy
-    reference FASTA + manifest from an already-downloaded/verified source
-    (see :mod:`rbpbench.coordinates.derive_reference`, whose own
-    ``derive_reference_fasta`` already atomically promotes its output —
-    never destroying a prior valid FASTA on a failed derivation attempt).
+    """B1-C1/C2: streaming, restart-safe derivation of the frozen-contig-
+    policy reference FASTA + manifest from an already-downloaded/verified
+    source, re-hashing the CURRENT source files against ``download_record``
+    immediately before deriving (never merely trusting its ``executed: true``
+    boolean and recorded paths, which could have drifted since download
+    ran). The derived FASTA and its manifest are promoted together as ONE
+    immutable generation (see ``_new_generation_dir``): both are written
+    directly into a fresh ``derived_dir/generations/<id>/`` directory and
+    only become "accepted" once ``derive.json`` is written pointing at both
+    — a failure between writing the FASTA and building/persisting the
+    manifest can therefore never leave a new FASTA paired with a stale or
+    missing manifest at a shared final path.
     """
-    output_fasta = derived_dir / "reference.fna"
-    manifest_path = derived_dir / "reference_manifest.json"
+    old_record_path = derived_dir / "derive.json"
     record = {"executed": False, "skip_reason": None}
 
     if dry_run:
         record["skip_reason"] = "--dry-run: real derivation is never executed under --dry-run"
-        _guarded_write_record(derived_dir / "derive.json", record)
+        _guarded_write_record(old_record_path, record)
         return record
 
     skip_reason = _acquisition_capable(allow_mapping=allow_mapping, host_role=host_role)
     if skip_reason is not None:
         record["skip_reason"] = skip_reason
-        _guarded_write_record(derived_dir / "derive.json", record)
+        _guarded_write_record(old_record_path, record)
         return record
 
     if not download_record.get("executed"):
         record["skip_reason"] = "download stage did not execute; nothing to derive from"
-        _guarded_write_record(derived_dir / "derive.json", record)
+        _guarded_write_record(old_record_path, record)
+        return record
+
+    # B1-C1: re-hash the current source files against what download.json
+    # actually recorded, immediately before trusting them as derivation
+    # input — never merely the "executed: true" boolean and recorded paths.
+    source_evidence_violations = _verify_download_evidence_hashes(download_record)
+    if source_evidence_violations:
+        record["skip_reason"] = (
+            "accepted source evidence has drifted since download; refusing to derive from it: "
+            f"{list(source_evidence_violations)}"
+        )
+        _guarded_write_record(old_record_path, record)
         return record
 
     derived_dir.mkdir(parents=True, exist_ok=True)
@@ -707,27 +854,41 @@ def stage_derive(
 
     source_fasta = Path(download_record["fasta"]["dest_path"])
     assembly_report = Path(download_record["assembly_report"]["dest_path"])
-    derivation = derive_reference_fasta(source_fasta=source_fasta, assembly_report=assembly_report, output_fasta=output_fasta)
-    manifest = build_reference_manifest(
-        derivation,
-        build_id=build,
-        assembly_accession=source_spec.refseq_assembly_accession,
-        source_url=source_spec.fasta_url,
-        source_fasta_compressed=source_fasta,
-        source_fasta_compressed_upstream_md5=source_spec.fasta_upstream_md5,
-        assembly_report=assembly_report,
-        assembly_report_upstream_md5=source_spec.assembly_report_md5,
-        derivation_command=f"derive_reference_fasta(build={build!r})",
-        git_commit=current_git_commit(),
-    )
-    _write_json(manifest_path, manifest)
+    generation_dir = _new_generation_dir(derived_dir, prefix="derive")
+    try:
+        output_fasta = generation_dir / "reference.fna"
+        manifest_path = generation_dir / "reference_manifest.json"
+        derivation = derive_reference_fasta(
+            source_fasta=source_fasta, assembly_report=assembly_report, output_fasta=output_fasta
+        )
+        manifest = build_reference_manifest(
+            derivation,
+            build_id=build,
+            assembly_accession=source_spec.refseq_assembly_accession,
+            source_url=source_spec.fasta_url,
+            source_fasta_compressed=source_fasta,
+            source_fasta_compressed_upstream_md5=source_spec.fasta_upstream_md5,
+            assembly_report=assembly_report,
+            assembly_report_upstream_md5=source_spec.assembly_report_md5,
+            derivation_command=f"derive_reference_fasta(build={build!r})",
+            git_commit=current_git_commit(),
+        )
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
+
     if disk_ledger is not None:
         disk_ledger.record_step(f"derive:{build}", path=derived_dir)
 
+    old_record = json.loads(old_record_path.read_text()) if old_record_path.is_file() else {}
+
     record["executed"] = True
     record["output_fasta"] = str(output_fasta)
+    record["output_fasta_sha256"] = derivation.output_fasta_sha256
     record["reference_manifest_path"] = str(manifest_path)
-    _guarded_write_record(derived_dir / "derive.json", record)
+    _guarded_write_record(old_record_path, record)
+    _prune_superseded_generation(old_record, path_fields=("output_fasta",), new_generation_dir=generation_dir)
     return record
 
 
@@ -765,14 +926,31 @@ def stage_index(
     verification. Gated identically to ``stage_align``/``stage_exact_match``:
     ``--dry-run`` is an absolute guard checked first, then the same
     allow-mapping/host-role/reference-manifest/fresh-preflight chain.
+
+    B1-C2: the BWA/minimap2 index files AND their manifest are produced
+    directly inside one fresh, immutable generation directory (see
+    ``_new_generation_dir``) — never a fixed, reused ``index_dir/<build>``
+    path — so promotion is nothing more than ``index.json`` (written last,
+    atomically) naming that directory's paths.
     """
-    bwa_prefix = index_dir / build
-    mm2_index = index_dir / f"{build}.mmi"
+    placeholder_bwa_prefix = index_dir / build
+    placeholder_mm2_index = index_dir / f"{build}.mmi"
     record = {
         "planned_commands": {
-            "bwa_index": format_command(("bwa", "index", "-p", str(bwa_prefix), str(reference or Path("reference.fasta")))),
+            "bwa_index": format_command(
+                ("bwa", "index", "-p", str(placeholder_bwa_prefix), str(reference or Path("reference.fasta")))
+            ),
             "minimap2_index": format_command(
-                ("minimap2", "-x", "splice:sr", "-I", "8G", "-d", str(mm2_index), str(reference or Path("reference.fasta")))
+                (
+                    "minimap2",
+                    "-x",
+                    "splice:sr",
+                    "-I",
+                    "8G",
+                    "-d",
+                    str(placeholder_mm2_index),
+                    str(reference or Path("reference.fasta")),
+                )
             ),
         },
         "executed": False,
@@ -829,16 +1007,17 @@ def stage_index(
         _guarded_write_record(index_dir / "index.json", record)
         return record
 
-    # B1-R3: build both indices into an attempt-specific temporary directory
-    # and only atomically promote every produced file to its final location
-    # after BOTH bwa and minimap2 succeed — a failure after bwa succeeds but
-    # before minimap2 completes must never leave a half-replaced index set at
-    # the final paths while index.json still (correctly) records the prior
-    # accepted evidence.
-    attempt_dir = _attempt_dir(index_dir, prefix="index")
-    attempt_dir.mkdir(parents=True, exist_ok=True)
-    tmp_bwa_prefix = attempt_dir / build
-    tmp_mm2_index = attempt_dir / f"{build}.mmi"
+    # B1-C2: build both indices AND their manifest directly inside one
+    # fresh, immutable generation directory — never at the fixed
+    # ``index_dir/<build>``/``index_dir/index_manifest.json`` paths a prior
+    # attempt may already occupy — so a failure at any point (including
+    # between building the two indices and persisting the manifest) leaves
+    # the previously accepted generation, if any, completely untouched; the
+    # new generation only becomes "accepted" when index.json (below) is
+    # written pointing at it.
+    generation_dir = _new_generation_dir(index_dir, prefix="index")
+    bwa_prefix = generation_dir / build
+    mm2_index = generation_dir / f"{build}.mmi"
     try:
         _check_disk_budget_or_fail(
             disk_ledger,
@@ -846,7 +1025,7 @@ def stage_index(
             allowance_gib=PLANNED_ALLOWANCES_GIB["active_build_bwa_index"],
             disk_path=index_dir,
         )
-        bwa_provenance = prepare_bwa_index(reference, tmp_bwa_prefix)
+        bwa_provenance = prepare_bwa_index(reference, bwa_prefix)
         if disk_ledger is not None:
             disk_ledger.record_step(f"bwa_index:{build}", path=index_dir)
 
@@ -856,41 +1035,34 @@ def stage_index(
             allowance_gib=PLANNED_ALLOWANCES_GIB["active_build_minimap2_index"],
             disk_path=index_dir,
         )
-        mm2_provenance = prepare_minimap2_index(reference, tmp_mm2_index)
+        mm2_provenance = prepare_minimap2_index(reference, mm2_index)
         if disk_ledger is not None:
             disk_ledger.record_step(f"minimap2_index:{build}", path=index_dir)
+
+        manifest = build_index_manifest(
+            build=build,
+            bwa=bwa_provenance,
+            minimap2=mm2_provenance,
+            reference_sha256=current_reference_sha256,
+            reference_manifest_content_sha256=current_manifest_hash,
+        )
+        manifest_path = generation_dir / "index_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     except BaseException:
-        shutil.rmtree(attempt_dir, ignore_errors=True)
+        _discard_generation(generation_dir)
         raise
 
-    for tmp_path, final_path in (
-        *((Path(str(tmp_bwa_prefix) + suffix), Path(str(bwa_prefix) + suffix)) for suffix in BWA_INDEX_SUFFIXES),
-        (tmp_bwa_prefix.with_name(tmp_bwa_prefix.name + ".index_stdout.log"), bwa_prefix.with_name(bwa_prefix.name + ".index_stdout.log")),
-        (tmp_bwa_prefix.with_name(tmp_bwa_prefix.name + ".index_stderr.log"), bwa_prefix.with_name(bwa_prefix.name + ".index_stderr.log")),
-        (tmp_mm2_index, mm2_index),
-        (tmp_mm2_index.with_name(tmp_mm2_index.name + ".index_stdout.log"), mm2_index.with_name(mm2_index.name + ".index_stdout.log")),
-        (tmp_mm2_index.with_name(tmp_mm2_index.name + ".index_stderr.log"), mm2_index.with_name(mm2_index.name + ".index_stderr.log")),
-    ):
-        os.replace(tmp_path, final_path)
-    shutil.rmtree(attempt_dir, ignore_errors=True)
-
-    bwa_payload = _relocate_provenance_dict(bwa_provenance.to_dict(), tmp_dir=attempt_dir, final_dir=index_dir)
-    mm2_payload = _relocate_provenance_dict(mm2_provenance.to_dict(), tmp_dir=attempt_dir, final_dir=index_dir)
-
-    manifest = build_index_manifest(
-        build=build,
-        bwa=bwa_payload,
-        minimap2=mm2_payload,
-        reference_sha256=current_reference_sha256,
-        reference_manifest_content_sha256=current_manifest_hash,
-    )
-    _write_json(index_dir / "index_manifest.json", manifest)
+    old_record_path = index_dir / "index.json"
+    old_record = json.loads(old_record_path.read_text()) if old_record_path.is_file() else {}
 
     record["executed"] = True
     record["bwa_index_prefix"] = str(bwa_prefix)
     record["minimap2_index"] = str(mm2_index)
-    record["index_manifest_path"] = str(index_dir / "index_manifest.json")
-    _guarded_write_record(index_dir / "index.json", record)
+    record["index_manifest_path"] = str(manifest_path)
+    _guarded_write_record(old_record_path, record)
+    _prune_superseded_generation(
+        old_record, path_fields=("bwa_index_prefix", "minimap2_index"), new_generation_dir=generation_dir
+    )
     return record
 
 
@@ -1033,85 +1205,87 @@ def stage_align(
         _guarded_write_record(build_output_dir / "align.json", record)
         return record
 
-    # Fail-closed disk-budget check (B1 required item 8): both mapper output
-    # writers share the build's combined SAM/BED/report allowance, checked
-    # once before either subprocess starts.
+    # Fail-closed disk-budget check (B1-C3): both mapper output writers share
+    # ONE combined build-output allowance, checked once before either
+    # subprocess starts and then split between them as each writer's actual
+    # bytes become known — never each writer independently granted its own
+    # full allowance.
     disk_budget_check = _check_disk_budget_or_fail(
         disk_ledger, label=f"align:{build}", allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB, disk_path=build_output_dir
     )
-    max_output_bytes = int(BUILD_OUTPUT_ALLOWANCE_GIB * GIB)
+    total_allowance_bytes = int(BUILD_OUTPUT_ALLOWANCE_GIB * GIB)
 
     bwa_binary = resolve_binary_provenance("bwa", version=preflight_report.tool_versions.get("bwa"))
     mm2_binary = resolve_binary_provenance("minimap2", version=preflight_report.tool_versions.get("minimap2"))
 
-    # B1-R3: write into an attempt-specific temporary directory and only
-    # atomically promote to the final SAM/stderr paths after BOTH bwa and
-    # minimap2 succeed (and, for minimap2, its mapping stderr is clean — see
-    # B1-R8 below) — a failure after bwa succeeds but before minimap2
-    # completes must never truncate/replace a previously-accepted final file.
-    attempt_dir = _attempt_dir(build_output_dir, prefix="align")
-    bwa_sam_tmp = attempt_dir / "align_bwa_mem.sam"
-    bwa_stderr_tmp = attempt_dir / "align_bwa_mem.stderr.log"
-    mm2_sam_tmp = attempt_dir / "align_minimap2_splice.sam"
-    mm2_stderr_tmp = attempt_dir / "align_minimap2_splice.stderr.log"
+    # B1-C2: write directly into one fresh, immutable generation directory —
+    # never a fixed, reused final path — so promotion is nothing more than
+    # align.json (written last, atomically) naming this directory's paths. A
+    # failure after bwa succeeds but before minimap2 completes (or before
+    # its mapping stderr is confirmed clean — see B1-R8 below) simply
+    # abandons this generation; the previously accepted one (if any) is
+    # completely untouched.
+    generation_dir = _new_generation_dir(build_output_dir, prefix="align")
+    bwa_sam = generation_dir / "align_bwa_mem.sam"
+    bwa_stderr = generation_dir / "align_bwa_mem.stderr.log"
+    mm2_sam = generation_dir / "align_minimap2_splice.sam"
+    mm2_stderr = generation_dir / "align_minimap2_splice.stderr.log"
     try:
         bwa_provenance = run_tool_with_provenance(
             bwa_cmd.argv,
             tool="bwa_mem",
-            output_path=bwa_sam_tmp,
-            stderr_path=bwa_stderr_tmp,
+            output_path=bwa_sam,
+            stderr_path=bwa_stderr,
             command_text=format_command(bwa_cmd.argv),
             binary=bwa_binary,
             run_fn=_run_tool_to_file,
-            run_kwargs={"max_output_bytes": max_output_bytes},
+            run_kwargs={"max_output_bytes": total_allowance_bytes},
         )
+        # B1-C3: minimap2's own share of the combined allowance is whatever
+        # bwa did NOT already consume — a single shared live counter across
+        # both writers, rather than each independently capped at the full
+        # 4 GiB (which could accept up to 8 GiB combined).
+        bwa_bytes_used = bwa_sam.stat().st_size + bwa_stderr.stat().st_size
+        mm2_max_output_bytes = max(0, total_allowance_bytes - bwa_bytes_used)
         mm2_provenance = run_tool_with_provenance(
             mm2_cmd.argv,
             tool="minimap2_splice",
-            output_path=mm2_sam_tmp,
-            stderr_path=mm2_stderr_tmp,
+            output_path=mm2_sam,
+            stderr_path=mm2_stderr,
             command_text=format_command(mm2_cmd.argv),
             binary=mm2_binary,
             run_fn=_run_tool_to_file,
-            run_kwargs={"max_output_bytes": max_output_bytes},
+            run_kwargs={"max_output_bytes": mm2_max_output_bytes},
         )
+
+        # B1-R8: minimap2's own mapping-time stderr must be inspected for
+        # the same disqualifying parameter-override/multipart-index
+        # conditions required at index-build time — capturing the warning is
+        # not equivalent to stopping on it. Checked before promotion: a
+        # disqualified attempt's SAM output must never become "accepted".
+        mm2_mapping_stderr_violations = check_minimap2_mapping_stderr(mm2_stderr.read_text())
     except BaseException:
-        shutil.rmtree(attempt_dir, ignore_errors=True)
+        _discard_generation(generation_dir)
         raise
 
-    # B1-R8: minimap2's own mapping-time stderr must be inspected for the
-    # same disqualifying parameter-override/multipart-index conditions
-    # required at index-build time — capturing the warning is not equivalent
-    # to stopping on it. Checked before promotion: a disqualified attempt's
-    # SAM output must never reach the final path.
-    mm2_mapping_stderr_violations = check_minimap2_mapping_stderr(mm2_stderr_tmp.read_text())
     if mm2_mapping_stderr_violations:
-        shutil.rmtree(attempt_dir, ignore_errors=True)
+        _discard_generation(generation_dir)
         record["skip_reason"] = (
             f"minimap2 mapping stderr indicates a disqualifying condition: {list(mm2_mapping_stderr_violations)}"
         )
         _guarded_write_record(build_output_dir / "align.json", record)
         return record
 
-    bwa_sam = build_output_dir / "align_bwa_mem.sam"
-    bwa_stderr = build_output_dir / "align_bwa_mem.stderr.log"
-    mm2_sam = build_output_dir / "align_minimap2_splice.sam"
-    mm2_stderr = build_output_dir / "align_minimap2_splice.stderr.log"
-    os.replace(bwa_sam_tmp, bwa_sam)
-    os.replace(bwa_stderr_tmp, bwa_stderr)
-    os.replace(mm2_sam_tmp, mm2_sam)
-    os.replace(mm2_stderr_tmp, mm2_stderr)
-    shutil.rmtree(attempt_dir, ignore_errors=True)
-
-    bwa_provenance_dict = _relocate_provenance_dict(bwa_provenance.to_dict(), tmp_dir=attempt_dir, final_dir=build_output_dir)
-    mm2_provenance_dict = _relocate_provenance_dict(mm2_provenance.to_dict(), tmp_dir=attempt_dir, final_dir=build_output_dir)
-
     if disk_ledger is not None:
         disk_ledger.record_step(f"align:{build}", path=build_output_dir)
+
+    old_record_path = build_output_dir / "align.json"
+    old_record = json.loads(old_record_path.read_text()) if old_record_path.is_file() else {}
 
     record["executed"] = True
     record["tool_versions"] = {"bwa": bwa_binary.version, "minimap2": mm2_binary.version}
     record["sam_paths"] = {"bwa_mem": str(bwa_sam), "minimap2_splice": str(mm2_sam)}
+    record["stderr_paths"] = {"bwa_mem": str(bwa_stderr), "minimap2_splice": str(mm2_stderr)}
     record["index_paths"] = {
         "bwa_index_prefix": str(bwa_index_prefix) if bwa_index_prefix else None,
         "minimap2_index": str(minimap2_index) if minimap2_index else None,
@@ -1119,10 +1293,11 @@ def stage_align(
     record["disk_budget_check"] = disk_budget_check
     record["provenance"] = {
         "input_hashes": preflight_report.input_hashes,
-        "bwa_mem": bwa_provenance_dict,
-        "minimap2_splice": mm2_provenance_dict,
+        "bwa_mem": bwa_provenance.to_dict(),
+        "minimap2_splice": mm2_provenance.to_dict(),
     }
-    _guarded_write_record(build_output_dir / "align.json", record)
+    _guarded_write_record(old_record_path, record)
+    _prune_superseded_generation(old_record, path_fields=("sam_paths",), new_generation_dir=generation_dir)
     return record
 
 
@@ -1225,50 +1400,61 @@ def stage_exact_match(
     disk_budget_check = _check_disk_budget_or_fail(
         disk_ledger, label=f"exact_match:{build}", allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB, disk_path=build_output_dir
     )
-    max_output_bytes = int(BUILD_OUTPUT_ALLOWANCE_GIB * GIB)
+    total_allowance_bytes = int(BUILD_OUTPUT_ALLOWANCE_GIB * GIB)
+    # B1-C3: SeqKit shares the SAME combined build-output allowance as
+    # align's BWA/minimap2 writers — never its own independent full 4 GiB —
+    # so the accounting reflects what align already accepted for this build.
+    align_already_accepted_bytes = _current_output_bytes(
+        (
+            *(align_record.get("sam_paths") or {}).values(),
+            *(align_record.get("stderr_paths") or {}).values(),
+        )
+    )
+    seqkit_max_output_bytes = max(0, total_allowance_bytes - align_already_accepted_bytes)
 
     seqkit_binary = resolve_binary_provenance("seqkit", version=preflight_report.tool_versions.get("seqkit"))
 
-    # B1-R3: same attempt-dir-then-atomic-promote pattern as stage_align — a
-    # failed/killed seqkit run must never truncate a previously-accepted BED.
-    attempt_dir = _attempt_dir(build_output_dir, prefix="exact_match")
-    bed_tmp = attempt_dir / "exact_match_hits.bed"
-    stderr_tmp = attempt_dir / "exact_match_hits.stderr.log"
+    # B1-C2: write directly into one fresh, immutable generation directory —
+    # never a fixed, reused final path — so promotion is nothing more than
+    # exact_match.json (written last, atomically) naming this directory's
+    # paths; a failed/killed seqkit run can never truncate a previously
+    # accepted BED.
+    generation_dir = _new_generation_dir(build_output_dir, prefix="exact_match")
+    bed_path = generation_dir / "exact_match_hits.bed"
+    stderr_path = generation_dir / "exact_match_hits.stderr.log"
     query_cmd = seqkit_locate_command(reads_fasta, reference)
     try:
         provenance = run_tool_with_provenance(
             query_cmd.argv,
             tool="seqkit_locate",
-            output_path=bed_tmp,
-            stderr_path=stderr_tmp,
+            output_path=bed_path,
+            stderr_path=stderr_path,
             command_text=format_command(query_cmd.argv),
             binary=seqkit_binary,
             run_fn=_run_tool_to_file,
-            run_kwargs={"max_output_bytes": max_output_bytes},
+            run_kwargs={"max_output_bytes": seqkit_max_output_bytes},
         )
     except BaseException:
-        shutil.rmtree(attempt_dir, ignore_errors=True)
+        _discard_generation(generation_dir)
         raise
-
-    bed_path = build_output_dir / "exact_match_hits.bed"
-    stderr_path = build_output_dir / "exact_match_hits.stderr.log"
-    os.replace(bed_tmp, bed_path)
-    os.replace(stderr_tmp, stderr_path)
-    shutil.rmtree(attempt_dir, ignore_errors=True)
-    provenance_dict = _relocate_provenance_dict(provenance.to_dict(), tmp_dir=attempt_dir, final_dir=build_output_dir)
 
     if disk_ledger is not None:
         disk_ledger.record_step(f"exact_match:{build}", path=build_output_dir)
 
+    old_record_path = build_output_dir / "exact_match.json"
+    old_record = json.loads(old_record_path.read_text()) if old_record_path.is_file() else {}
+
     record["executed"] = True
     record["tool_version"] = seqkit_binary.version
     record["bed_path"] = str(bed_path)
+    record["stderr_path"] = str(stderr_path)
     record["disk_budget_check"] = disk_budget_check
     record["provenance"] = {
         "input_hashes": preflight_report.input_hashes,
-        "seqkit_locate": provenance_dict,
+        "seqkit_locate": provenance.to_dict(),
     }
-    _guarded_write_record(build_output_dir / "exact_match.json", record)
+    _guarded_write_record(old_record_path, record)
+    _prune_superseded_generation(old_record, path_fields=("bed_path",), new_generation_dir=generation_dir)
     return record
 
 
@@ -1850,6 +2036,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filesystem volume to measure the disk-budget ledger's baseline/free-space against",
     )
     parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+        help=(
+            "Pinned repository root that --cleanup-index resolves indices/<build> against (B1-C4): cleanup "
+            "refuses any --indices-dir that does not resolve to exactly repo-root/indices/<build>, and rejects "
+            "every symlinked path component between the target and this root."
+        ),
+    )
+    parser.add_argument(
         "--cleanup-index",
         default=None,
         metavar="BUILD",
@@ -1894,55 +2090,196 @@ def _hash_matches(path_str: str | None, expected_sha256: str | None) -> bool:
     return path.is_file() and sha256_file(path) == expected_sha256
 
 
-def _verify_mapping_evidence_hashes(align_record: dict, exact_match_record: dict) -> tuple[str, ...]:
-    """B1-R5: prove the actual mapping/exact-match artifacts still exist and
-    match their own recorded hashes — never merely trust the ``executed``
-    JSON booleans, which say nothing about whether the underlying SAM/BED
-    files still exist or were altered since.
+def _verify_align_evidence_hashes(align_record: dict) -> tuple[str, ...]:
+    """B1-R5/C6: prove the actual align SAM outputs still exist and match
+    their own recorded hashes — never merely trust the ``executed`` JSON
+    boolean, which says nothing about whether the underlying files still
+    exist or were altered since. Used both by cleanup evidence-gating and by
+    the runner's own restart-skip revalidation (a stage must never be
+    skipped as "already completed" merely because its fingerprint still
+    matches while its actual accepted artifacts have drifted).
     """
     violations: list[str] = []
     if not align_record.get("executed"):
         violations.append("align.json does not record executed=true")
-    else:
-        sam_paths = align_record.get("sam_paths", {})
-        provenance = align_record.get("provenance", {})
-        for tool, sam_key in (("bwa_mem", "bwa_mem"), ("minimap2_splice", "minimap2_splice")):
-            expected = (provenance.get(tool) or {}).get("output_sha256")
-            if not _hash_matches(sam_paths.get(sam_key), expected):
-                violations.append(f"align {tool} output missing or hash mismatch (recorded evidence has drifted)")
-    if not exact_match_record.get("executed"):
-        violations.append("exact_match.json does not record executed=true")
-    else:
-        expected = (exact_match_record.get("provenance", {}).get("seqkit_locate") or {}).get("output_sha256")
-        if not _hash_matches(exact_match_record.get("bed_path"), expected):
-            violations.append("exact_match seqkit_locate output missing or hash mismatch (recorded evidence has drifted)")
+        return tuple(violations)
+    sam_paths = align_record.get("sam_paths", {})
+    provenance = align_record.get("provenance", {})
+    for tool, sam_key in (("bwa_mem", "bwa_mem"), ("minimap2_splice", "minimap2_splice")):
+        expected = (provenance.get(tool) or {}).get("output_sha256")
+        if not _hash_matches(sam_paths.get(sam_key), expected):
+            violations.append(f"align {tool} output missing or hash mismatch (recorded evidence has drifted)")
     return tuple(violations)
 
 
-def _run_cleanup_index(cfg: FeasibilityConfig, *, build: str, indices_dir: Path, output_dir: Path) -> None:
-    """``--cleanup-index BUILD`` entry point (B1 required item 8 / R2 / R5):
-    resolve exactly what evidence already exists on disk for ``build``,
-    verify it goes beyond mere JSON booleans (actual mapping/exact-match
-    artifact hashes, and the index manifest's own files), print and durably
-    persist the preview *before* anything is deleted, then delegate the
-    actual deletion to
+def _verify_exact_match_evidence_hashes(exact_match_record: dict) -> tuple[str, ...]:
+    """Same principle as :func:`_verify_align_evidence_hashes`, for the
+    exact-match stage's BED output.
+    """
+    violations: list[str] = []
+    if not exact_match_record.get("executed"):
+        violations.append("exact_match.json does not record executed=true")
+        return tuple(violations)
+    expected = (exact_match_record.get("provenance", {}).get("seqkit_locate") or {}).get("output_sha256")
+    if not _hash_matches(exact_match_record.get("bed_path"), expected):
+        violations.append("exact_match seqkit_locate output missing or hash mismatch (recorded evidence has drifted)")
+    return tuple(violations)
+
+
+def _verify_mapping_evidence_hashes(align_record: dict, exact_match_record: dict) -> tuple[str, ...]:
+    """Combined align+exact_match evidence check, kept for cleanup's use."""
+    return (*_verify_align_evidence_hashes(align_record), *_verify_exact_match_evidence_hashes(exact_match_record))
+
+
+def _verify_download_evidence_hashes(download_record: dict) -> tuple[str, ...]:
+    """B1-C1: re-hash the actual accepted source FASTA, assembly report, and
+    checksum-listing evidence against what ``download.json`` recorded — used
+    both before a restart skip and immediately before derivation, so neither
+    ever merely trusts the ``executed: true`` boolean and recorded paths.
+    """
+    violations: list[str] = []
+    if not download_record.get("executed"):
+        violations.append("download.json does not record executed=true")
+        return tuple(violations)
+    for key in ("fasta", "assembly_report"):
+        entry = download_record.get(key) or {}
+        if not _hash_matches(entry.get("dest_path"), entry.get("sha256")):
+            violations.append(f"download {key} output missing or hash mismatch (recorded evidence has drifted)")
+    checksum_listing = download_record.get("checksum_listing") or {}
+    if not _hash_matches(checksum_listing.get("dest_path"), checksum_listing.get("sha256")):
+        violations.append(
+            "download checksum-listing evidence missing or hash mismatch (recorded evidence has drifted)"
+        )
+    return tuple(violations)
+
+
+def _verify_derive_evidence_hashes(derive_record: dict) -> tuple[str, ...]:
+    """Same principle as :func:`_verify_download_evidence_hashes`, for the
+    derived FASTA + its manifest.
+    """
+    violations: list[str] = []
+    if not derive_record.get("executed"):
+        violations.append("derive.json does not record executed=true")
+        return tuple(violations)
+    if not _hash_matches(derive_record.get("output_fasta"), derive_record.get("output_fasta_sha256")):
+        violations.append("derive output_fasta missing or hash mismatch (recorded evidence has drifted)")
+    manifest_path = derive_record.get("reference_manifest_path")
+    if not manifest_path or not Path(manifest_path).is_file():
+        violations.append("derive reference_manifest_path missing (recorded evidence has drifted)")
+    return tuple(violations)
+
+
+def _verify_index_evidence_hashes(index_record: dict) -> tuple[str, ...]:
+    """B1-C6: re-verify the actual current BWA/minimap2 index files against
+    the creation-time index manifest immediately before a restart skip —
+    ``index_manifest_is_current`` alone is only a cheap size/mtime hint,
+    never a substitute for this full hash check, and a stage previously
+    marked complete purely by fingerprint equality could otherwise stay
+    "skippable" even after its index files were altered or removed.
+    """
+    if not index_record.get("executed"):
+        return ("index.json does not record executed=true",)
+    manifest_path = index_record.get("index_manifest_path")
+    if not manifest_path or not Path(manifest_path).is_file():
+        return ("index manifest missing (recorded evidence has drifted)",)
+    try:
+        manifest = json.loads(Path(manifest_path).read_text())
+    except (json.JSONDecodeError, OSError):
+        return ("index manifest unreadable (recorded evidence has drifted)",)
+    bwa_prefix = index_record.get("bwa_index_prefix")
+    mm2_index = index_record.get("minimap2_index")
+    return (
+        *verify_index_files_against_manifest(
+            manifest, key="bwa_index", actual_path=Path(bwa_prefix) if bwa_prefix else None
+        ),
+        *verify_index_files_against_manifest(
+            manifest, key="minimap2_index", actual_path=Path(mm2_index) if mm2_index else None
+        ),
+    )
+
+
+def _verify_report_evidence_hashes(build_dir: Path, *, cfg: FeasibilityConfig, output_dir: Path) -> tuple[str, ...]:
+    """B1-C4: verify the accepted per-build report and its generated
+    artifacts against provenance.json's own recorded hashes, so cleanup's
+    evidence gate goes beyond a bare ``reconciliation.status == "passed"``
+    string read off ``report.json`` — a truncated/edited report or mappings
+    table that still happens to contain that status string must not by
+    itself authorize destroying the disposable index directory.
+    """
+    provenance_path = output_dir / "provenance.json"
+    if not provenance_path.is_file():
+        return ("no provenance.json found to verify the accepted report against",)
+    try:
+        provenance = json.loads(provenance_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return ("provenance.json is unreadable",)
+    build = build_dir.name
+    build_artifacts = (provenance.get("builds", {}).get(build) or {}).get("generated_artifacts") or {}
+    violations: list[str] = []
+    for key, filename in (
+        ("report_json", Path(cfg.outputs.report_json).name),
+        ("mappings_tsv_gz", Path(cfg.outputs.mappings_tsv_gz).name),
+    ):
+        recorded = build_artifacts.get(key)
+        if not recorded:
+            violations.append(f"provenance.json has no recorded {key} evidence for build {build!r}")
+            continue
+        if not _hash_matches(recorded.get("path"), recorded.get("sha256")):
+            violations.append(f"{key} missing or hash mismatch against provenance.json (recorded evidence has drifted)")
+    return tuple(violations)
+
+
+def _run_cleanup_index(
+    cfg: FeasibilityConfig, *, build: str, indices_dir: Path, output_dir: Path, repo_root: Path, derived_dir: Path
+) -> None:
+    """``--cleanup-index BUILD`` entry point (B1-C4): resolve exactly what
+    evidence already exists on disk for ``build``, verify it goes beyond
+    mere JSON booleans (actual mapping/exact-match artifact hashes, the
+    report/provenance hashes, and the index manifest's own files), print and
+    durably persist the preview *before* anything is deleted, then delegate
+    the actual deletion to
     :func:`rbpbench.coordinates.cleanup.execute_index_cleanup`, which
     refuses (deleting nothing) unless index provenance, successful mapping
-    outputs, and a passed reconciliation are all already recorded.
+    outputs, and a passed reconciliation are all already recorded, and pins
+    the target to exactly ``repo_root/indices/<build>``.
     """
     index_dir = indices_dir / build
     build_dir = _build_dir(output_dir, build)
-    reference_path = Path("references") / "derived" / build / "reference.fna"
 
-    index_manifest_path = index_dir / "index_manifest.json"
-    index_manifest: dict | None = None
-    index_manifest_present = index_manifest_path.is_file()
-    if index_manifest_present:
+    # B1-C4: the actual accepted reference path (as derive.json recorded
+    # it), never a hardcoded references/derived/<build>/reference.fna guess
+    # — a real Task 001B run's derived-reference root may differ from the
+    # documented default via --derived-dir.
+    derive_record_path = derived_dir / build / "derive.json"
+    reference_path: Path | None = None
+    if derive_record_path.is_file():
         try:
-            index_manifest = json.loads(index_manifest_path.read_text())
+            derive_record = json.loads(derive_record_path.read_text())
         except (json.JSONDecodeError, OSError):
-            index_manifest = None
-            index_manifest_present = False
+            derive_record = {}
+        if derive_record.get("executed") and derive_record.get("output_fasta"):
+            reference_path = Path(derive_record["output_fasta"])
+
+    # B1-C2: the index manifest now lives inside the accepted generation
+    # directory named by index.json, never at a fixed index_dir/
+    # index_manifest.json path (which a newer, still-in-progress generation
+    # attempt could otherwise leave stale or absent).
+    index_record_path = index_dir / "index.json"
+    index_manifest: dict | None = None
+    index_manifest_present = False
+    if index_record_path.is_file():
+        try:
+            index_record_for_cleanup = json.loads(index_record_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            index_record_for_cleanup = {}
+        manifest_path_str = index_record_for_cleanup.get("index_manifest_path")
+        if index_record_for_cleanup.get("executed") and manifest_path_str and Path(manifest_path_str).is_file():
+            index_manifest_present = True
+            try:
+                index_manifest = json.loads(Path(manifest_path_str).read_text())
+            except (json.JSONDecodeError, OSError):
+                index_manifest = None
+                index_manifest_present = False
     if index_manifest_present and index_manifest is not None:
         index_file_violations = (
             *verify_index_files_against_manifest(index_manifest, key="bwa_index"),
@@ -1958,24 +2295,26 @@ def _run_cleanup_index(cfg: FeasibilityConfig, *, build: str, indices_dir: Path,
     exact_match_record = json.loads(exact_path.read_text()) if exact_path.exists() else {}
     report_payload = json.loads(report_path.read_text()) if report_path.exists() else {}
 
-    # B1-R5: evidence goes beyond the naive `executed: true` booleans — the
-    # actual SAM/BED artifacts must still exist and hash-match what was
-    # recorded at the time.
+    # B1-C4: evidence goes beyond the naive `executed: true` booleans — the
+    # actual SAM/BED artifacts, and now also the report/provenance hashes,
+    # must still exist and hash-match what was recorded at the time.
     mapping_evidence_violations = _verify_mapping_evidence_hashes(align_record, exact_match_record)
-    mapping_outputs_present = not mapping_evidence_violations
+    report_evidence_violations = _verify_report_evidence_hashes(build_dir, cfg=cfg, output_dir=output_dir)
+    evidence_violations = (*mapping_evidence_violations, *report_evidence_violations)
+    mapping_outputs_present = not evidence_violations
     reconciliation_passed = report_payload.get("reconciliation", {}).get("status") == "passed"
 
     # Preview resolved and printed/persisted *before* any deletion decision
-    # is acted on (B1-R5: the CLI previously printed only after deletion).
+    # is acted on (B1-R5/C4: the CLI previously printed only after deletion).
     try:
-        preview = plan_index_cleanup(index_dir, reference=reference_path, output_dir=output_dir)
+        preview = plan_index_cleanup(index_dir, repo_root=repo_root, reference=reference_path, output_dir=output_dir)
     except CleanupRefused as exc:
         raise SystemExit(f"cleanup refused for build {build!r}: {exc}") from exc
     print(f"cleanup preview for build {build!r}: {preview.resolved_target} ({len(preview.files)} file(s))")
     for f in preview.files:
         print(f"  - {f}")
-    if mapping_evidence_violations:
-        print(f"  mapping-evidence violations: {list(mapping_evidence_violations)}")
+    if evidence_violations:
+        print(f"  evidence violations: {list(evidence_violations)}")
 
     receipt_path = build_dir / "cleanup_receipts" / f"{build}_index_cleanup_receipt.json"
 
@@ -1985,6 +2324,7 @@ def _run_cleanup_index(cfg: FeasibilityConfig, *, build: str, indices_dir: Path,
             index_manifest_present=index_manifest_present,
             mapping_outputs_present=mapping_outputs_present,
             reconciliation_passed=reconciliation_passed,
+            repo_root=repo_root,
             reference=reference_path,
             output_dir=output_dir,
             build=build,
@@ -2016,9 +2356,36 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.allow_mapping and (not args.stage or "all" in args.stage):
         raise SystemExit(
             "--allow-mapping requires an explicit --stage allowlist naming only the stage(s) the active "
-            "checkpoint authorizes; --stage all (or an omitted --stage, which defaults to every stage) is "
+            "checkpoint allows; --stage all (or an omitted --stage, which defaults to every stage) is "
             "refused so a single invocation cannot cross review gates"
         )
+
+    # B1-C5: an explicit --stage list can still name every build-scoped
+    # stage at once (download, derive, index, align, exact_match, report),
+    # crossing directly from one checkpoint's preparation into another's
+    # full execution without a review stop in between, despite the omitted/
+    # "all" rejection above. The simplest safe rule: exactly one real
+    # build-scoped stage per --allow-mapping invocation. Data-prep stages
+    # that are not gated by a checkpoint boundary (sample/decode/controls,
+    # and preflight) may still accompany it; only under --dry-run is a
+    # multi-stage plan harmless (nothing ever executes for real), so this
+    # check is scoped to real (non-dry-run) authorization only.
+    if args.allow_mapping and not args.dry_run:
+        requested_stages = tuple(args.stage or ())
+        build_scoped_requested = sorted(set(s for s in requested_stages if s in BUILD_SCOPED_STAGES))
+        disallowed = [
+            s for s in requested_stages if s not in BUILD_SCOPED_STAGES and s not in _ALWAYS_ALLOWED_WITH_MAPPING
+        ]
+        # At most one build-scoped stage (zero is fine: a call may be pure
+        # data-prep, e.g. --stage sample alone); two or more is exactly the
+        # checkpoint-crossing pattern this closes.
+        if len(build_scoped_requested) > 1 or disallowed:
+            raise SystemExit(
+                "--allow-mapping requires an explicit --stage allowlist naming exactly one build-scoped stage "
+                f"(download/derive/index/align/exact_match/report) per invocation, so a single invocation cannot "
+                f"cross checkpoint review gates; got --stage {list(requested_stages)!r} (build-scoped: "
+                f"{build_scoped_requested!r}, other/disallowed: {disallowed!r})"
+            )
 
     references: dict[str, Path] = {}
     for spec in args.reference or ():
@@ -2083,7 +2450,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     cfg = load_config(args.config)
 
     if args.cleanup_index is not None:
-        _run_cleanup_index(cfg, build=args.cleanup_index, indices_dir=args.indices_dir, output_dir=args.output_dir)
+        _run_cleanup_index(
+            cfg,
+            build=args.cleanup_index,
+            indices_dir=args.indices_dir,
+            output_dir=args.output_dir,
+            repo_root=args.repo_root,
+            derived_dir=args.derived_dir,
+        )
         return
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -2262,6 +2636,51 @@ def main(argv: Sequence[str] | None = None) -> None:
             return Path(index_records[build]["minimap2_index"])
         return None
 
+    def _current_index_binding_violations(build: str) -> tuple[str, ...]:
+        """B1-C6: re-verify the CURRENTLY resolved BWA/minimap2 index (the
+        default generation, or an explicit override — including one this
+        run never itself built) against its own index manifest's binding to
+        the current reference/manifest content, immediately before letting
+        ``align`` be skipped as "already completed". Without this, an index
+        rebuilt (or altered/removed on disk) into a new generation AFTER
+        align last accepted it, without align's own restart fingerprint
+        ever changing, could leave align marked complete without ever
+        re-running the verification path stage_align itself performs when
+        it actually executes.
+        """
+        reference_manifest = reference_manifests.get(build)
+        if reference_manifest is None:
+            return ()
+        current_reference_sha256 = reference_manifest.get("sha256")
+        current_manifest_hash = manifest_content_sha256(reference_manifest)
+        violations: list[str] = []
+        for override_path, key in (
+            (_resolved_bwa_index_prefix(build), "bwa_index"),
+            (_resolved_minimap2_index(build), "minimap2_index"),
+        ):
+            if override_path is None:
+                continue
+            manifest_path = override_path.parent / "index_manifest.json"
+            if not manifest_path.is_file():
+                violations.append(f"{key}: no index manifest found at {manifest_path}")
+                continue
+            try:
+                override_manifest = json.loads(manifest_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                violations.append(f"{key}: index manifest at {manifest_path} is unreadable")
+                continue
+            violations.extend(
+                verify_index_binding(
+                    override_manifest,
+                    key=key,
+                    actual_path=override_path,
+                    expected_build=build,
+                    expected_reference_sha256=current_reference_sha256,
+                    expected_reference_manifest_content_sha256=current_manifest_hash,
+                )
+            )
+        return tuple(violations)
+
     # One disk-budget ledger, persisted across separate B1-B6 checkpoint
     # invocations (B1-R4): its baseline/entries are reloaded from
     # <output-dir>/disk_budget_ledger.json when present, so files/bytes
@@ -2275,11 +2694,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         else None
     )
     if disk_ledger is not None:
-        # B1-R4: every pinned output/reference/index path must resolve onto
-        # the same filesystem volume as the ledger's own baseline, unless
-        # separately budgeted — merely checking free disk on one volume
-        # cannot enforce a ceiling on bytes actually written to another.
-        volume_check_paths = {"output_dir": args.output_dir, "indices_dir": args.indices_dir}
+        # B1-C3: every pinned output/reference/index/source/derived path
+        # must resolve onto the same filesystem volume as the ledger's own
+        # baseline, unless separately budgeted — merely checking free disk
+        # on one volume cannot enforce a ceiling on bytes actually written
+        # to another. --sources-dir/--derived-dir are the paths that receive
+        # the downloaded and derived references during B3+; omitting them
+        # from this check would make a same-volume proof meaningless for
+        # exactly the largest artifacts the budget exists to bound.
+        volume_check_paths = {
+            "output_dir": args.output_dir,
+            "indices_dir": args.indices_dir,
+            "sources_dir": args.sources_dir,
+            "derived_dir": args.derived_dir,
+        }
         volume_check_paths.update({f"reference:{b}": p for b, p in references.items()})
         volume_violations = check_pinned_volumes(volume_check_paths, primary=args.disk_budget_path)
         if volume_violations:
@@ -2302,9 +2730,38 @@ def main(argv: Sequence[str] | None = None) -> None:
                 else:  # "report"
                     fingerprint = report_fingerprint(build)
 
+                # B1-C1/C6: a matching fingerprint alone is never sufficient
+                # to skip a build-scoped stage — the actual accepted
+                # artifacts (and, for align, the index it depends on) must
+                # still hash-verify against what was recorded, so an
+                # altered/removed/superseded-without-refingerprinting file
+                # can never stay silently "skippable".
                 if not args.force and _stage_is_valid(state, key, fingerprint):
-                    print(f"skip {key} (already completed with matching inputs; pass --force to redo)")
-                    continue
+                    if stage == "download":
+                        revalidation_violations = _verify_download_evidence_hashes(download_records.get(build, {}))
+                    elif stage == "derive":
+                        revalidation_violations = _verify_derive_evidence_hashes(derive_records.get(build, {}))
+                    elif stage == "index":
+                        revalidation_violations = _verify_index_evidence_hashes(index_records.get(build, {}))
+                    elif stage == "align":
+                        revalidation_violations = (
+                            *_verify_align_evidence_hashes(align_records.get(build, {})),
+                            *_current_index_binding_violations(build),
+                        )
+                    elif stage == "exact_match":
+                        revalidation_violations = _verify_exact_match_evidence_hashes(
+                            exact_match_records.get(build, {})
+                        )
+                    else:  # "report" regenerates its own output fully whenever it runs at all
+                        revalidation_violations = ()
+
+                    if not revalidation_violations:
+                        print(f"skip {key} (already completed with matching inputs; pass --force to redo)")
+                        continue
+                    print(
+                        f"{key}: previously accepted evidence has drifted since it last completed; re-running: "
+                        f"{list(revalidation_violations)}"
+                    )
                 if key in state["completed_stages"] and state.get("stage_fingerprints", {}).get(key) != fingerprint:
                     print(f"{key}: declared inputs/config/reference/authorization changed since it last completed; re-running")
 

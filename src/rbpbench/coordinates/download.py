@@ -48,6 +48,28 @@ def md5_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def parse_md5checksums(text: str) -> dict[str, str]:
+    """Parse an NCBI-style ``md5checksums.txt`` listing: lines of
+    ``<md5>  <path>`` (paths are typically ``./name``-prefixed). Keyed by
+    each entry's basename so a caller can look up e.g.
+    ``GCF_..._genomic.fna.gz`` regardless of the listing's own path prefix.
+    Lines that do not split into exactly an MD5 token and a path token are
+    silently skipped (never raise): the caller is responsible for treating a
+    missing expected entry as a violation (B1-C1).
+    """
+    entries: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, path = parts
+        entries[Path(path).name] = digest
+    return entries
+
+
 class DownloadVerificationError(RuntimeError):
     """Raised when a downloaded file's MD5 does not match the expected upstream value."""
 
@@ -141,5 +163,6 @@ __all__ = [
     "DownloadVerificationError",
     "restart_safe_download",
     "md5_file",
+    "parse_md5checksums",
     "urllib_transport",
 ]

@@ -170,15 +170,26 @@ human reference, build a human-genome index, or run real mapping.
   specification (frozen four local-input hashes, both NCBI RefSeq reference
   sources, and the derived-reference contig policy) and the fail-closed
   `verify_local_inputs` comparison. The runner's `--execution-sources PATH`
-  flag wires this in *before* the CSV is opened for row-by-row reading; it
-  is opt-in so 001A's tiny-fixture tests (whose hashes intentionally do not
-  match the frozen production spec) are unaffected. A real Task 001B B2+
-  invocation must pass `--execution-sources configs/coordinate_execution_sources.toml`.
+  flag wires this in *before* the CSV is opened for row-by-row reading and is
+  **mandatory** for any invocation that will reach the CSV (a
+  `--cleanup-index`-only invocation is the sole exemption, since it returns
+  before the CSV is ever opened): fixture-only tests must supply their own
+  fixture spec with matching fixture hashes, never rely on a silent
+  production bypass. A real Task 001B B2+ invocation passes
+  `--execution-sources configs/coordinate_execution_sources.toml`.
 - `rbpbench.coordinates.download.restart_safe_download`: writes to a
   `.partial` sibling via an injected `transport` callable, verifies the
   upstream MD5 before atomically promoting (`os.replace`) onto the final
   path, and never touches the network itself — B1's tests use only a local
-  fake transport.
+  fake transport. The runner's `download` stage additionally fetches the
+  live `md5checksums.txt` listing through the same injected-transport
+  interface, requires exactly the FASTA/assembly-report entries it expects,
+  and compares that live listing against both the frozen plan MD5 and the
+  freshly downloaded file's own MD5 (`parse_md5checksums`); any disagreement
+  is a hard stop recorded as a non-executed `download.json`, never silent
+  re-pinning. The whole source set (FASTA, assembly report, checksum
+  listing) is promoted as one immutable generation — see "Transactional
+  multi-file promotion" below.
 - `rbpbench.coordinates.derive_reference`: a single-sequential-pass
   assembly-report parser and streaming FASTA filter implementing the frozen
   contig policy (`assembled-molecule`/`unlocalized-scaffold`/
@@ -218,19 +229,74 @@ human reference, build a human-genome index, or run real mapping.
   lookup continue to use the plain FASTA regardless.
 - `rbpbench.coordinates.cleanup`: `execute_index_cleanup` (wired to the
   runner's `--cleanup-index BUILD` flag) removes exactly
-  `indices/<build>/` — refusing a symlinked target and any target equal to,
-  containing, or contained by the reference or output directory — and only
-  after index provenance, successful mapping outputs, and a passed
-  reconciliation are already recorded on disk.
-- `rbpbench.coordinates.diskbudget`: a per-invocation `DiskBudgetLedger`
-  baselined once at start; `check_projected_peak` is a fail-closed gate run
-  before every real index-build/mapping subprocess (never merely a free-disk
-  check), comparing observed-new-bytes-so-far plus the next step's planned
-  allowance against the frozen 30-GiB B6 ledger, and refusing if projected
-  free disk would fall under 80 GiB. Recorded in `provenance.json`'s
-  `disk_budget` key.
+  `<repo-root>/indices/<build>/` — pinned to the CLI's own `--repo-root`
+  (default `.`), never an arbitrary `--indices-dir`: the resolved target
+  must equal exactly `repo-root/indices/<build>` or cleanup refuses. Every
+  path component between the target and `--repo-root` is checked for a
+  symlink (not merely the immediate parent), and the target must still be
+  equal to, contain, or be contained by neither the reference directory (the
+  *actual* accepted reference recorded by `derive.json`, not a hardcoded
+  guess) nor the output directory. Deletion requires index provenance,
+  successful mapping outputs, *and* the accepted report/`provenance.json`
+  hashes to already be recorded and hash-verified on disk (not merely a bare
+  `reconciliation.status == "passed"` string). The pre-deletion file
+  list/hashes/sizes and the full index manifest are captured once into a
+  receipt outside the disposable directory; the post-deletion write reuses
+  that same captured list (adding only `completed`/`completed_at`) rather
+  than recomputing hashes against paths that no longer exist, and the
+  receipt is written atomically.
+- `rbpbench.coordinates.diskbudget`: a `DiskBudgetLedger` persisted to
+  `<output-dir>/disk_budget_ledger.json` and reloaded (not re-baselined) by
+  every subsequent checkpoint invocation, so the 30-GiB ceiling applies
+  across the whole multi-invocation B1-B6 study, not merely within one
+  process. `check_projected_peak` is a fail-closed gate run before every real
+  download/derivation/index-build/mapping subprocess (never merely a
+  free-disk check), comparing observed-new-bytes-so-far plus the next step's
+  planned allowance against the frozen 30-GiB B6 ledger, and refusing if
+  projected free disk would fall under 80 GiB; `check_pinned_volumes` covers
+  `--output-dir`, `--indices-dir`, `--sources-dir`, `--derived-dir`, and
+  every `--reference` override. Recorded in `provenance.json`'s
+  `disk_budget` key. Within one build, `align`'s BWA/minimap2 writers and
+  `exact_match`'s SeqKit writer share ONE combined 4-GiB build-output
+  allowance (`BUILD_OUTPUT_ALLOWANCE_GIB`) — each writer's live cap is the
+  remainder after every earlier writer's actual accepted bytes for that
+  build, never its own independent full 4 GiB.
+- **Transactional multi-file promotion**: `download`, `derive`, `index`,
+  `align`, and `exact_match` each write their complete multi-file output set
+  directly into a fresh, uniquely-named `<base-dir>/generations/<id>/`
+  directory (`_new_generation_dir`) — never at a fixed, reused final path.
+  The set only becomes "accepted" when the stage's own JSON record
+  (`download.json`/`derive.json`/`index.json`/`align.json`/
+  `exact_match.json`) is written, atomically, pointing at that directory's
+  paths; a failure at any point before that write — including between
+  building the two index files, or between the derived FASTA and its
+  manifest — discards the new generation and leaves the previously accepted
+  one (if any), still referenced by the prior record, byte-for-byte intact.
+  A restart skip additionally re-verifies the current accepted evidence
+  against its recorded hashes before trusting it (never fingerprint
+  equality alone): `_verify_download_evidence_hashes`,
+  `_verify_derive_evidence_hashes`, `_verify_index_evidence_hashes`,
+  `_verify_align_evidence_hashes`, `_verify_exact_match_evidence_hashes`;
+  `align`'s skip check additionally re-verifies the *current* resolved index
+  binding, and `derive` itself re-hashes its accepted source inputs
+  immediately before deriving.
 - Real mapping now requires **exactly one** explicit `--build`; the runner
   refuses `--allow-mapping` with zero or multiple builds.
+- Checkpoint compatibility is executable, not a convention: a real
+  (non-`--dry-run`) `--allow-mapping` invocation's `--stage` list must name
+  exactly one build-scoped stage (`download`/`derive`/`index`/`align`/
+  `exact_match`/`report`) — `sample`/`decode`/`controls`/`preflight` may
+  still accompany it, since none is gated by a checkpoint boundary, but a
+  list spanning e.g. `index` through `report` in one invocation (crossing
+  B3 preparation into B4+ execution without a review stop) is refused before
+  any data access or subprocess execution. `combined_report` never needs
+  `--allow-mapping` at all and always runs in its own separate invocation.
+- `check_minimap2_mapping_stderr` rejects minimap2's literal multi-part-index
+  warning text (`"multi-part index"`/`"multipart index"`), not merely a
+  multiple-`[M::mm_idx_stat]`-line count: a single mapping invocation only
+  ever emits one such stat line even against a genuinely multi-part
+  prebuilt index, so the warning's own prose is the signal that must stop
+  the run.
 - A plainly unauthorized retry (`--dry-run`, or missing
   `--allow-mapping`/wrong `--host-role`) can never overwrite a prior
   `executed: true` `align.json`/`exact_match.json`/`index.json` — it raises

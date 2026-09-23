@@ -335,7 +335,11 @@ class AuthorizedDryRunGuaranteeTests(unittest.TestCase):
                 # A later real (non-dry-run) invocation for the same
                 # output-dir/build must still execute, i.e. it was never
                 # poisoned into "already completed" by the dry run above.
-                main([*common, "--stage", "align", "--stage", "exact_match"])
+                # B1-C5: a real (non-dry-run) --allow-mapping invocation
+                # names exactly one build-scoped stage, so align and
+                # exact_match are separate invocations here.
+                main([*common, "--stage", "align"])
+                main([*common, "--stage", "exact_match"])
 
             align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
             self.assertTrue(align_record["executed"])
@@ -388,19 +392,32 @@ class RestartStateValidityTests(unittest.TestCase):
             # Step 2: a separate, fully authorized real run in that same
             # directory, for a single build and without --dry-run.
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            step2_common = [
+                "--config", str(FIXTURE_CONFIG),
+                "--csv", str(FIXTURE_CSV),
+                "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
+                "--output-dir", str(output_dir),
+                "--allow-mapping",
+                "--host-role", "approved_mac",
+                "--reference", f"hg38={reference}",
+                "--reference-manifest", f"hg38={manifest}",
+                "--build", "hg38",
+            ]
             with mock.patch.dict(os.environ, env), _approved_host_context():
+                # B1-C5: a real --allow-mapping invocation names exactly one
+                # build-scoped stage; combined_report never needs
+                # --allow-mapping and always runs in its own invocation.
+                main([*step2_common, "--stage", "align"])
+                main([*step2_common, "--stage", "exact_match"])
+                main([*step2_common, "--stage", "report"])
                 main(
                     [
                         "--config", str(FIXTURE_CONFIG),
                         "--csv", str(FIXTURE_CSV),
                         "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
-                        "--allow-mapping",
-                        "--host-role", "approved_mac",
-                        "--reference", f"hg38={reference}",
-                        "--reference-manifest", f"hg38={manifest}",
                         "--build", "hg38",
-                        "--stage", "align", "--stage", "exact_match", "--stage", "report", "--stage", "combined_report",
+                        "--stage", "combined_report",
                     ]
                 )
 
@@ -886,7 +903,7 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
         reference.write_text(">chr1\n" + "A" * 20 + "\n")
         manifest = _write_reference_manifest(output_dir / f"{build}_manifest.json", build=build, reference=reference)
 
-        argv = [
+        common = [
             "--config", str(FIXTURE_CONFIG),
             "--csv", str(FIXTURE_CSV),
             "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
@@ -897,9 +914,11 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
             "--reference-manifest", f"{build}={manifest}",
             "--build", build,
         ]
-        for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
-            argv.extend(["--stage", stage])
-        main(argv)
+        # B1-C5: a real --allow-mapping invocation names exactly one
+        # build-scoped stage; sample/decode/controls may still accompany it.
+        main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align"])
+        main([*common, "--stage", "exact_match"])
+        main([*common, "--stage", "report"])
 
     def test_real_mapping_executes_and_produces_classified_mappings(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -988,7 +1007,7 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
                 _write_fake_executable(bin_dir, "seqkit", _FAKE_SEQKIT)
                 reference = output_dir / "reference_hg38.fasta"
                 reference.write_text(">chr1\n" + "A" * 20 + "\n")
-                argv = [
+                common = [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
                     "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
@@ -999,9 +1018,10 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
                     "--reference-manifest", f"hg38={manifest_path}",
                     "--build", "hg38",
                 ]
-                for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
-                    argv.extend(["--stage", stage])
-                main(argv)
+                # B1-C5: exactly one build-scoped stage per invocation.
+                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align"])
+                main([*common, "--stage", "exact_match"])
+                main([*common, "--stage", "report"])
 
             provenance = json.loads((output_dir / "provenance.json").read_text())
             self.assertEqual(provenance["builds"]["hg38"]["reference_manifest"], manifest_payload)
@@ -1074,23 +1094,23 @@ class SequentialTwoBuildProcessingTests(unittest.TestCase):
                 # `decode`/`controls` are build-independent and restart-skip
                 # (matching fingerprint) on the second invocation.
                 for build in ("hg38", "hg19"):
-                    main(
-                        [
-                            *common,
-                            "--allow-mapping",
-                            "--build", build,
-                            "--stage", "sample", "--stage", "decode", "--stage", "controls",
-                            "--stage", "align", "--stage", "exact_match", "--stage", "report",
-                        ]
-                    )
+                    # B1-C5: a real --allow-mapping invocation names exactly
+                    # one build-scoped stage; sample/decode/controls may
+                    # still accompany it.
+                    build_common = [*common, "--allow-mapping", "--build", build]
+                    main([*build_common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align"])
+                    main([*build_common, "--stage", "exact_match"])
+                    main([*build_common, "--stage", "report"])
                 # combined_report reads both already-produced per-build
                 # reports back from disk; it does not itself map anything, so
                 # it is exempt from the single-build rule.
                 main([*common, "--build", "hg38", "--build", "hg19", "--stage", "combined_report"])
 
             # Collision-safe: each build kept its own SAM/BED/mappings/report.
-            hg38_sam = (output_dir / "hg38" / "align_bwa_mem.sam").read_text()
-            hg19_sam = (output_dir / "hg19" / "align_bwa_mem.sam").read_text()
+            hg38_align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
+            hg19_align_record = json.loads((output_dir / "hg19" / "align.json").read_text())
+            hg38_sam = Path(hg38_align_record["sam_paths"]["bwa_mem"]).read_text()
+            hg19_sam = Path(hg19_align_record["sam_paths"]["bwa_mem"]).read_text()
             self.assertIn("chr1", hg38_sam)
             self.assertIn("chr1", hg19_sam)  # both fake mappers always emit chr1
             self.assertTrue((output_dir / "hg38" / "mappings.tsv.gz").exists())
@@ -1369,7 +1389,7 @@ class ProvenanceCompletenessTests(unittest.TestCase):
                 study_config=FIXTURE_CONFIG,
             )
 
-            argv = [
+            common = [
                 "--config", str(FIXTURE_CONFIG),
                 "--csv", str(FIXTURE_CSV),
                 "--execution-sources", str(custom_sources),
@@ -1382,11 +1402,25 @@ class ProvenanceCompletenessTests(unittest.TestCase):
                 "--reference-manifest", f"hg38={manifest}",
                 "--build", "hg38",
             ]
-            for stage in ("sample", "decode", "controls", "align", "exact_match", "report", "combined_report"):
-                argv.extend(["--stage", stage])
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
             with mock.patch.dict(os.environ, env), _approved_host_context():
-                main(argv)
+                # B1-C5: exactly one build-scoped stage per --allow-mapping
+                # invocation; combined_report never needs --allow-mapping.
+                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align"])
+                main([*common, "--stage", "exact_match"])
+                main([*common, "--stage", "report"])
+                main(
+                    [
+                        "--config", str(FIXTURE_CONFIG),
+                        "--csv", str(FIXTURE_CSV),
+                        "--execution-sources", str(custom_sources),
+                        "--output-dir", str(output_dir),
+                        "--dataset-audit", str(dataset_audit),
+                        "--proteins-config", str(proteins_config),
+                        "--build", "hg38",
+                        "--stage", "combined_report",
+                    ]
+                )
 
             provenance = json.loads((output_dir / "provenance.json").read_text())
             self.assertEqual(provenance["declared_inputs"]["dataset_audit"]["sha256"], sha256_file(dataset_audit))

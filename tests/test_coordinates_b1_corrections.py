@@ -464,8 +464,10 @@ class R3EvidencePreservationTests(unittest.TestCase):
                 main([*common, "--stage", "decode"])
                 main([*common, "--stage", "controls"])
                 main([*common, "--stage", "align"])
-                original_bwa_sam = (output_dir / "hg38" / "align_bwa_mem.sam").read_bytes()
-                original_mm2_sam = (output_dir / "hg38" / "align_minimap2_splice.sam").read_bytes()
+                align_record_before = json.loads((output_dir / "hg38" / "align.json").read_text())
+                original_bwa_sam = Path(align_record_before["sam_paths"]["bwa_mem"]).read_bytes()
+                original_mm2_sam = Path(align_record_before["sam_paths"]["minimap2_splice"]).read_bytes()
+                accepted_generation_dir = Path(align_record_before["sam_paths"]["bwa_mem"]).parent
 
                 # Change the reference so align legitimately re-attempts,
                 # but make minimap2 itself fail this time (bwa still
@@ -479,17 +481,24 @@ class R3EvidencePreservationTests(unittest.TestCase):
                 with self.assertRaises(subprocess.CalledProcessError):
                     main([*common2, "--stage", "align"])
 
-            # The final SAM files are byte-for-byte unchanged from the prior
-            # accepted attempt: no attempt-specific temp output was ever
-            # promoted over them.
-            self.assertEqual((output_dir / "hg38" / "align_bwa_mem.sam").read_bytes(), original_bwa_sam)
-            self.assertEqual((output_dir / "hg38" / "align_minimap2_splice.sam").read_bytes(), original_mm2_sam)
-            align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
-            self.assertTrue(align_record["executed"])  # the prior record, untouched
+            # The accepted record and its generation's SAM files are
+            # byte-for-byte unchanged from the prior accepted attempt: the
+            # new (bwa-succeeded-but-minimap2-failed) attempt's generation
+            # directory was never promoted, and is discarded rather than
+            # left half-written (B1-C2 — genuinely transactional promotion).
+            align_record_after = json.loads((output_dir / "hg38" / "align.json").read_text())
+            self.assertEqual(align_record_after, align_record_before)
+            self.assertEqual(Path(align_record_after["sam_paths"]["bwa_mem"]).read_bytes(), original_bwa_sam)
+            self.assertEqual(
+                Path(align_record_after["sam_paths"]["minimap2_splice"]).read_bytes(), original_mm2_sam
+            )
+            self.assertTrue(align_record_after["executed"])  # the prior record, untouched
 
-            # No attempt-specific temporary directory was left behind.
-            leftovers = [p for p in (output_dir / "hg38").iterdir() if p.name.startswith(".attempt_")]
-            self.assertEqual(leftovers, [])
+            # No incomplete new generation directory was left behind — only
+            # the previously accepted one remains.
+            generations_root = output_dir / "hg38" / "generations"
+            remaining_generations = [p for p in generations_root.iterdir() if p.is_dir()]
+            self.assertEqual(remaining_generations, [accepted_generation_dir])
 
     def test_rejected_attempt_is_recorded_separately_not_only_discarded(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -830,12 +839,6 @@ class R7AcquisitionDerivationTests(unittest.TestCase):
             fasta_md5 = hashlib.md5(fasta_body_gz).hexdigest()
             report_md5 = hashlib.md5(report_body.encode()).hexdigest()
 
-            def fake_transport(url, dest_path):
-                if "fna.gz" in url:
-                    dest_path.write_bytes(fasta_body_gz)
-                else:
-                    dest_path.write_text(report_body)
-
             from rbpbench.coordinates.execution_sources import load_execution_sources
 
             spec = load_execution_sources(FIXTURE_EXECUTION_SOURCES)
@@ -847,6 +850,17 @@ class R7AcquisitionDerivationTests(unittest.TestCase):
                 fasta_compressed_byte_size=len(fasta_body_gz),
                 assembly_report_md5=report_md5,
             )
+            fasta_name = f"{adjusted.assembly}_genomic.fna.gz"
+            report_name = f"{adjusted.assembly}_assembly_report.txt"
+            checksum_listing = f"{fasta_md5}  ./{fasta_name}\n{report_md5}  ./{report_name}\n"
+
+            def fake_transport(url, dest_path):
+                if "fna.gz" in url:
+                    dest_path.write_bytes(fasta_body_gz)
+                elif "md5" in url:
+                    dest_path.write_text(checksum_listing)
+                else:
+                    dest_path.write_text(report_body)
 
             with mock.patch("rbpbench.coordinates.runner.urllib_transport", fake_transport):
                 with mock.patch(

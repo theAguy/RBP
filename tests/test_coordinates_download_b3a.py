@@ -58,6 +58,11 @@ class RemoteBasenameTests(unittest.TestCase):
             assembly="GRCh38.p14",
             fasta_url="https://ftp.ncbi.nlm.nih.gov/x/GCF_000001405.40_GRCh38.p14_genomic.fna.gz",
             assembly_report_url="https://ftp.ncbi.nlm.nih.gov/x/GCF_000001405.40_GRCh38.p14_assembly_report.txt",
+            # B3B-1: the checksum-listing target path is now derived from
+            # md5checksums_url's own directory, so it must share the FASTA/
+            # assembly-report URLs' directory for this fixture to be a
+            # structurally consistent (non-rejected) source spec.
+            md5checksums_url="https://ftp.ncbi.nlm.nih.gov/x/md5checksums.txt",
         )
         import gzip
         import hashlib
@@ -123,7 +128,7 @@ class ChecksumListingParseTests(unittest.TestCase):
         text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ./a.fna.gz\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ./a.fna.gz\n"
         result = parse_md5checksums_evidence(text)
         self.assertFalse(result.ok)
-        self.assertTrue(any(v.kind == "duplicate_basename" for v in result.violations))
+        self.assertTrue(any(v.kind == "duplicate_path" for v in result.violations))
         # The first (only) accepted value is retained, never silently overwritten.
         self.assertEqual(result.entries["a.fna.gz"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 

@@ -96,7 +96,12 @@ from rbpbench.coordinates.diskbudget import (
     start_ledger,
 )
 from rbpbench.coordinates.exact_match import exact_occurrence_count, exact_unique_confirmed, parse_seqkit_bed
-from rbpbench.coordinates.execution_sources import ReferenceSourceSpec, load_execution_sources, verify_local_inputs
+from rbpbench.coordinates.execution_sources import (
+    ReferenceSourceSpec,
+    SourceUrlLayoutError,
+    load_execution_sources,
+    verify_local_inputs,
+)
 from rbpbench.coordinates.hashing import content_fingerprint, control_seed
 from rbpbench.coordinates.indexing import (
     BWA_INDEX_SUFFIXES,
@@ -821,7 +826,7 @@ def stage_download(
             "md5checksums_url": source_spec.md5checksums_url,
             # B3A-A1: the exact remote basenames (derived from the frozen
             # URLs' own final path segment, never the shorter assembly
-            # label) this attempt binds local files and checksum lookup to.
+            # label) this attempt binds local destination filenames to.
             "fasta_remote_basename": source_spec.fasta_remote_basename,
             "assembly_report_remote_basename": source_spec.assembly_report_remote_basename,
         },
@@ -840,6 +845,22 @@ def stage_download(
         _guarded_write_record(old_record_path, record)
         return record
 
+    # B3B-1: derive each target's exact, safe, root-relative md5checksums.txt
+    # entry path purely from the frozen URLs -- a pure local computation, so
+    # this happens BEFORE any network request at all (including the listing
+    # itself). An inconsistent/ambiguous/escaping URL relationship is a hard
+    # stop, never a guess. Recorded in "planned" regardless of outcome so a
+    # later reviewer can see exactly which targets this attempt bound to.
+    try:
+        fasta_listing_path = source_spec.fasta_expected_listing_path
+        report_listing_path = source_spec.assembly_report_expected_listing_path
+    except SourceUrlLayoutError as exc:
+        record["skip_reason"] = f"checksum-listing target path could not be derived: {exc}"
+        _guarded_write_record(old_record_path, record)
+        return record
+    record["planned"]["fasta_expected_listing_path"] = fasta_listing_path
+    record["planned"]["assembly_report_expected_listing_path"] = report_listing_path
+
     # The disk-budget snapshot requires an existing path; sources_dir may
     # not exist yet on a genuinely first download.
     sources_dir.mkdir(parents=True, exist_ok=True)
@@ -855,13 +876,14 @@ def stage_download(
     fasta_result = None
     report_result = None
     try:
-        # B3A-A1: fetch and parse the SMALL checksum listing FIRST, through
-        # the same injected-transport interface used for the FASTA/report
-        # below — never a bare, ungated network call of its own. The exact
-        # intended FASTA/assembly-report entries (by their real remote
-        # basename, never the shorter assembly label) must be present and
-        # agree with the frozen plan values BEFORE the large-FASTA transport
-        # call is ever made.
+        # B3A-A1/B3B-1: fetch and parse the SMALL checksum listing FIRST,
+        # through the same injected-transport interface used for the
+        # FASTA/report below — never a bare, ungated network call of its
+        # own. The exact intended FASTA/assembly-report entries (by their
+        # exact expected root-relative listing path, never a same-basename
+        # entry from a nested directory, and never the shorter assembly
+        # label) must be present and agree with the frozen plan values
+        # BEFORE the large-FASTA transport call is ever made.
         checksum_dest = generation_dir / "md5checksums.txt"
         transport(source_spec.md5checksums_url, checksum_dest)
         if not checksum_dest.is_file():
@@ -870,43 +892,52 @@ def stage_download(
             )
         listing = parse_md5checksums_evidence(checksum_dest.read_text())
         live_entries = listing.entries
-        # B3A-A1: structured malformed/duplicate/conflicting listing
+        # B3B-1: structured malformed/duplicate(-path)/conflicting listing
         # evidence is added to this SAME fail-closed violation list, never a
         # separate silent channel — a structurally broken listing is exactly
-        # as disqualifying as a value mismatch.
+        # as disqualifying as a value mismatch. Entries are keyed by exact
+        # normalized relative PATH, not basename: a real NCBI listing
+        # legitimately repeats generic basenames (e.g. `alt.scaf.fna.gz`)
+        # under many different alt-locus subdirectories, and those distinct
+        # paths must never collide with each other or with the two root
+        # targets below.
         violations.extend(
             f"md5checksums.txt parse violation ({v.kind}): {v.detail}" for v in listing.violations
         )
 
-        fasta_basename = source_spec.fasta_remote_basename
-        report_basename = source_spec.assembly_report_remote_basename
-        # B1-C1/B3A-A1: require exactly the two intended entries (keyed by
-        # their real remote basename) and compare the live listing against
-        # the frozen plan MD5. Plan-time size/MD5 values remain authoritative
-        # (second-review R11): any disagreement is a hard stop requiring a
-        # recorded decision, never silent re-pinning.
-        for label, basename, frozen_md5 in (
-            ("fasta", fasta_basename, source_spec.fasta_upstream_md5),
-            ("assembly_report", report_basename, source_spec.assembly_report_md5),
+        # B1-C1/B3B-1: require exactly the two intended entries at their
+        # exact expected root-relative listing paths (derived above, purely
+        # from the frozen URLs) and compare the live listing against the
+        # frozen plan MD5. A nested file sharing a target's basename must
+        # never satisfy this lookup — only the exact expected path counts.
+        # Plan-time size/MD5 values remain authoritative (second-review
+        # R11): any disagreement is a hard stop requiring a recorded
+        # decision, never silent re-pinning.
+        for label, listing_path, frozen_md5 in (
+            ("fasta", fasta_listing_path, source_spec.fasta_upstream_md5),
+            ("assembly_report", report_listing_path, source_spec.assembly_report_md5),
         ):
-            live_md5 = live_entries.get(basename)
+            live_md5 = live_entries.get(listing_path)
             if live_md5 is None:
-                violations.append(f"live md5checksums.txt has no entry for {basename!r} ({label})")
+                violations.append(f"live md5checksums.txt has no entry for exact path {listing_path!r} ({label})")
                 continue
             if live_md5 != frozen_md5:
                 violations.append(
-                    f"live md5checksums.txt entry for {basename!r} ({label}) is {live_md5!r}, but the "
-                    f"authoritative plan value is {frozen_md5!r}; this disagreement is a hard stop requiring a "
-                    "recorded decision in docs/DECISIONS.md, never silent re-pinning"
+                    f"live md5checksums.txt entry for exact path {listing_path!r} ({label}) is {live_md5!r}, but "
+                    f"the authoritative plan value is {frozen_md5!r}; this disagreement is a hard stop requiring "
+                    "a recorded decision in docs/DECISIONS.md, never silent re-pinning"
                 )
 
-        # B3A-A1: only proceed to the large-file transport calls once the
-        # listing itself (and its two intended entries) is confirmed clean —
-        # a checksum-listing failure must never even attempt the large FASTA
-        # transport.
+        # B3A-A1/B3B-1: only proceed to the large-file transport calls once
+        # the listing itself (and its two intended exact-path entries) is
+        # confirmed clean — a checksum-listing failure must never even
+        # attempt the large FASTA transport.
         if not violations:
-            fasta_dest = generation_dir / fasta_basename
-            report_dest = generation_dir / report_basename
+            # Local destination filenames stay the plain remote basenames
+            # (B3A-A1); only the live-listing LOOKUP uses the exact
+            # root-relative listing path derived above.
+            fasta_dest = generation_dir / source_spec.fasta_remote_basename
+            report_dest = generation_dir / source_spec.assembly_report_remote_basename
             fasta_result = restart_safe_download(
                 source_spec.fasta_url, fasta_dest, expected_md5=source_spec.fasta_upstream_md5, transport=transport
             )
@@ -916,15 +947,15 @@ def stage_download(
                 expected_md5=source_spec.assembly_report_md5,
                 transport=transport,
             )
-            for label, dest, downloaded_md5 in (
-                ("fasta", fasta_dest, fasta_result.md5),
-                ("assembly_report", report_dest, report_result.md5),
+            for label, listing_path, downloaded_md5 in (
+                ("fasta", fasta_listing_path, fasta_result.md5),
+                ("assembly_report", report_listing_path, report_result.md5),
             ):
-                live_md5 = live_entries.get(dest.name)
+                live_md5 = live_entries.get(listing_path)
                 if live_md5 != downloaded_md5:
                     violations.append(
-                        f"live md5checksums.txt entry for {dest.name!r} ({label}) is {live_md5!r}, but the "
-                        f"downloaded file's own MD5 is {downloaded_md5!r}"
+                        f"live md5checksums.txt entry for exact path {listing_path!r} ({label}) is {live_md5!r}, "
+                        f"but the downloaded file's own MD5 is {downloaded_md5!r}"
                     )
             if fasta_result.byte_size != source_spec.fasta_compressed_byte_size:
                 violations.append(
@@ -955,6 +986,10 @@ def stage_download(
         "sha256": sha256_file(checksum_dest),
         "byte_size": checksum_dest.stat().st_size,
         "url": source_spec.md5checksums_url,
+        # B3B-1: the exact root-relative listing paths actually used to
+        # select the live MD5 for each target, so a later reviewer can prove
+        # which of possibly many same-basename listing entries was used.
+        "target_listing_paths": {"fasta": fasta_listing_path, "assembly_report": report_listing_path},
     }
     # Transaction completion requirement: a failure WRITING the atomic
     # selection record itself (after every file in the generation has

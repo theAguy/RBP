@@ -12,6 +12,7 @@ restart-safe downloader used only in later checkpoints).
 
 from __future__ import annotations
 
+import posixpath
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,16 @@ else:
 from rbpbench.data.audit import sha256_file
 
 LOCAL_INPUT_KEYS = ("dataset_csv", "dataset_audit", "proteins_config", "study_config")
+
+
+class SourceUrlLayoutError(ValueError):
+    """Raised when a source URL's scheme/authority/directory does not match
+    the frozen ``md5checksums_url``'s own directory closely enough to derive
+    a safe, unambiguous exact-relative-path checksum-listing target for it
+    (B3B-1 checksum-path correction). This is a pure, local, network-free
+    computation over the frozen spec's own URLs; it never depends on a live
+    listing.
+    """
 
 
 @dataclass(frozen=True)
@@ -61,6 +72,49 @@ class ReferenceSourceSpec:
     def assembly_report_remote_basename(self) -> str:
         """Same rule as :attr:`fasta_remote_basename`, for the assembly report."""
         return Path(urlparse(self.assembly_report_url).path).name
+
+    @property
+    def fasta_expected_listing_path(self) -> str:
+        """B3B-1: the exact, safe, root-relative ``md5checksums.txt`` entry
+        path this source's FASTA must appear at -- derived purely from the
+        frozen ``fasta_url`` relative to the frozen ``md5checksums_url``'s
+        own directory (never from the shorter ``assembly`` label, and never
+        by matching any listing entry's basename regardless of its
+        directory). Raises :class:`SourceUrlLayoutError` if the FASTA URL's
+        scheme/authority/directory does not exactly match the checksum
+        listing's own -- an inconsistent, ambiguous, or escaping
+        relationship must fail closed rather than guess a target path.
+        """
+        return self._expected_listing_path(self.fasta_url, label="fasta")
+
+    @property
+    def assembly_report_expected_listing_path(self) -> str:
+        """Same rule as :attr:`fasta_expected_listing_path`, for the assembly report."""
+        return self._expected_listing_path(self.assembly_report_url, label="assembly_report")
+
+    def _expected_listing_path(self, source_url: str, *, label: str) -> str:
+        md5_parsed = urlparse(self.md5checksums_url)
+        src_parsed = urlparse(source_url)
+        md5_authority = (md5_parsed.scheme, md5_parsed.netloc)
+        src_authority = (src_parsed.scheme, src_parsed.netloc)
+        if src_authority != md5_authority:
+            raise SourceUrlLayoutError(
+                f"{label} URL scheme/authority {src_authority!r} does not match the frozen "
+                f"md5checksums_url's scheme/authority {md5_authority!r} ({source_url!r} vs "
+                f"{self.md5checksums_url!r})"
+            )
+        md5_dir = posixpath.dirname(md5_parsed.path)
+        src_dir = posixpath.dirname(src_parsed.path)
+        if src_dir != md5_dir:
+            raise SourceUrlLayoutError(
+                f"{label} URL directory {src_dir!r} does not match the frozen md5checksums_url's "
+                f"directory {md5_dir!r} ({source_url!r} vs {self.md5checksums_url!r}); only an exact "
+                "root-relative target in the same directory as the checksum listing is accepted"
+            )
+        basename = posixpath.basename(src_parsed.path)
+        if not basename:
+            raise SourceUrlLayoutError(f"{label} URL has no basename: {source_url!r}")
+        return basename
 
 
 @dataclass(frozen=True)
@@ -165,4 +219,5 @@ __all__ = [
     "load_execution_sources",
     "LocalInputViolation",
     "verify_local_inputs",
+    "SourceUrlLayoutError",
 ]

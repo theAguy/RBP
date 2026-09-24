@@ -2215,6 +2215,8 @@ def stage_combined_report(
     output_dir: Path,
     builds: Sequence[str],
     reference_manifests: dict[str, dict] | None = None,
+    align_records: dict[str, dict] | None = None,
+    exact_match_records: dict[str, dict] | None = None,
 ) -> dict:
     """Collision-safe per-build artifacts already exist under
     ``output_dir/<build>/``; this reads every one of them back from disk (the
@@ -2228,8 +2230,20 @@ def stage_combined_report(
     stale, or corrupt (a crash window between the atomic
     ``report_state.json`` commit and the mirror writes) must never affect
     this scientific result.
+
+    Second acceptance correction (A1): ``align_records``/``exact_match_records``
+    -- each build's CURRENT align/exact_match records, when supplied -- are
+    forwarded to ``_load_accepted_report_state`` so a selected report whose
+    recorded ``upstream_align_generation_digest``/
+    ``upstream_exact_match_generation_digest`` no longer matches the current
+    upstream generation (a forced align/exact-match rerun that never
+    re-triggered ``report``) fails closed here too, exactly like the report
+    stage's own restart revalidation, rather than silently combining a report
+    that is stale with respect to its declared upstream inputs.
     """
     reference_manifests = reference_manifests or {}
+    align_records = align_records or {}
+    exact_match_records = exact_match_records or {}
     sample_meta = [{"sample_id": a.sample_id, "labels": ";".join(str(v) for v in a.labels)} for a in sample.assignments]
     representative_ids = sorted(sample.representative_ids)
     all_sample_ids = sorted(a.sample_id for a in sample.assignments)
@@ -2240,7 +2254,11 @@ def stage_combined_report(
     evaluated_builds: list[str] = []
     for build in builds:
         build_dir = _build_dir(output_dir, build)
-        report_state, report_state_violations = _load_accepted_report_state(build_dir)
+        report_state, report_state_violations = _load_accepted_report_state(
+            build_dir,
+            align_record=align_records.get(build),
+            exact_match_record=exact_match_records.get(build),
+        )
         if report_state_violations:
             raise SystemExit(
                 f"combined_report requires a valid, hash-verified accepted report_state.json for build {build!r} "
@@ -2388,6 +2406,7 @@ def _write_provenance(
         report_json_hash = None
         report_md_hash = None
         mappings_hash = None
+        reference_index_hash = None
         reference_index_payload = None
         if not report_state_violations:
             report_json_hash = _artifact_hash(Path(report_state["report_json_path"]))
@@ -2395,7 +2414,17 @@ def _write_provenance(
             if report_state.get("mappings_tsv_gz_path"):
                 mappings_hash = _artifact_hash(Path(report_state["mappings_tsv_gz_path"]))
             if report_state.get("reference_index_path"):
+                # A2: attribute the selected reference-index artifact's
+                # exact path/SHA-256/byte size in generated_artifacts (the
+                # same treatment as report_json/report_md/mappings_tsv_gz),
+                # in addition to retaining its parsed diagnostic payload
+                # separately below. A non-evaluated report genuinely has no
+                # reference-index artifact -- report_state.get(...) is None
+                # in that case, so this branch is skipped and both
+                # reference_index_hash and reference_index_payload stay the
+                # honest None they were initialized to.
                 reference_index_path = Path(report_state["reference_index_path"])
+                reference_index_hash = _artifact_hash(reference_index_path)
                 if reference_index_path.is_file():
                     reference_index_payload = json.loads(reference_index_path.read_text())
         builds_payload[build] = {
@@ -2410,6 +2439,7 @@ def _write_provenance(
                 "mappings_tsv_gz": mappings_hash,
                 "report_json": report_json_hash,
                 "report_md": report_md_hash,
+                "reference_index": reference_index_hash,
             },
         }
 
@@ -2736,17 +2766,25 @@ def _verify_report_evidence_hashes(
     # B1-F6: also verify the recorded report Markdown, not merely
     # report.json/mappings.tsv.gz — a truncated/edited report.md must not be
     # allowed to slip past cleanup's evidence gate.
+    #
+    # A2: also cross-check the selected reference-index artifact whenever
+    # the report state records one — a non-evaluated report honestly has no
+    # reference-index artifact (selected_path is None below), which
+    # correctly skips this cross-check rather than manufacturing a
+    # violation for evidence that was never expected to exist.
     for key, path_field, sha_field in (
         ("report_json", "report_json_path", "report_json_sha256"),
         ("report_md", "report_md_path", "report_md_sha256"),
         ("mappings_tsv_gz", "mappings_tsv_gz_path", "mappings_tsv_gz_sha256"),
+        ("reference_index", "reference_index_path", "reference_index_sha256"),
     ):
         selected_path = report_state.get(path_field)
         selected_sha256 = report_state.get(sha_field)
         if selected_path is None:
             # Not produced by this build's accepted report (an honest
-            # not_evaluated/dry-run report has no mappings table) — nothing
-            # to cross-check.
+            # not_evaluated/dry-run report has no mappings table, and a
+            # report generated without index-diagnostic evidence has no
+            # reference-index artifact) — nothing to cross-check.
             continue
         recorded = build_artifacts.get(key)
         if not recorded:
@@ -3606,12 +3644,27 @@ def main(argv: Sequence[str] | None = None) -> None:
             # hash-verify (never merely a fixed-path mirror), the same
             # revalidate-before-skip guarantee every build-scoped stage
             # above already gets.
+            #
+            # Second acceptance correction (A1): also re-validate each
+            # build's report_state.json against the CURRENT align/
+            # exact_match records (the shared _load_accepted_report_state
+            # loader, not merely _verify_report_state_evidence_hashes) so a
+            # forced align/exact-match rerun that produced a new upstream
+            # generation WITHOUT re-triggering that build's report stage
+            # (its own declared-input fingerprint never changed) still
+            # invalidates a previously completed combined_report skip,
+            # rather than silently combining a report that is now stale
+            # with respect to its declared upstream inputs.
             combined_report_revalidation_violations: tuple[str, ...] = ()
             if stage == "combined_report":
                 combined_report_revalidation_violations = tuple(
                     f"build {build!r} report: {violation}"
                     for build in builds
-                    for violation in _verify_report_state_evidence_hashes(report_states.get(build, {}))
+                    for violation in _load_accepted_report_state(
+                        _build_dir(args.output_dir, build),
+                        align_record=align_records.get(build, {}),
+                        exact_match_record=exact_match_records.get(build, {}),
+                    )[1]
                 )
             if not combined_report_revalidation_violations:
                 print(f"skip {stage} (already completed with matching inputs; pass --force to redo)")
@@ -3669,6 +3722,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 output_dir=args.output_dir,
                 builds=builds,
                 reference_manifests=persisted_manifests,
+                align_records=align_records,
+                exact_match_records=exact_match_records,
             )
 
         _mark_stage_complete(state, stage, fingerprint)

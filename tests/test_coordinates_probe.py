@@ -11,6 +11,7 @@ Test names map to the executor handoff's "Minimum regression set" items
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,11 +19,15 @@ from pathlib import Path
 from rbpbench.coordinates.probe import (
     ProbeError,
     build_pattern_fasta,
+    compute_probe_projection,
     extract_contig_streaming,
+    load_and_verify_b2_checkpoint,
     probe_fingerprint,
     select_probe_window,
+    total_reference_bases,
     validate_probe_bed_rows,
 )
+from rbpbench.data.audit import sha256_file
 
 
 class BuildPatternFastaTests(unittest.TestCase):
@@ -239,22 +244,295 @@ class ValidateProbeBedRowsTests(unittest.TestCase):
         result = validate_probe_bed_rows(lines, known_pattern_ids=frozenset({"p1"}), contig_accession="chr1", contig_length=100)
         self.assertFalse(result.ok)
 
+    def test_invalid_strand_is_a_violation(self):
+        """B3A-R6: complete BED6 semantics -- strand must be '+' or '-'."""
+        lines = ["chr1\t10\t20\tp1\t0\t.", "chr1\t30\t40\tp1\t0\t?"]
+        result = validate_probe_bed_rows(lines, known_pattern_ids=frozenset({"p1"}), contig_accession="chr1", contig_length=100)
+        self.assertFalse(result.ok)
+        self.assertTrue(any("invalid BED6 strand" in v for v in result.violations))
+
+    def test_negative_score_is_a_violation(self):
+        lines = ["chr1\t10\t20\tp1\t-1\t+"]
+        result = validate_probe_bed_rows(lines, known_pattern_ids=frozenset({"p1"}), contig_accession="chr1", contig_length=100)
+        self.assertFalse(result.ok)
+        self.assertTrue(any("invalid BED6 score" in v for v in result.violations))
+
+    def test_non_integer_score_is_a_violation(self):
+        lines = ["chr1\t10\t20\tp1\t.\t+"]
+        result = validate_probe_bed_rows(lines, known_pattern_ids=frozenset({"p1"}), contig_accession="chr1", contig_length=100)
+        self.assertFalse(result.ok)
+        self.assertTrue(any("non-integer BED6 score" in v for v in result.violations))
+
+    def test_accepts_an_iterator_never_requiring_a_sequence(self):
+        """B3A-R6: the real-mode caller passes an OPEN FILE HANDLE (an
+        iterator, not a ``Sequence``) -- this must never be indexed,
+        measured for length, or iterated more than once.
+        """
+        def _line_generator():
+            yield "chr1\t10\t20\tp1\t0\t+\n"
+            yield "chr1\t30\t40\tp1\t0\t-\n"
+
+        result = validate_probe_bed_rows(
+            _line_generator(), known_pattern_ids=frozenset({"p1"}), contig_accession="chr1", contig_length=100
+        )
+        self.assertTrue(result.ok, result.violations)
+        self.assertEqual(result.hit_count, 2)
+
+
+class TotalReferenceBasesTests(unittest.TestCase):
+    """B3A-R2: independently-streamed total base count across the ENTIRE
+    reference FASTA (every contig), used to fully validate contig_lengths
+    before the largest contig is ever selected.
+    """
+
+    def test_sums_every_contig_never_just_the_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference = tmp_path / "reference.fna"
+            reference.write_text(">chr1\nACGT\n>chr2\nACGTACGT\n>chr3\nAC\n")
+            self.assertEqual(total_reference_bases(reference), 4 + 8 + 2)
+
+    def test_crlf_source_counts_correctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference = tmp_path / "reference.fna"
+            reference.write_bytes(b">chr1\r\nACGT\r\nAC\r\n")
+            self.assertEqual(total_reference_bases(reference), 6)
+
+
+class LoadAndVerifyB2CheckpointTests(unittest.TestCase):
+    """B3A-R1: the real trust anchor for the probe's pattern population --
+    the accepted B2 checkpoint manifest, re-verified artifact evidence, and
+    derived exact biological/control ID sets.
+    """
+
+    def _write_checkpoint(self, tmp_path: Path, **overrides) -> Path:
+        sample_ids_tsv = tmp_path / "sample_ids.tsv"
+        sample_ids_tsv.write_text(
+            overrides.get(
+                "sample_ids_text",
+                "sample_id\trow_index\tstratum\tlabels\n"
+                "s1\t0\trepresentative\t1;0\n"
+                "s2\t1\tfiller\t0;1\n",
+            )
+        )
+        sample_fasta = tmp_path / "sample_sequences.fasta"
+        sample_fasta.write_text(overrides.get("sample_fasta_text", ">s1\nACGT\n>s2\nTTTT\n"))
+        control_fasta = tmp_path / "control_sequences.fasta"
+        control_fasta.write_text(overrides.get("control_fasta_text", ">control_s1\nGGGG\n"))
+
+        manifest_path = tmp_path / "b2_manifest.json"
+        manifest = {
+            "checkpoint": overrides.get("checkpoint", "001B-B2"),
+            "status": overrides.get("status", "passed"),
+            "input_output_hashes": {
+                "generated_artifacts": {
+                    "sample_ids_tsv": {
+                        "path": str(sample_ids_tsv), "sha256": sha256_file(sample_ids_tsv),
+                        "byte_size": sample_ids_tsv.stat().st_size,
+                    },
+                    "sample_sequences_fasta": {
+                        "path": str(sample_fasta), "sha256": sha256_file(sample_fasta),
+                        "byte_size": sample_fasta.stat().st_size,
+                    },
+                    "control_sequences_fasta": {
+                        "path": str(control_fasta), "sha256": sha256_file(control_fasta),
+                        "byte_size": control_fasta.stat().st_size,
+                    },
+                }
+            },
+        }
+        manifest_path.write_text(json.dumps(manifest))
+        return manifest_path
+
+    def test_accepts_a_self_consistent_checkpoint_and_derives_exact_id_sets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path = self._write_checkpoint(tmp_path)
+            evidence, violations = load_and_verify_b2_checkpoint(
+                manifest_path, repo_root=tmp_path, expected_manifest_sha256=sha256_file(manifest_path),
+                expected_checkpoint="001B-B2", expected_status="passed",
+                expected_biological_count=None, expected_control_count=None,
+            )
+            self.assertEqual(violations, (), violations)
+            self.assertIsNotNone(evidence)
+            self.assertEqual(evidence.biological_ids, frozenset({"s1", "s2"}))
+            self.assertEqual(evidence.control_ids, frozenset({"control_s1"}))
+
+    def test_manifest_hash_not_matching_frozen_anchor_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path = self._write_checkpoint(tmp_path)
+            evidence, violations = load_and_verify_b2_checkpoint(
+                manifest_path, repo_root=tmp_path, expected_manifest_sha256="0" * 64,
+                expected_checkpoint="001B-B2", expected_status="passed",
+                expected_biological_count=None, expected_control_count=None,
+            )
+            self.assertIsNone(evidence)
+            self.assertTrue(violations)
+
+    def test_missing_manifest_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            evidence, violations = load_and_verify_b2_checkpoint(
+                tmp_path / "does_not_exist.json", repo_root=tmp_path, expected_manifest_sha256="0" * 64,
+                expected_checkpoint="001B-B2", expected_status="passed",
+                expected_biological_count=None, expected_control_count=None,
+            )
+            self.assertIsNone(evidence)
+            self.assertTrue(violations)
+
+    def test_wrong_checkpoint_field_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path = self._write_checkpoint(tmp_path, checkpoint="001B-B7")
+            evidence, violations = load_and_verify_b2_checkpoint(
+                manifest_path, repo_root=tmp_path, expected_manifest_sha256=sha256_file(manifest_path),
+                expected_checkpoint="001B-B2", expected_status="passed",
+                expected_biological_count=None, expected_control_count=None,
+            )
+            self.assertIsNone(evidence)
+            self.assertTrue(any("checkpoint" in v for v in violations))
+
+    def test_wrong_status_field_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path = self._write_checkpoint(tmp_path, status="pending")
+            evidence, violations = load_and_verify_b2_checkpoint(
+                manifest_path, repo_root=tmp_path, expected_manifest_sha256=sha256_file(manifest_path),
+                expected_checkpoint="001B-B2", expected_status="passed",
+                expected_biological_count=None, expected_control_count=None,
+            )
+            self.assertIsNone(evidence)
+            self.assertTrue(any("status" in v for v in violations))
+
+    def test_drifted_artifact_hash_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path = self._write_checkpoint(tmp_path)
+            expected_sha256 = sha256_file(manifest_path)
+            (tmp_path / "sample_sequences.fasta").write_text(">tampered\nAAAA\n")
+            evidence, violations = load_and_verify_b2_checkpoint(
+                manifest_path, repo_root=tmp_path, expected_manifest_sha256=expected_sha256,
+                expected_checkpoint="001B-B2", expected_status="passed",
+                expected_biological_count=None, expected_control_count=None,
+            )
+            self.assertIsNone(evidence)
+            self.assertTrue(any("drifted" in v for v in violations))
+
+    def test_control_id_set_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path = self._write_checkpoint(tmp_path, control_fasta_text=">control_UNRELATED\nGGGG\n")
+            evidence, violations = load_and_verify_b2_checkpoint(
+                manifest_path, repo_root=tmp_path, expected_manifest_sha256=sha256_file(manifest_path),
+                expected_checkpoint="001B-B2", expected_status="passed",
+                expected_biological_count=None, expected_control_count=None,
+            )
+            self.assertIsNone(evidence)
+            self.assertTrue(any("control-ID-set mismatch" in v for v in violations))
+
+    def test_real_mode_population_count_enforced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path = self._write_checkpoint(tmp_path)
+            evidence, violations = load_and_verify_b2_checkpoint(
+                manifest_path, repo_root=tmp_path, expected_manifest_sha256=sha256_file(manifest_path),
+                expected_checkpoint="001B-B2", expected_status="passed",
+                expected_biological_count=10000, expected_control_count=100,
+            )
+            self.assertIsNone(evidence)
+            self.assertTrue(any("10000" in v or "100" in v for v in violations))
+
+
+class ComputeProbeProjectionTests(unittest.TestCase):
+    """B3A-R6: the accepted wall-time/output/memory projection formulas and
+    fail-closed gates.
+    """
+
+    def _base_kwargs(self, **overrides):
+        kwargs = dict(
+            largest_contig_length=100,
+            total_reference_bases=1000,  # scale = 10
+            observed_wall_seconds=10.0,
+            observed_output_bytes=1000,
+            observed_peak_rss_kib=1024,  # 1 MiB
+            observed_hit_count=5,
+            physical_ram_gib=16.0,
+            available_memory_gib=8.0,
+            probe_output_allowance_bytes=int(1.0 * (1024**3)),
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_healthy_projection_passes_every_gate(self):
+        projection = compute_probe_projection(**self._base_kwargs())
+        self.assertTrue(projection.ok, projection.violations)
+        self.assertTrue(projection.wall_time_gate_ok)
+        self.assertTrue(projection.output_gate_ok)
+        self.assertTrue(projection.memory_gate_ok)
+        self.assertEqual(projection.scale, 10.0)
+        self.assertEqual(projection.projected_wall_seconds, 10.0 * 10.0 * 1.5)
+        self.assertEqual(projection.projected_output_bytes, 1000 * 10.0 * 2.0)
+        self.assertFalse(projection.zero_hit_limitation)
+
+    def test_zero_hits_is_recorded_as_a_limitation_not_a_failure(self):
+        projection = compute_probe_projection(**self._base_kwargs(observed_hit_count=0, observed_output_bytes=0))
+        self.assertTrue(projection.zero_hit_limitation)
+        self.assertTrue(projection.ok, projection.violations)
+
+    def test_wall_time_gate_fails_closed_over_4_5_hours(self):
+        projection = compute_probe_projection(**self._base_kwargs(observed_wall_seconds=999999.0))
+        self.assertFalse(projection.ok)
+        self.assertFalse(projection.wall_time_gate_ok)
+
+    def test_output_gate_fails_closed_over_1_gib_share(self):
+        projection = compute_probe_projection(**self._base_kwargs(observed_output_bytes=10**9))
+        self.assertFalse(projection.ok)
+        self.assertFalse(projection.output_gate_ok)
+
+    def test_missing_physical_ram_fails_closed(self):
+        projection = compute_probe_projection(**self._base_kwargs(physical_ram_gib=None))
+        self.assertFalse(projection.ok)
+        self.assertFalse(projection.memory_gate_ok)
+
+    def test_missing_available_memory_fails_closed(self):
+        projection = compute_probe_projection(**self._base_kwargs(available_memory_gib=None))
+        self.assertFalse(projection.ok)
+        self.assertFalse(projection.memory_gate_ok)
+
+    def test_peak_rss_plus_margin_exceeding_available_memory_fails_closed(self):
+        projection = compute_probe_projection(**self._base_kwargs(available_memory_gib=1.0))
+        self.assertFalse(projection.ok)
+        self.assertFalse(projection.memory_gate_ok)
+
+    def test_peak_rss_plus_margin_exceeding_physical_ram_fails_closed(self):
+        projection = compute_probe_projection(**self._base_kwargs(physical_ram_gib=1.0, available_memory_gib=100.0))
+        self.assertFalse(projection.ok)
+        self.assertFalse(projection.memory_gate_ok)
+
 
 class ProbeFingerprintTests(unittest.TestCase):
     def test_deterministic_and_sensitive_to_every_input(self):
         base_kwargs = dict(
+            b2_manifest_sha256="z" * 64,
             b2_sample_sha256="a" * 64,
             b2_control_sha256="b" * 64,
             reference_sha256="c" * 64,
             reference_manifest_content_sha256="d" * 64,
+            reference_manifest_raw_sha256="i" * 64,
             index_generation_digest="e" * 64,
             bwa_binary_sha256="f" * 64,
             minimap2_binary_sha256="g" * 64,
             seqkit_binary_sha256="h" * 64,
+            bwa_binary_version="0.7.19",
+            minimap2_binary_version="2.31",
+            seqkit_binary_version="2.13.0",
             bwa_command="bwa mem -a -Y -t 1 ref reads",
             minimap2_command="minimap2 -ax splice:sr ref reads",
             seqkit_command="seqkit locate --bed ref reads",
             git_commit="deadbeef",
+            git_clean=True,
         )
         first = probe_fingerprint(**base_kwargs)
         second = probe_fingerprint(**base_kwargs)

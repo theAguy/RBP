@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from rbpbench.coordinates.alignment import build_candidate_loci, classify_primary, ClassificationThresholds, parse_sam_line
 from rbpbench.coordinates.commands import (
@@ -26,6 +27,11 @@ from rbpbench.coordinates.commands import (
 )
 from rbpbench.coordinates.exact_match import exact_occurrence_count, exact_unique_confirmed, parse_seqkit_bed
 from rbpbench.coordinates.probe import build_pattern_fasta, extract_contig_streaming, select_probe_window, validate_probe_bed_rows
+from rbpbench.coordinates.runner import stage_index, stage_probe
+from rbpbench.data.audit import sha256_file
+
+from test_coordinates_runner import _approved_host_context
+from test_coordinates_runner_probe import _write_b2_checkpoint
 
 _HAVE_BWA = shutil.which("bwa") is not None
 _HAVE_MINIMAP2 = shutil.which("minimap2") is not None
@@ -247,6 +253,99 @@ class ProbeMechanicsRealBinarySmokeTests(unittest.TestCase):
             self.assertTrue(validation.ok, validation.violations)
             # bio1's own 20-nt substring must be found exactly on chr1.
             self.assertGreaterEqual(validation.hit_count, 1)
+
+
+@unittest.skipUnless(_HAVE_BWA and _HAVE_MINIMAP2 and _HAVE_SEQKIT, "requires real bwa/minimap2/seqkit on PATH")
+class GuardedProbeStageRealBinarySmokeTests(unittest.TestCase):
+    """B3A-R7: a guarded real-binary tiny probe integration test through the
+    ACTUAL ``stage_probe`` orchestration -- authorization, fresh preflight,
+    B2-checkpoint/reference/index binding, disk budgets, transactional
+    generation selection, and ``probe.json`` writing -- against genuinely
+    installed, pinned bwa/minimap2/seqkit binaries. Unlike
+    ``ProbeMechanicsRealBinarySmokeTests`` above (which deliberately bypasses
+    the guarded path to stay host-independent), this test mocks only the
+    HOST-detection facts ``run_preflight`` reads (OS/arch/RAM/free-disk, via
+    the same ``_approved_host_context`` helper every other guarded-stage
+    integration test in this suite uses) so it stays portable, while every
+    subprocess actually invoked is the real pinned binary. Nothing here
+    touches the real dataset, a real B2 FASTA, or a real human
+    reference/index; the reference and B2 checkpoint are tiny synthetic
+    fixtures.
+    """
+
+    def test_stage_probe_end_to_end_through_the_guarded_path_with_real_binaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            # A largest ("chr1", 400 nt) and a smaller ("chr2", 100 nt)
+            # RANDOM (non-repetitive) contig -- real aligners cannot map a
+            # short read reliably against a highly-repetitive tiny fixture,
+            # unlike the fake-tool fixtures elsewhere in this suite.
+            import random
+
+            rng = random.Random(42)
+            chr1_body = "".join(rng.choice("ACGT") for _ in range(400))
+            chr2_body = "".join(rng.choice("ACGT") for _ in range(100))
+            reference = tmp_path / "reference.fasta"
+            reference.write_text(f">chr1\n{chr1_body}\n>chr2\n{chr2_body}\n")
+            manifest = {
+                "build_id": "hg38",
+                "assembly_accession": "TEST-hg38",
+                "source_url": "https://example.invalid/reference.fa.gz",
+                "contig_categories_included": ["chromosome"],
+                "byte_size": reference.stat().st_size,
+                "sha256": sha256_file(reference),
+                "contigs": ["chr1", "chr2"],
+                "contig_lengths": {"chr1": 400, "chr2": 100},
+            }
+            b2 = _write_b2_checkpoint(tmp_path)
+
+            from rbpbench.coordinates.config import load_config
+
+            fixture_config = Path(__file__).resolve().parent / "fixtures" / "coordinates" / "tiny_coordinate_feasibility.toml"
+            cfg = load_config(fixture_config)
+
+            index_dir = tmp_path / "indices" / "hg38"
+            with _approved_host_context():
+                index_record = stage_index(
+                    cfg, build="hg38", index_dir=index_dir, allow_mapping=True, host_role="approved_mac",
+                    threads=1, reference=reference, reference_manifest=manifest, dry_run=False,
+                )
+            self.assertTrue(index_record["executed"], index_record.get("skip_reason"))
+
+            out_dir = tmp_path / "out"
+            with _approved_host_context(), mock.patch(
+                "rbpbench.coordinates.runner.git_is_clean", return_value=True
+            ), mock.patch("rbpbench.coordinates.runner.current_git_commit", return_value="0" * 40):
+                probe_record = stage_probe(
+                    cfg,
+                    build="hg38",
+                    build_output_dir=out_dir,
+                    allow_mapping=True,
+                    host_role="approved_mac",
+                    reference=reference,
+                    reference_manifest=manifest,
+                    reference_manifest_raw_sha256=None,
+                    index_record=index_record,
+                    b2_manifest_path=b2["manifest_path"],
+                    repo_root=tmp_path,
+                    b2_manifest_expected_sha256=b2["manifest_sha256"],
+                    b2_manifest_expected_checkpoint="001B-B2",
+                    b2_manifest_expected_status="passed",
+                    b2_expected_biological_count=None,
+                    b2_expected_control_count=None,
+                    dry_run=False,
+                    window_length=60,  # tiny fixture window, never the real 500 nt
+                )
+            self.assertTrue(probe_record["executed"], probe_record.get("skip_reason"))
+            self.assertEqual(probe_record["selected_contig"]["accession"], "chr1")
+            self.assertTrue(Path(probe_record["sam_paths"]["bwa_mem"]).is_file())
+            self.assertTrue(Path(probe_record["sam_paths"]["minimap2_splice"]).is_file())
+            self.assertTrue(Path(probe_record["bed_path"]).is_file())
+            self.assertTrue(probe_record["projection"]["wall_time_gate_ok"])
+            self.assertTrue(probe_record["projection"]["output_gate_ok"])
+            self.assertTrue((out_dir / "probe.json").is_file())
+            self.assertFalse((out_dir / "align.json").exists())
+            self.assertFalse((out_dir / "exact_match.json").exists())
 
 
 if __name__ == "__main__":

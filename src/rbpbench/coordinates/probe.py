@@ -20,6 +20,22 @@ in :func:`rbpbench.coordinates.runner.stage_probe`:
   every upstream binding (B2 sample/control hashes, reference/manifest,
   index generation, binaries, command parameters, and the current clean Git
   commit) that a probe generation is bound to.
+- :func:`load_and_verify_b2_checkpoint` -- B3A-R1: the real trust anchor for
+  the probe's pattern population. Loads the committed, accepted B2 sampling
+  checkpoint manifest, verifies the manifest FILE ITSELF against a frozen
+  expected hash (never a caller-supplied one), verifies its declared
+  checkpoint/status identity, re-hashes every one of its named generated
+  artifacts (``sample_ids.tsv``, the biological FASTA, the control FASTA)
+  against the manifest's own recorded path/size/hash, and derives the exact
+  accepted biological/control ID sets from that independently-verified
+  evidence -- never from free-form caller-supplied hashes or counts.
+- :func:`total_reference_bases` -- one streaming pass summing every base
+  across an entire derived reference FASTA, used to fully validate
+  ``contig_lengths`` (B3A-R2) before the largest contig is ever selected.
+- :func:`compute_probe_projection` -- B3A-R6: the accepted wall-time/output/
+  memory projection formulas and fail-closed gates
+  (docs/tasks/001b_b3_hg38_preparation.md, "Probe projection and B4-safety
+  decision") computed from one real probe's observed evidence.
 
 Every one of these is pure/file-local: none of them perform authorization
 checks, disk-budget accounting, or subprocess execution -- that orchestration
@@ -32,15 +48,22 @@ machinery already used by ``stage_download``/``stage_derive``/``stage_index``.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable
 
 from rbpbench.coordinates.hashing import content_fingerprint, stable_hash_rank
 from rbpbench.data.audit import sha256_file
 
 _ACGT = frozenset("ACGT")
+_GIB = 1024**3
+
+# Mirrors ``rbpbench.coordinates.runner.CONTROL_ID_PREFIX`` exactly (kept as
+# an independent literal, not an import, to avoid probe.py <-> runner.py
+# coupling: probe.py is pure/file-local and runner.py already imports it).
+_CONTROL_ID_PREFIX = "control_"
 
 
 class ProbeError(ValueError):
@@ -143,6 +166,259 @@ def build_pattern_fasta(
         sha256=sha256_file(output_path),
         byte_size=output_path.stat().st_size,
     )
+
+
+# ---------------------------------------------------------------------------
+# B3A-R1: the real B2-checkpoint trust anchor.
+# ---------------------------------------------------------------------------
+
+
+def _fasta_header_ids(path: Path) -> list[str]:
+    ids: list[str] = []
+    with Path(path).open() as handle:
+        for line in handle:
+            if line.startswith(">"):
+                ids.append(line[1:].strip().split()[0])
+    return ids
+
+
+@dataclass(frozen=True)
+class B2CheckpointEvidence:
+    """The real trust anchor a real probe's pattern population is bound to:
+    independently re-verified accepted-B2 sample/control FASTAs and the
+    exact biological/control ID sets derived from them -- never a
+    caller-supplied hash string alone.
+    """
+
+    manifest_path: Path
+    manifest_sha256: str
+    sample_ids_tsv: Path
+    sample_fasta: Path
+    control_fasta: Path
+    sample_fasta_sha256: str
+    control_fasta_sha256: str
+    biological_ids: frozenset
+    control_ids: frozenset
+
+    def to_dict(self) -> dict:
+        return {
+            "manifest_path": str(self.manifest_path),
+            "manifest_sha256": self.manifest_sha256,
+            "sample_ids_tsv": str(self.sample_ids_tsv),
+            "sample_fasta": str(self.sample_fasta),
+            "sample_fasta_sha256": self.sample_fasta_sha256,
+            "control_fasta": str(self.control_fasta),
+            "control_fasta_sha256": self.control_fasta_sha256,
+            "biological_count": len(self.biological_ids),
+            "control_count": len(self.control_ids),
+        }
+
+
+def load_and_verify_b2_checkpoint(
+    manifest_path: Path,
+    *,
+    repo_root: Path,
+    expected_manifest_sha256: str | None,
+    expected_checkpoint: str,
+    expected_status: str,
+    expected_biological_count: int | None,
+    expected_control_count: int | None,
+) -> tuple[B2CheckpointEvidence | None, tuple[str, ...]]:
+    """B3A-R1: the real CLI trust anchor for the probe's pattern population.
+
+    Unlike the old caller-supplied-hash pattern (a caller could hand
+    ``stage_probe`` any two FASTAs and matching hash strings), this:
+
+    1. hashes the accepted B2 checkpoint manifest FILE ITSELF and requires it
+       to equal ``expected_manifest_sha256`` -- the frozen, committed
+       trust-anchor hash from the accepted B2 acceptance review, never a
+       value the caller can vary per invocation;
+    2. requires the manifest's own declared ``checkpoint``/``status``
+       identity to match exactly;
+    3. re-hashes (path, byte size, sha256) every one of the manifest's
+       ``generated_artifacts`` this probe depends on (``sample_ids.tsv``, the
+       biological FASTA, the control FASTA) against what the manifest itself
+       recorded -- never merely trusting that a path was supplied;
+    4. derives the exact accepted biological ID set from the independently
+       verified ``sample_ids.tsv`` (every row's ``sample_id`` column), and
+       the exact accepted control ID set from the SAME evidence's declared
+       representative stratum (the accepted first-N-sorted-representative
+       rule the real B2 checkpoint manifest itself records under
+       ``control_reconciliation``), cross-checked against the independently
+       verified control FASTA's own actual headers -- a control FASTA whose
+       real ID set does not match this derivation is flagged as a genuine
+       control-ID-set mismatch, not silently accepted merely because its
+       bytes hash-matched some recorded value;
+    5. when supplied (real CLI mode), enforces the exact accepted population
+       counts (10,000 biological + 100 controls) -- fixture/unit tests pass
+       ``None`` for both to exercise this same function with a tiny
+       synthetic checkpoint instead.
+
+    Returns ``(evidence, ())`` on success, or ``(None, violations)`` -- never
+    partially-populated evidence alongside violations.
+    """
+    manifest_path = Path(manifest_path)
+    violations: list[str] = []
+    if not manifest_path.is_file():
+        return None, (f"B2 checkpoint manifest not found at {manifest_path}",)
+
+    manifest_sha256 = sha256_file(manifest_path)
+    if expected_manifest_sha256 is None:
+        violations.append("no expected B2 checkpoint manifest sha256 supplied to bind the probe to")
+    elif manifest_sha256 != expected_manifest_sha256:
+        violations.append(
+            f"B2 checkpoint manifest at {manifest_path} has sha256 {manifest_sha256!r}, but the accepted trust "
+            f"anchor requires {expected_manifest_sha256!r} (accepted B2 checkpoint evidence has drifted)"
+        )
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        violations.append(f"B2 checkpoint manifest at {manifest_path} is unreadable/malformed: {exc}")
+        return None, tuple(violations)
+
+    if manifest.get("checkpoint") != expected_checkpoint:
+        violations.append(
+            f"B2 checkpoint manifest 'checkpoint' field is {manifest.get('checkpoint')!r}, expected "
+            f"{expected_checkpoint!r}"
+        )
+    if manifest.get("status") != expected_status:
+        violations.append(
+            f"B2 checkpoint manifest 'status' field is {manifest.get('status')!r}, expected {expected_status!r}"
+        )
+
+    generated = ((manifest.get("input_output_hashes") or {}).get("generated_artifacts")) or {}
+
+    def _resolve_and_verify(key: str) -> tuple[Path, str] | None:
+        entry = generated.get(key)
+        if not entry:
+            violations.append(f"B2 checkpoint manifest is missing generated_artifacts[{key!r}]")
+            return None
+        raw_path = entry.get("path")
+        if not raw_path:
+            violations.append(f"B2 checkpoint manifest generated_artifacts[{key!r}] has no recorded path")
+            return None
+        resolved = Path(raw_path)
+        if not resolved.is_absolute():
+            resolved = Path(repo_root) / resolved
+        if not resolved.is_file():
+            violations.append(f"B2 checkpoint accepted artifact {key!r} not found at {resolved}")
+            return None
+        actual_size = resolved.stat().st_size
+        expected_size = entry.get("byte_size")
+        if expected_size is not None and actual_size != expected_size:
+            violations.append(
+                f"B2 checkpoint accepted artifact {key!r} at {resolved} has byte_size {actual_size}, but the "
+                f"manifest recorded {expected_size} (drifted since acceptance)"
+            )
+        actual_sha256 = sha256_file(resolved)
+        expected_sha256 = entry.get("sha256")
+        if expected_sha256 is not None and actual_sha256 != expected_sha256:
+            violations.append(
+                f"B2 checkpoint accepted artifact {key!r} at {resolved} has sha256 {actual_sha256!r}, but the "
+                f"manifest recorded {expected_sha256!r} (drifted since acceptance)"
+            )
+        return resolved, actual_sha256
+
+    sample_ids_result = _resolve_and_verify("sample_ids_tsv")
+    sample_fasta_result = _resolve_and_verify("sample_sequences_fasta")
+    control_fasta_result = _resolve_and_verify("control_sequences_fasta")
+
+    if violations or sample_ids_result is None or sample_fasta_result is None or control_fasta_result is None:
+        return None, tuple(violations)
+
+    sample_ids_path, _ = sample_ids_result
+    sample_fasta_path, sample_fasta_sha256 = sample_fasta_result
+    control_fasta_path, control_fasta_sha256 = control_fasta_result
+
+    biological_ids: list[str] = []
+    representative_ids: list[str] = []
+    lines = sample_ids_path.read_text().splitlines()
+    if not lines or not lines[0].startswith("sample_id\t"):
+        violations.append(f"B2 sample_ids.tsv at {sample_ids_path} has an unexpected/missing header")
+    else:
+        for row in lines[1:]:
+            if not row:
+                continue
+            cols = row.split("\t")
+            if len(cols) < 3:
+                violations.append(f"B2 sample_ids.tsv at {sample_ids_path} has a malformed row: {row!r}")
+                continue
+            sample_id, _row_index, stratum = cols[0], cols[1], cols[2]
+            biological_ids.append(sample_id)
+            if stratum == "representative":
+                representative_ids.append(sample_id)
+
+    biological_id_set = frozenset(biological_ids)
+    if len(biological_id_set) != len(biological_ids):
+        violations.append(f"B2 sample_ids.tsv at {sample_ids_path} has duplicate sample_id values")
+
+    actual_control_ids = frozenset(_fasta_header_ids(control_fasta_path))
+    derived_control_ids = frozenset(
+        f"{_CONTROL_ID_PREFIX}{sid}" for sid in sorted(representative_ids)[: len(actual_control_ids)]
+    )
+    if actual_control_ids != derived_control_ids:
+        violations.append(
+            "B2 control FASTA's actual ID set does not match the accepted first-N-sorted-representative-IDs "
+            "derivation from sample_ids.tsv (control-ID-set mismatch)"
+        )
+
+    if expected_biological_count is not None and len(biological_id_set) != expected_biological_count:
+        violations.append(
+            f"B2 accepted biological population is {len(biological_id_set)}, but real mode requires exactly "
+            f"{expected_biological_count}"
+        )
+    if expected_control_count is not None and len(actual_control_ids) != expected_control_count:
+        violations.append(
+            f"B2 accepted control population is {len(actual_control_ids)}, but real mode requires exactly "
+            f"{expected_control_count}"
+        )
+
+    if violations:
+        return None, tuple(violations)
+
+    return (
+        B2CheckpointEvidence(
+            manifest_path=manifest_path,
+            manifest_sha256=manifest_sha256,
+            sample_ids_tsv=sample_ids_path,
+            sample_fasta=sample_fasta_path,
+            control_fasta=control_fasta_path,
+            sample_fasta_sha256=sample_fasta_sha256,
+            control_fasta_sha256=control_fasta_sha256,
+            biological_ids=biological_id_set,
+            control_ids=actual_control_ids,
+        ),
+        (),
+    )
+
+
+# ---------------------------------------------------------------------------
+# B3A-R2: full contig_lengths validation before selection.
+# ---------------------------------------------------------------------------
+
+
+def total_reference_bases(reference_fasta: Path) -> int:
+    """One streaming pass (never materializing the file as one string)
+    summing every non-header character across the ENTIRE derived reference
+    FASTA -- every contig, not only the one about to be selected.
+
+    B3A-R2: this is what actually proves ``contig_lengths``' declared
+    per-accession values sum to the real, current on-disk reference content,
+    independent of the manifest dict's own self-reported claims (a reference
+    FASTA whose bytes/size/sha256 all still match ``reference_manifest`` can
+    still carry a hand-edited ``contig_lengths`` entry that this exact check
+    catches). Required to run BEFORE :func:`rbpbench.coordinates.derive_reference.largest_contig`
+    is ever called on caller-supplied ``contig_lengths``.
+    """
+    total = 0
+    with Path(reference_fasta).open() as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\r\n")
+            if line.startswith(">"):
+                continue
+            total += len(line)
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -316,14 +592,23 @@ class BedValidationResult:
         return {"hit_count": self.hit_count, "distinct_hit_count": self.distinct_hit_count, "violations": list(self.violations)}
 
 
+_VALID_BED_STRANDS = frozenset({"+", "-"})
+
+
 def validate_probe_bed_rows(
-    lines: Sequence[str], *, known_pattern_ids: frozenset, contig_accession: str, contig_length: int
+    lines: Iterable[str], *, known_pattern_ids: frozenset, contig_accession: str, contig_length: int
 ) -> BedValidationResult:
     """Validate every nonempty SeqKit ``locate --bed`` output row against the
-    single selected contig: BED6 shape, a known pattern ID, in-bounds
+    single selected contig: complete BED6 semantics (six columns, a known
+    pattern ID, a non-negative integer score, a ``+``/``-`` strand), in-bounds
     ``0 <= start < end <= contig_length``, and no duplicate counting of an
     identical ``(pattern, contig, start, end, strand)`` hit. Zero hits is an
-    honest, non-failing result (empty ``lines`` -> zero violations).
+    honest, non-failing result (empty/exhausted ``lines`` -> zero violations).
+
+    ``lines`` is only ever iterated once, never indexed or measured for
+    length (B3A-R6): the real-mode caller passes an open file handle,
+    streaming line-by-line rather than materializing a potentially
+    ~1-GiB-scale BED file as one Python list via ``read_text().splitlines()``.
     """
     violations: list[str] = []
     seen: set[tuple[str, str, int, int, str]] = set()
@@ -337,7 +622,7 @@ def validate_probe_bed_rows(
         if len(fields) != 6:
             violations.append(f"expected exactly 6 BED6 columns, got {len(fields)}: {line!r}")
             continue
-        chrom, start_s, end_s, name, _score, strand = fields
+        chrom, start_s, end_s, name, score, strand = fields
         if chrom != contig_accession:
             violations.append(f"hit on unexpected contig {chrom!r} (expected only {contig_accession!r}): {line!r}")
             continue
@@ -350,6 +635,13 @@ def validate_probe_bed_rows(
             continue
         if not (0 <= start < end <= contig_length):
             violations.append(f"out-of-bounds hit start={start} end={end} contig_length={contig_length}: {line!r}")
+        try:
+            if int(score) < 0:
+                violations.append(f"invalid BED6 score {score!r} (expected a non-negative integer): {line!r}")
+        except ValueError:
+            violations.append(f"non-integer BED6 score {score!r}: {line!r}")
+        if strand not in _VALID_BED_STRANDS:
+            violations.append(f"invalid BED6 strand {strand!r} (expected '+' or '-'): {line!r}")
         key = (chrom, name, start, end, strand)
         if key in seen:
             violations.append(f"duplicate-counted hit {key}")
@@ -364,42 +656,216 @@ def validate_probe_bed_rows(
 
 def probe_fingerprint(
     *,
+    b2_manifest_sha256: str,
     b2_sample_sha256: str,
     b2_control_sha256: str,
     reference_sha256: str,
     reference_manifest_content_sha256: str,
+    reference_manifest_raw_sha256: str | None,
     index_generation_digest: str | None,
     bwa_binary_sha256: str | None,
     minimap2_binary_sha256: str | None,
     seqkit_binary_sha256: str | None,
+    bwa_binary_version: str | None,
+    minimap2_binary_version: str | None,
+    seqkit_binary_version: str | None,
     bwa_command: str,
     minimap2_command: str,
     seqkit_command: str,
     git_commit: str | None,
+    git_clean: bool | None,
 ) -> str:
-    """B3A-A3 item 8: the exact chain a probe generation is bound to --
-    accepted B2 sample/control hashes, raw reference/manifest hashes, the
-    index generation digest, resolved binary identities, exact command
-    parameters, and the current implementation's clean Git commit. Identical
-    inputs always yield the same fingerprint (used both to decide whether a
-    new probe attempt would reproduce an already-accepted one, and as
-    restart-validity evidence), and any change to any one of these inputs
-    changes it.
+    """B3A-R3: the ONE stable, reproducible fingerprint contract used both to
+    record an accepted probe generation's own evidence chain AND to
+    recompute/compare restart validity before any skip decision -- accepted
+    B2 checkpoint manifest hash plus B2 sample/control hashes, raw
+    reference/manifest hashes (both canonical-content AND raw-file), the
+    index generation digest, resolved binary identities (hash AND version),
+    exact command parameters, the current implementation's Git commit, and
+    whether the working tree is currently clean. Identical inputs always
+    yield the same fingerprint, and any change to any one of these inputs
+    changes it -- a change to accepted B2 evidence, reference/raw manifest,
+    exact index generation, any resolved binary, command/parameter
+    semantics, or implementation commit must force revalidation/re-execution
+    rather than a skip.
     """
     return content_fingerprint(
         "probe_fingerprint",
+        b2_manifest_sha256,
         b2_sample_sha256,
         b2_control_sha256,
         reference_sha256,
         reference_manifest_content_sha256,
+        reference_manifest_raw_sha256,
         index_generation_digest,
         bwa_binary_sha256,
         minimap2_binary_sha256,
         seqkit_binary_sha256,
+        bwa_binary_version,
+        minimap2_binary_version,
+        seqkit_binary_version,
         bwa_command,
         minimap2_command,
         seqkit_command,
         git_commit,
+        git_clean,
+    )
+
+
+# ---------------------------------------------------------------------------
+# B3A-R6: accepted wall-time/output/memory projection formulas and gates.
+# ---------------------------------------------------------------------------
+
+_WALL_TIME_PROJECTION_FACTOR = 1.5
+_OUTPUT_PROJECTION_FACTOR = 2.0
+_WALL_TIME_GATE_SECONDS = 4.5 * 60 * 60
+_MEMORY_SAFETY_MARGIN_GIB = 2.0
+
+
+@dataclass(frozen=True)
+class ProbeProjection:
+    largest_contig_length: int  # Lmax
+    total_reference_bases: int  # Ltotal
+    scale: float
+    observed_wall_seconds: float
+    observed_output_bytes: int
+    observed_peak_rss_kib: int
+    observed_hit_count: int
+    zero_hit_limitation: bool
+    projected_wall_seconds: float
+    projected_output_bytes: float
+    wall_time_gate_seconds: float
+    wall_time_gate_ok: bool
+    probe_output_allowance_bytes: int
+    output_gate_ok: bool
+    peak_rss_plus_margin_gib: float
+    physical_ram_gib: float | None
+    available_memory_gib: float | None
+    memory_gate_ok: bool
+    violations: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return len(self.violations) == 0
+
+    def to_dict(self) -> dict:
+        return {
+            "largest_contig_length": self.largest_contig_length,
+            "total_reference_bases": self.total_reference_bases,
+            "scale": self.scale,
+            "observed_wall_seconds": self.observed_wall_seconds,
+            "observed_output_bytes": self.observed_output_bytes,
+            "observed_peak_rss_kib": self.observed_peak_rss_kib,
+            "observed_hit_count": self.observed_hit_count,
+            "zero_hit_limitation": self.zero_hit_limitation,
+            "projected_wall_seconds": self.projected_wall_seconds,
+            "projected_output_bytes": self.projected_output_bytes,
+            "wall_time_gate_seconds": self.wall_time_gate_seconds,
+            "wall_time_gate_ok": self.wall_time_gate_ok,
+            "probe_output_allowance_bytes": self.probe_output_allowance_bytes,
+            "output_gate_ok": self.output_gate_ok,
+            "peak_rss_plus_margin_gib": self.peak_rss_plus_margin_gib,
+            "physical_ram_gib": self.physical_ram_gib,
+            "available_memory_gib": self.available_memory_gib,
+            "memory_gate_ok": self.memory_gate_ok,
+            "violations": list(self.violations),
+        }
+
+
+def compute_probe_projection(
+    *,
+    largest_contig_length: int,
+    total_reference_bases: int,
+    observed_wall_seconds: float,
+    observed_output_bytes: int,
+    observed_peak_rss_kib: int,
+    observed_hit_count: int,
+    physical_ram_gib: float | None,
+    available_memory_gib: float | None,
+    probe_output_allowance_bytes: int,
+) -> ProbeProjection:
+    """B3A-R6: the accepted B4-safety projection formulas
+    (docs/tasks/001b_b3_hg38_preparation.md, "Probe projection and B4-safety
+    decision"), computed from one real probe's observed SeqKit evidence, with
+    explicit fail-closed pass/fail results for all three accepted gates. A
+    ``None`` physical-RAM or available-memory reading is never treated as
+    passing -- the memory gate fails closed exactly like an actually-measured
+    value that overflows the margin.
+    """
+    if largest_contig_length <= 0:
+        raise ProbeError("largest_contig_length must be positive")
+    if total_reference_bases < largest_contig_length:
+        raise ProbeError("total_reference_bases must be >= largest_contig_length")
+
+    scale = total_reference_bases / largest_contig_length
+    projected_wall = observed_wall_seconds * scale * _WALL_TIME_PROJECTION_FACTOR
+    projected_output = observed_output_bytes * scale * _OUTPUT_PROJECTION_FACTOR
+    zero_hit_limitation = observed_hit_count == 0
+
+    violations: list[str] = []
+
+    wall_time_gate_ok = projected_wall < _WALL_TIME_GATE_SECONDS
+    if not wall_time_gate_ok:
+        violations.append(
+            f"projected full-reference SeqKit wall time {projected_wall:.1f}s does not stay below the "
+            f"{_WALL_TIME_GATE_SECONDS:.1f}s (4.5h) gate"
+        )
+
+    output_gate_ok = projected_output <= probe_output_allowance_bytes
+    if not output_gate_ok:
+        violations.append(
+            f"projected full-reference SeqKit output {projected_output:.0f} bytes exceeds the "
+            f"{probe_output_allowance_bytes}-byte provisional 1-GiB share"
+        )
+    # B3A-R6: zero observed hits is an honest result (never itself a
+    # failure), but it must be recorded so a reviewer never misreads a
+    # trivially-small projected output as real evidence of a bounded
+    # full-reference output -- see the ``zero_hit_limitation`` field.
+
+    peak_rss_plus_margin_gib = (observed_peak_rss_kib * 1024 / _GIB) + _MEMORY_SAFETY_MARGIN_GIB
+    memory_gate_ok = True
+    if physical_ram_gib is None:
+        violations.append("physical RAM could not be determined; refusing to assume the peak-RSS-plus-2-GiB gate passes")
+        memory_gate_ok = False
+    elif peak_rss_plus_margin_gib > physical_ram_gib:
+        violations.append(
+            f"peak RSS + {_MEMORY_SAFETY_MARGIN_GIB:.0f} GiB ({peak_rss_plus_margin_gib:.2f} GiB) exceeds physical "
+            f"RAM ({physical_ram_gib:.2f} GiB)"
+        )
+        memory_gate_ok = False
+    if available_memory_gib is None:
+        violations.append(
+            "available/reclaimable memory could not be determined; refusing to assume the peak-RSS-plus-2-GiB "
+            "gate passes"
+        )
+        memory_gate_ok = False
+    elif peak_rss_plus_margin_gib > available_memory_gib:
+        violations.append(
+            f"peak RSS + {_MEMORY_SAFETY_MARGIN_GIB:.0f} GiB ({peak_rss_plus_margin_gib:.2f} GiB) exceeds measured "
+            f"available/reclaimable memory ({available_memory_gib:.2f} GiB)"
+        )
+        memory_gate_ok = False
+
+    return ProbeProjection(
+        largest_contig_length=largest_contig_length,
+        total_reference_bases=total_reference_bases,
+        scale=scale,
+        observed_wall_seconds=observed_wall_seconds,
+        observed_output_bytes=observed_output_bytes,
+        observed_peak_rss_kib=observed_peak_rss_kib,
+        observed_hit_count=observed_hit_count,
+        zero_hit_limitation=zero_hit_limitation,
+        projected_wall_seconds=projected_wall,
+        projected_output_bytes=projected_output,
+        wall_time_gate_seconds=_WALL_TIME_GATE_SECONDS,
+        wall_time_gate_ok=wall_time_gate_ok,
+        probe_output_allowance_bytes=probe_output_allowance_bytes,
+        output_gate_ok=output_gate_ok,
+        peak_rss_plus_margin_gib=peak_rss_plus_margin_gib,
+        physical_ram_gib=physical_ram_gib,
+        available_memory_gib=available_memory_gib,
+        memory_gate_ok=memory_gate_ok,
+        violations=tuple(violations),
     )
 
 
@@ -407,6 +873,9 @@ __all__ = [
     "ProbeError",
     "PatternFastaResult",
     "build_pattern_fasta",
+    "B2CheckpointEvidence",
+    "load_and_verify_b2_checkpoint",
+    "total_reference_bases",
     "ContigExtraction",
     "extract_contig_streaming",
     "ProbeWindow",
@@ -414,4 +883,6 @@ __all__ = [
     "BedValidationResult",
     "validate_probe_bed_rows",
     "probe_fingerprint",
+    "ProbeProjection",
+    "compute_probe_projection",
 ]

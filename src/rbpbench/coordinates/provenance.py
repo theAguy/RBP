@@ -91,16 +91,20 @@ def git_is_clean(*, cwd: Path | None = None) -> bool | None:
 
 
 def host_memory_snapshot() -> dict:
-    """Best-effort host-memory snapshot for provenance evidence (B3A-A3 item
-    6): physical RAM only (the same detector ``rbpbench.coordinates.preflight``
-    already uses), not a true available/reclaimable-memory reading — an exact
-    live available-memory sampler is out of this task's scope, so this is
-    recorded honestly as an approximation, the same pattern
-    :func:`peak_rss_kib_of_children` already follows.
+    """Host-memory snapshot for provenance evidence (B3A-R6): physical RAM
+    AND a measured available/reclaimable-memory estimate (Linux
+    ``MemAvailable``, or macOS's free+inactive+speculative page classes —
+    see :func:`rbpbench.coordinates.preflight.detect_available_memory_gib`),
+    both recorded honestly as ``None`` (never a fabricated number) when
+    undetectable, the same pattern :func:`peak_rss_kib_of_children` follows.
     """
-    from rbpbench.coordinates.preflight import detect_physical_ram_gib
+    from rbpbench.coordinates.preflight import detect_available_memory_gib, detect_physical_ram_gib
 
-    return {"physical_ram_gib": detect_physical_ram_gib(), "source": "preflight.detect_physical_ram_gib"}
+    return {
+        "physical_ram_gib": detect_physical_ram_gib(),
+        "available_reclaimable_memory_gib": detect_available_memory_gib(),
+        "source": "preflight.detect_physical_ram_gib/detect_available_memory_gib",
+    }
 
 
 def peak_rss_kib_of_children() -> int:

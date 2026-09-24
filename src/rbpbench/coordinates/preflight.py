@@ -55,6 +55,52 @@ def detect_free_disk_gib(path: Path) -> float:
     return usage.free / (1024**3)
 
 
+def detect_available_memory_gib() -> float | None:
+    """Best-effort *available/reclaimable* memory (distinct from total
+    physical RAM, see :func:`detect_physical_ram_gib`): Linux's own
+    ``MemAvailable`` estimate (already accounts for reclaimable page cache),
+    or macOS's free+inactive+speculative page classes via ``vm_stat`` (pages
+    the kernel can reclaim under memory pressure without swapping). Returns
+    ``None`` (never a fabricated number) when undetectable -- B3A-R6 callers
+    must treat that as a fail-closed gate, never as "assume it is enough".
+    """
+    system = platform.system()
+    try:
+        if system == "Linux":
+            with open("/proc/meminfo") as handle:
+                for line in handle:
+                    if line.startswith("MemAvailable:"):
+                        kib = int(line.split()[1])
+                        return kib / (1024 * 1024)
+            return None
+        if system == "Darwin":
+            completed = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=10, check=False)
+            if completed.returncode != 0 or not completed.stdout:
+                return None
+            page_size = 4096
+            first_line = completed.stdout.splitlines()[0] if completed.stdout.splitlines() else ""
+            if "page size of" in first_line:
+                try:
+                    page_size = int(first_line.split("page size of")[1].split()[0])
+                except (IndexError, ValueError):
+                    page_size = 4096
+            stats: dict[str, int] = {}
+            for line in completed.stdout.splitlines():
+                if ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                value = value.strip().rstrip(".")
+                if value.isdigit():
+                    stats[key.strip()] = int(value)
+            reclaimable_pages = (
+                stats.get("Pages free", 0) + stats.get("Pages inactive", 0) + stats.get("Pages speculative", 0)
+            )
+            return (reclaimable_pages * page_size) / (1024**3)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    return None
+
+
 @dataclass(frozen=True)
 class PreflightReport:
     host_role: str
@@ -203,4 +249,5 @@ __all__ = [
     "run_preflight",
     "detect_physical_ram_gib",
     "detect_free_disk_gib",
+    "detect_available_memory_gib",
 ]

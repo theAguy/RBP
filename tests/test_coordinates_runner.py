@@ -73,9 +73,9 @@ if [ "$1" == "version" ] && [ "$#" -eq 1 ]; then
 fi
 reads="${@: -2:1}"
 awk '
-  /^>/ { if (name != "") print "chr1\\t0\\t" length(seq) "\\t" name "\\t.\\t+"; name=substr($0,2); seq=""; next }
+  /^>/ { if (name != "") print "chr1\\t0\\t" length(seq) "\\t" name "\\t0\\t+"; name=substr($0,2); seq=""; next }
   { seq = seq $0 }
-  END { if (name != "") print "chr1\\t0\\t" length(seq) "\\t" name "\\t.\\t+" }
+  END { if (name != "") print "chr1\\t0\\t" length(seq) "\\t" name "\\t0\\t+" }
 ' "$reads"
 """
 

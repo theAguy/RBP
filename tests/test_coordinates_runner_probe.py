@@ -1,16 +1,16 @@
-"""Integration coverage for the B3A-A3 guarded ``probe`` stage
+"""Integration coverage for the B3A-A3/R1-R7 guarded ``probe`` stage
 (``rbpbench.coordinates.runner.stage_probe``), through the actual runner
 functions with fake (never real) bwa/minimap2/seqkit executables on PATH.
 
 Every fixture here is tiny and synthetic. No test in this file opens the
 real CSV, any real B2 FASTA, a real human reference/index, or any network
-URL. Test names/docstrings map to the executor handoff's "Minimum
-regression set" (docs/handoffs/001b_b3a_claude_executor_handoff.md), items
-7, 8, 11, 12 (integration level), 14, 15, and 16.
+URL. Test names/docstrings map to the B3A corrections handoff's mandatory
+regressions (docs/handoffs/001b_b3a_corrections_claude_handoff.md) R1-R7.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -46,7 +46,9 @@ def _cfg():
 # of reads content (see test_coordinates_runner.py/_FAKE_BWA/_FAKE_MINIMAP2's
 # own docstring-equivalent comments), so the reference text itself does not
 # need to be biologically meaningful.
-_REFERENCE_TEXT = ">chr1\n" + ("ACGT" * 20) + "\n>chr2\n" + ("ACGT" * 5) + "\n"
+_CHR1_BODY = "ACGT" * 20
+_CHR2_BODY = "ACGT" * 5
+_REFERENCE_TEXT = f">chr1\n{_CHR1_BODY}\n>chr2\n{_CHR2_BODY}\n"
 
 
 def _write_reference_and_manifest(tmp_path: Path) -> tuple[Path, dict]:
@@ -65,12 +67,72 @@ def _write_reference_and_manifest(tmp_path: Path) -> tuple[Path, dict]:
     return reference, manifest
 
 
-def _write_b2_fixtures(tmp_path: Path) -> tuple[Path, Path, str, str]:
-    sample_fasta = tmp_path / "sample_sequences.fasta"
-    sample_fasta.write_text(">s1\nACGTACGTAC\n>s2\nTTTTGGGGCC\n")
-    control_fasta = tmp_path / "control_sequences.fasta"
-    control_fasta.write_text(">control_s1\nGGGGCCCCAA\n")
-    return sample_fasta, control_fasta, sha256_file(sample_fasta), sha256_file(control_fasta)
+def _write_b2_checkpoint(
+    tmp_path: Path,
+    *,
+    name: str = "b2_manifest.json",
+    biological_ids: tuple[str, ...] = ("s1", "s2"),
+    representative_ids: tuple[str, ...] = ("s1",),
+    biological_bodies: dict[str, str] | None = None,
+    control_records: tuple[tuple[str, str], ...] = (("control_s1", "GGGGCCCCAA"),),
+    checkpoint: str = "001B-B2",
+    status: str = "passed",
+) -> dict:
+    """A tiny, self-consistent B2-shaped checkpoint: ``sample_ids.tsv`` plus
+    biological/control FASTAs, plus a manifest that names them (by
+    path/size/sha256) exactly the way the real
+    ``manifests/coordinate_sampling_b2.json`` does under
+    ``input_output_hashes.generated_artifacts``. Callers may pass mismatched
+    ``biological_bodies``/``control_records``/``representative_ids`` to
+    construct deliberately-drifted fixtures for the R1 regression tests.
+    """
+    biological_bodies = biological_bodies or {sid: "ACGTACGTAC" for sid in biological_ids}
+
+    sample_ids_tsv = tmp_path / f"{name}.sample_ids.tsv"
+    lines = ["sample_id\trow_index\tstratum\tlabels"]
+    for index, sid in enumerate(biological_ids):
+        stratum = "representative" if sid in representative_ids else "filler"
+        lines.append(f"{sid}\t{index}\t{stratum}\t1;0")
+    sample_ids_tsv.write_text("\n".join(lines) + "\n")
+
+    sample_fasta = tmp_path / f"{name}.sample_sequences.fasta"
+    sample_fasta.write_text("".join(f">{sid}\n{body}\n" for sid, body in biological_bodies.items()))
+
+    control_fasta = tmp_path / f"{name}.control_sequences.fasta"
+    control_fasta.write_text("".join(f">{cid}\n{body}\n" for cid, body in control_records))
+
+    manifest_path = tmp_path / name
+    manifest = {
+        "checkpoint": checkpoint,
+        "status": status,
+        "input_output_hashes": {
+            "generated_artifacts": {
+                "sample_ids_tsv": {
+                    "path": str(sample_ids_tsv),
+                    "sha256": sha256_file(sample_ids_tsv),
+                    "byte_size": sample_ids_tsv.stat().st_size,
+                },
+                "sample_sequences_fasta": {
+                    "path": str(sample_fasta),
+                    "sha256": sha256_file(sample_fasta),
+                    "byte_size": sample_fasta.stat().st_size,
+                },
+                "control_sequences_fasta": {
+                    "path": str(control_fasta),
+                    "sha256": sha256_file(control_fasta),
+                    "byte_size": control_fasta.stat().st_size,
+                },
+            }
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    return {
+        "manifest_path": manifest_path,
+        "manifest_sha256": sha256_file(manifest_path),
+        "sample_ids_tsv": sample_ids_tsv,
+        "sample_fasta": sample_fasta,
+        "control_fasta": control_fasta,
+    }
 
 
 def _bin_dir_with_fake_tools(tmp_path: Path) -> Path:
@@ -89,7 +151,7 @@ class ProbeStageFixture:
 
     def _build(self, tmp_path: Path):
         reference, manifest = _write_reference_and_manifest(tmp_path)
-        sample_fasta, control_fasta, sample_sha256, control_sha256 = _write_b2_fixtures(tmp_path)
+        b2 = _write_b2_checkpoint(tmp_path)
         bin_dir = _bin_dir_with_fake_tools(tmp_path)
         index_dir = tmp_path / "indices" / "hg38"
         env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -100,11 +162,12 @@ class ProbeStageFixture:
             )
         assert index_record["executed"], index_record
         return dict(
-            reference=reference, manifest=manifest, sample_fasta=sample_fasta, control_fasta=control_fasta,
-            sample_sha256=sample_sha256, control_sha256=control_sha256, bin_dir=bin_dir, index_record=index_record,
+            reference=reference, manifest=manifest, bin_dir=bin_dir, index_record=index_record,
+            b2_manifest_path=b2["manifest_path"], b2_manifest_sha256=b2["manifest_sha256"],
+            sample_ids_tsv=b2["sample_ids_tsv"], sample_fasta=b2["sample_fasta"], control_fasta=b2["control_fasta"],
         )
 
-    def _run_probe(self, ctx: dict, build_output_dir: Path, **overrides):
+    def _run_probe(self, ctx: dict, build_output_dir: Path, *, _mock_git: bool = True, **overrides):
         kwargs = dict(
             build="hg38",
             build_output_dir=build_output_dir,
@@ -114,16 +177,32 @@ class ProbeStageFixture:
             reference_manifest=ctx["manifest"],
             reference_manifest_raw_sha256=None,
             index_record=ctx["index_record"],
-            sample_fasta=ctx["sample_fasta"],
-            control_fasta=ctx["control_fasta"],
-            sample_fasta_expected_sha256=ctx["sample_sha256"],
-            control_fasta_expected_sha256=ctx["control_sha256"],
+            b2_manifest_path=ctx["b2_manifest_path"],
+            repo_root=Path("."),
+            b2_manifest_expected_sha256=ctx["b2_manifest_sha256"],
+            b2_manifest_expected_checkpoint="001B-B2",
+            b2_manifest_expected_status="passed",
+            b2_expected_biological_count=None,
+            b2_expected_control_count=None,
             dry_run=False,
             window_length=8,  # tiny fixture window, never the real 500 nt
         )
         kwargs.update(overrides)
         env = dict(os.environ, PATH=f"{ctx['bin_dir']}{os.pathsep}{os.environ.get('PATH', '')}")
-        with mock.patch.dict(os.environ, env), _approved_host_context():
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(os.environ, env))
+            stack.enter_context(_approved_host_context())
+            if _mock_git:
+                # B3A-R3 added a hard "resolved clean Git commit" gate before
+                # any real probe subprocess; these tests exercise every OTHER
+                # guard/behavior and must not depend on this repo's own
+                # working-tree state at test-run time. The two tests that
+                # specifically exercise the git gate itself pass
+                # ``_mock_git=False`` and apply their own explicit patches.
+                stack.enter_context(mock.patch("rbpbench.coordinates.runner.git_is_clean", return_value=True))
+                stack.enter_context(
+                    mock.patch("rbpbench.coordinates.runner.current_git_commit", return_value="0" * 40)
+                )
             return stage_probe(_cfg(), **kwargs)
 
 
@@ -166,6 +245,14 @@ class ProbeAuthorizationAndCheckpointTests(unittest.TestCase, ProbeStageFixture)
             self.assertTrue(Path(record["sam_paths"]["minimap2_splice"]).is_file())
             self.assertTrue(Path(record["bed_path"]).is_file())
             self.assertTrue((out_dir / "probe.json").is_file())
+            # B3A-R6: projection evidence is recorded and passes.
+            self.assertIn("projection", record)
+            self.assertTrue(record["projection"]["wall_time_gate_ok"])
+            self.assertTrue(record["projection"]["output_gate_ok"])
+            self.assertTrue(record["projection"]["memory_gate_ok"])
+            # B3A-R3: a resolved clean Git commit was bound.
+            self.assertIsNotNone(record["git_commit"])
+            self.assertTrue(record["git_clean"])
             # Never writes align.json/exact_match.json/report_state.json.
             self.assertFalse((out_dir / "align.json").exists())
             self.assertFalse((out_dir / "exact_match.json").exists())
@@ -224,35 +311,188 @@ class ProbeAuthorizationAndCheckpointTests(unittest.TestCase, ProbeStageFixture)
             generations_after = set((out_dir / "generations").glob("*"))
             self.assertEqual(generations_before, generations_after)
 
+    def test_dirty_git_tree_blocks_any_real_probe_subprocess(self):
+        """B3A-R3: a resolved clean Git commit is required before ANY real
+        probe subprocess -- a dirty tree must refuse before candidate work
+        even begins, never merely be recorded as evidence after the fact.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            out_dir = tmp_path / "out"
+            with mock.patch("rbpbench.coordinates.runner.git_is_clean", return_value=False), mock.patch(
+                "rbpbench.coordinates.runner.current_git_commit", return_value="0" * 40
+            ):
+                record = self._run_probe(ctx, out_dir, _mock_git=False)
+            self.assertFalse(record["executed"])
+            self.assertIn("clean Git commit", record["skip_reason"])
+            self.assertFalse((out_dir / "generations").exists())
+
+    def test_unresolved_git_commit_blocks_any_real_probe_subprocess(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            out_dir = tmp_path / "out"
+            with mock.patch("rbpbench.coordinates.runner.current_git_commit", return_value=None), mock.patch(
+                "rbpbench.coordinates.runner.git_is_clean", return_value=True
+            ):
+                record = self._run_probe(ctx, out_dir, _mock_git=False)
+            self.assertFalse(record["executed"])
+            self.assertIn("clean Git commit", record["skip_reason"])
+
+
+class ProbeB2CheckpointBindingTests(unittest.TestCase, ProbeStageFixture):
+    """B3A-R1: the real B2 checkpoint trust anchor -- these fail on the
+    pre-correction commit, which trusted free-form caller-supplied FASTA
+    hashes instead of the accepted, hash-verified B2 checkpoint manifest.
+    """
+
+    def test_missing_b2_manifest_path_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            record = self._run_probe(ctx, tmp_path / "out", b2_manifest_path=None)
+            self.assertFalse(record["executed"])
+            self.assertIn("B2 checkpoint manifest", record["skip_reason"])
+
+    def test_no_expected_manifest_hash_supplied_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            record = self._run_probe(ctx, tmp_path / "out", b2_manifest_expected_sha256=None)
+            self.assertFalse(record["executed"])
+
+    def test_manifest_not_matching_the_frozen_trust_anchor_is_refused(self):
+        """An arbitrary (internally self-consistent) manifest hash is never
+        accepted as the real CLI trust anchor -- only the exact expected
+        (frozen, accepted) hash is.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            record = self._run_probe(ctx, tmp_path / "out", b2_manifest_expected_sha256="0" * 64)
+            self.assertFalse(record["executed"])
+            self.assertIn("B2 checkpoint evidence", record["skip_reason"])
+
+    def test_wrong_checkpoint_identity_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            record = self._run_probe(ctx, tmp_path / "out", b2_manifest_expected_checkpoint="001B-B7")
+            self.assertFalse(record["executed"])
+
+    def test_wrong_status_identity_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            record = self._run_probe(ctx, tmp_path / "out", b2_manifest_expected_status="rejected")
+            self.assertFalse(record["executed"])
+
+    def test_drifted_generated_artifact_hash_is_refused(self):
+        """Malformed/drifted B2 manifest/artifact path/size/hash: the
+        biological FASTA on disk no longer matches what the manifest itself
+        recorded.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            ctx["sample_fasta"].write_text(">tampered\nAAAA\n")  # bytes changed since manifest hash was computed
+            record = self._run_probe(ctx, tmp_path / "out")
+            self.assertFalse(record["executed"])
+            self.assertIn("B2 checkpoint evidence", record["skip_reason"])
+
+    def test_missing_generated_artifact_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            ctx["control_fasta"].unlink()
+            record = self._run_probe(ctx, tmp_path / "out")
+            self.assertFalse(record["executed"])
+
+    def test_real_cli_population_count_other_than_frozen_is_refused(self):
+        """Real CLI mode must fail unless the population is exactly the
+        accepted count -- a tiny fixture's 2-biological/1-control population
+        must be refused once a specific expected count is enforced.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            record = self._run_probe(
+                ctx, tmp_path / "out", b2_expected_biological_count=10000, b2_expected_control_count=100,
+            )
+            self.assertFalse(record["executed"])
+            self.assertIn("B2 checkpoint evidence", record["skip_reason"])
+
+    def test_biological_id_mismatch_with_sample_ids_tsv_is_refused(self):
+        """The biological FASTA's own actual ID set must exactly equal the
+        independently hash-verified sample_ids.tsv's ID set -- a FASTA whose
+        headers were swapped for different (but still hash-consistent, since
+        we hash whatever bytes are actually on disk) IDs must be refused.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference, manifest = _write_reference_and_manifest(tmp_path)
+            b2 = _write_b2_checkpoint(
+                tmp_path,
+                biological_ids=("s1", "s2"),
+                representative_ids=("s1",),
+                biological_bodies={"sX": "ACGTACGTAC", "sY": "TTTTGGGGCC"},  # IDs don't match sample_ids.tsv
+            )
+            bin_dir = _bin_dir_with_fake_tools(tmp_path)
+            index_dir = tmp_path / "indices" / "hg38"
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                index_record = stage_index(
+                    _cfg(), build="hg38", index_dir=index_dir, allow_mapping=True, host_role="approved_mac",
+                    threads=1, reference=reference, reference_manifest=manifest, dry_run=False,
+                )
+            ctx = dict(
+                reference=reference, manifest=manifest, bin_dir=bin_dir, index_record=index_record,
+                b2_manifest_path=b2["manifest_path"], b2_manifest_sha256=b2["manifest_sha256"],
+                sample_fasta=b2["sample_fasta"], control_fasta=b2["control_fasta"],
+            )
+            record = self._run_probe(ctx, tmp_path / "out")
+            self.assertFalse(record["executed"])
+            self.assertIn("biological ID set does not exactly equal", record["skip_reason"])
+
+    def test_control_id_set_mismatch_is_refused(self):
+        """The control FASTA's actual ID set must match the accepted
+        first-N-sorted-representative-IDs derivation from sample_ids.tsv --
+        an unrelated control ID must be refused as a control-ID-set
+        mismatch, not silently accepted merely because its bytes hash-match
+        the manifest's own recorded value.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference, manifest = _write_reference_and_manifest(tmp_path)
+            b2 = _write_b2_checkpoint(
+                tmp_path,
+                biological_ids=("s1", "s2"),
+                representative_ids=("s1",),
+                control_records=(("control_UNRELATED", "GGGGCCCCAA"),),
+            )
+            bin_dir = _bin_dir_with_fake_tools(tmp_path)
+            index_dir = tmp_path / "indices" / "hg38"
+            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+            with mock.patch.dict(os.environ, env), _approved_host_context():
+                index_record = stage_index(
+                    _cfg(), build="hg38", index_dir=index_dir, allow_mapping=True, host_role="approved_mac",
+                    threads=1, reference=reference, reference_manifest=manifest, dry_run=False,
+                )
+            ctx = dict(
+                reference=reference, manifest=manifest, bin_dir=bin_dir, index_record=index_record,
+                b2_manifest_path=b2["manifest_path"], b2_manifest_sha256=b2["manifest_sha256"],
+                sample_fasta=b2["sample_fasta"], control_fasta=b2["control_fasta"],
+            )
+            record = self._run_probe(ctx, tmp_path / "out")
+            self.assertFalse(record["executed"])
+            self.assertIn("B2 checkpoint evidence", record["skip_reason"])
+
 
 class ProbeInputBindingTests(unittest.TestCase, ProbeStageFixture):
     """Item 8: missing/changed B2 inputs, invalid reference manifest,
     missing/foreign/stale/changed index generation.
     """
-
-    def test_missing_sample_fasta_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            ctx = self._build(tmp_path)
-            record = self._run_probe(ctx, tmp_path / "out", sample_fasta=None)
-            self.assertFalse(record["executed"])
-            self.assertIn("biological", record["skip_reason"])
-
-    def test_changed_sample_fasta_hash_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            ctx = self._build(tmp_path)
-            ctx["sample_fasta"].write_text(">tampered\nAAAA\n")  # bytes changed since sha256 was computed
-            record = self._run_probe(ctx, tmp_path / "out")
-            self.assertFalse(record["executed"])
-            self.assertIn("B2 evidence", record["skip_reason"])
-
-    def test_no_expected_b2_hash_supplied_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            ctx = self._build(tmp_path)
-            record = self._run_probe(ctx, tmp_path / "out", sample_fasta_expected_sha256=None)
-            self.assertFalse(record["executed"])
 
     def test_invalid_reference_manifest_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -273,6 +513,55 @@ class ProbeInputBindingTests(unittest.TestCase, ProbeStageFixture):
             self.assertFalse(record["executed"])
             self.assertIn("contig_lengths", record["skip_reason"])
 
+    def _build_with_manifest(self, tmp_path: Path, manifest: dict, reference: Path):
+        """Like ``_build``, but binds the accepted index to a CALLER-SUPPLIED
+        (possibly deliberately inconsistent) reference manifest from the
+        start, so the index-binding checks agree with it and a later
+        ``contig_lengths``-specific violation is isolated rather than masked
+        by an (also true, but different) index-binding mismatch.
+        """
+        b2 = _write_b2_checkpoint(tmp_path)
+        bin_dir = _bin_dir_with_fake_tools(tmp_path)
+        index_dir = tmp_path / "indices" / "hg38"
+        env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+        with mock.patch.dict(os.environ, env), _approved_host_context():
+            index_record = stage_index(
+                _cfg(), build="hg38", index_dir=index_dir, allow_mapping=True, host_role="approved_mac",
+                threads=1, reference=reference, reference_manifest=manifest, dry_run=False,
+            )
+        assert index_record["executed"], index_record
+        return dict(
+            reference=reference, manifest=manifest, bin_dir=bin_dir, index_record=index_record,
+            b2_manifest_path=b2["manifest_path"], b2_manifest_sha256=b2["manifest_sha256"],
+            sample_fasta=b2["sample_fasta"], control_fasta=b2["control_fasta"],
+        )
+
+    def test_contig_lengths_total_mismatch_against_real_reference_is_refused(self):
+        """B3A-R2: full contig_lengths validation (total-base agreement)
+        against an independently-streamed count of the CURRENT reference
+        file -- a hand-edited contig_lengths total (that never touched the
+        reference's own sha256/byte_size) must still be caught, BEFORE the
+        largest contig is ever selected.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference, manifest = _write_reference_and_manifest(tmp_path)
+            manifest["contig_lengths"] = {"chr1": 999, "chr2": 20}  # chr1 real length is 80
+            ctx = self._build_with_manifest(tmp_path, manifest, reference)
+            record = self._run_probe(ctx, tmp_path / "out")
+            self.assertFalse(record["executed"])
+            self.assertIn("contig_lengths validation failed", record["skip_reason"])
+
+    def test_contig_lengths_key_mismatch_against_contigs_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference, manifest = _write_reference_and_manifest(tmp_path)
+            manifest["contig_lengths"] = {"chr1": 80, "chrGHOST": 20}
+            ctx = self._build_with_manifest(tmp_path, manifest, reference)
+            record = self._run_probe(ctx, tmp_path / "out")
+            self.assertFalse(record["executed"])
+            self.assertIn("contig_lengths validation failed", record["skip_reason"])
+
     def test_missing_index_record_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -282,15 +571,21 @@ class ProbeInputBindingTests(unittest.TestCase, ProbeStageFixture):
             self.assertIn("index generation", record["skip_reason"])
 
     def test_stale_index_bound_to_a_different_reference_is_refused(self):
-        """Foreign/stale index: the accepted index.json claims a different
-        reference_sha256 than the one this probe attempt is about to use.
+        """Foreign/stale index: the accepted index MANIFEST FILE itself
+        (the authoritative binding source B3A-R2's
+        :func:`rbpbench.coordinates.indexing.verify_index_binding` reads --
+        never merely a copied-over scalar on the in-memory ``index_record``
+        dict) claims a different ``reference_sha256`` than the one this
+        probe attempt is about to use.
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             ctx = self._build(tmp_path)
-            foreign_index_record = dict(ctx["index_record"])
-            foreign_index_record["reference_sha256"] = "f" * 64
-            record = self._run_probe(ctx, tmp_path / "out", index_record=foreign_index_record)
+            manifest_path = Path(ctx["index_record"]["index_manifest_path"])
+            index_manifest = json.loads(manifest_path.read_text())
+            index_manifest["reference_sha256"] = "f" * 64
+            manifest_path.write_text(json.dumps(index_manifest))
+            record = self._run_probe(ctx, tmp_path / "out")
             self.assertFalse(record["executed"])
             self.assertIn("index generation", record["skip_reason"])
 
@@ -300,6 +595,55 @@ class ProbeInputBindingTests(unittest.TestCase, ProbeStageFixture):
             ctx = self._build(tmp_path)
             bwa_prefix = Path(ctx["index_record"]["bwa_index_prefix"])
             Path(str(bwa_prefix) + ".amb").write_bytes(b"tampered bytes, wrong hash now")
+            record = self._run_probe(ctx, tmp_path / "out")
+            self.assertFalse(record["executed"])
+            self.assertIn("index generation", record["skip_reason"])
+
+    def test_index_manifest_wrong_build_is_refused(self):
+        """B3A-R2: full index-manifest binding -- the index-manifest's own
+        declared ``build`` must match, not merely its per-file hashes.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            manifest_path = Path(ctx["index_record"]["index_manifest_path"])
+            index_manifest = json.loads(manifest_path.read_text())
+            index_manifest["build"] = "hg19"  # wrong build recorded
+            manifest_path.write_text(json.dumps(index_manifest))
+            record = self._run_probe(ctx, tmp_path / "out")
+            self.assertFalse(record["executed"])
+            self.assertIn("index generation", record["skip_reason"])
+
+    def test_index_manifest_raw_reference_manifest_hash_mismatch_is_refused(self):
+        """B3A-R2: the index manifest's recorded
+        ``reference_manifest_raw_sha256`` must match the CURRENT raw
+        reference-manifest hash this probe run declares.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            manifest_path = Path(ctx["index_record"]["index_manifest_path"])
+            index_manifest = json.loads(manifest_path.read_text())
+            index_manifest["reference_manifest_raw_sha256"] = "a" * 64
+            manifest_path.write_text(json.dumps(index_manifest))
+            record = self._run_probe(ctx, tmp_path / "out", reference_manifest_raw_sha256="b" * 64)
+            self.assertFalse(record["executed"])
+            self.assertIn("index generation", record["skip_reason"])
+
+    def test_recomputed_index_generation_digest_mismatch_is_refused(self):
+        """B3A-R2: the CURRENT index-manifest content digest must still
+        equal the ``generation_digest`` the accepted ``index.json`` itself
+        recorded -- a manifest silently edited (bytes changed but every
+        individual per-file hash check still trivially passes because the
+        edited field is unrelated to file hashes) must be refused.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            manifest_path = Path(ctx["index_record"]["index_manifest_path"])
+            index_manifest = json.loads(manifest_path.read_text())
+            index_manifest["extra_unexpected_field"] = "mutated"
+            manifest_path.write_text(json.dumps(index_manifest))
             record = self._run_probe(ctx, tmp_path / "out")
             self.assertFalse(record["executed"])
             self.assertIn("index generation", record["skip_reason"])
@@ -403,6 +747,32 @@ class ProbeBudgetAndRetentionTests(unittest.TestCase, ProbeStageFixture):
             self.assertEqual(shared_budget.remaining_bytes, remaining_before - record["accepted_bytes"])
             self.assertGreater(shared_budget.remaining_bytes, 0)  # still >=3 GiB left for B4
 
+    def test_live_tool_cap_is_the_smaller_of_probe_share_and_shared_build_budget(self):
+        """B3A-R5: each tool's live output cap must be the SMALLER of the
+        probe's own remaining 1-GiB share and the shared 4-GiB build
+        budget's remaining bytes -- an already-nearly-exhausted shared
+        budget must cap the probe's tools tighter than its own 1-GiB share
+        would alone, refusing before the ceiling is actually crossed (the
+        live cap kills the writer, raising ``DiskBudgetExceeded`` -- the
+        same fail-closed shape every other guarded stage uses for a
+        mid-write budget breach).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            out_dir = tmp_path / "out"
+            # A shared build budget that already has almost nothing left --
+            # far tighter than the probe's own 1-GiB share.
+            nearly_exhausted_budget = start_build_output_budget(total_allowance_gib=4.0)
+            nearly_exhausted_budget.accept(int(4.0 * 1024**3) - 5)  # only 5 bytes remain
+            from rbpbench.coordinates.diskbudget import DiskBudgetExceeded
+
+            with self.assertRaises(DiskBudgetExceeded):
+                self._run_probe(ctx, out_dir, build_budget=nearly_exhausted_budget)
+            # The failed candidate generation was discarded -- no generation
+            # directory survives this refused attempt.
+            self.assertEqual(list((out_dir / "generations").glob("*")), [])
+
     def test_candidate_workspace_is_removed_but_selected_evidence_is_retained(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -415,6 +785,41 @@ class ProbeBudgetAndRetentionTests(unittest.TestCase, ProbeStageFixture):
             self.assertTrue(Path(record["sam_paths"]["bwa_mem"]).is_file())
             self.assertTrue(Path(record["sam_paths"]["minimap2_splice"]).is_file())
             self.assertTrue(Path(record["bed_path"]).is_file())
+
+    def test_failed_candidate_cleanup_discards_the_whole_generation(self):
+        """B3A-R4: fail closed if candidate cleanup is not complete -- a
+        real tool output must never be promoted while the ephemeral
+        candidate workspace silently failed to be removed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            out_dir = tmp_path / "out"
+            with mock.patch("rbpbench.coordinates.runner.shutil.rmtree"):
+                record = self._run_probe(ctx, out_dir)
+            self.assertFalse(record["executed"])
+            self.assertIn("cleanup did not complete", record["skip_reason"])
+
+    def test_stderr_evidence_mutated_after_acceptance_invalidates_restart_skip(self):
+        """B3A-R4: ALL SIX retained files (including stderr) are protected
+        -- a mutated minimap2 stderr log must be caught by
+        ``_verify_probe_evidence_hashes``, the same way a mutated SAM/BED
+        file already is.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ctx = self._build(tmp_path)
+            out_dir = tmp_path / "out"
+            record = self._run_probe(ctx, out_dir)
+            self.assertTrue(record["executed"])
+
+            from rbpbench.coordinates.runner import _verify_probe_evidence_hashes
+
+            self.assertEqual(_verify_probe_evidence_hashes(record), ())
+            Path(record["stderr_paths"]["minimap2_splice"]).write_text("tampered stderr content")
+            violations = _verify_probe_evidence_hashes(record)
+            self.assertTrue(violations)
+            self.assertTrue(any("stderr" in v for v in violations))
 
     def test_probe_evidence_is_kept_distinct_from_align_state(self):
         """provenance/record separation: probe.json is never merged into or

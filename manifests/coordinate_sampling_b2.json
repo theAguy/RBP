@@ -1,0 +1,239 @@
+{
+  "checkpoint": "001B-B2",
+  "status": "passed",
+  "git": {
+    "branch": "issue-001b-coordinate-execution",
+    "execution_head_commit": "d140b6edbcdf3fe8a4539c8d2323c20d54ac136c",
+    "accepted_implementation_commit": "512d15a",
+    "b1_acceptance_commit": "31c57cd",
+    "origin": "https://github.com/theAguy/RBP.git",
+    "worktree_clean_before_execution": true
+  },
+  "environment": {
+    "conda_env": "rbpbench-coord-001b",
+    "python_version": "3.11.16"
+  },
+  "command": {
+    "argv": [
+      "python",
+      "-m",
+      "rbpbench.coordinates.runner",
+      "--config",
+      "configs/coordinate_feasibility.toml",
+      "--csv",
+      "dataset_K562_multilabel_with_NEGs.csv",
+      "--execution-sources",
+      "configs/coordinate_execution_sources.toml",
+      "--dataset-audit",
+      "manifests/dataset_audit.json",
+      "--proteins-config",
+      "configs/proteins.tsv",
+      "--output-dir",
+      "artifacts/coordinate_feasibility",
+      "--stage",
+      "sample",
+      "--stage",
+      "decode",
+      "--stage",
+      "controls"
+    ],
+    "exit_status": 0
+  },
+  "timing": {
+    "start_utc": "2026-09-24T08:05:42Z",
+    "end_utc": "2026-09-24T08:06:29Z",
+    "elapsed_seconds_wall_time_tool_report": 46.37,
+    "elapsed_seconds_user_time": 38.27,
+    "elapsed_seconds_sys_time": 5.46
+  },
+  "host": {
+    "os": "Darwin 23.4.0 (macOS 14.4.1, build 23E224)",
+    "architecture": "x86_64",
+    "hostname": "GuyA.local",
+    "ram_bytes_total": 17179869184,
+    "ram_snapshot_before": {
+      "pages_free": 312123,
+      "pages_active": 1274749,
+      "pages_inactive": 1265634,
+      "pages_wired_down": 1093104,
+      "page_size_bytes": 4096
+    },
+    "ram_snapshot_after": {
+      "pages_free": 173204,
+      "pages_active": 1428731,
+      "pages_inactive": 1438898,
+      "pages_wired_down": 1083700,
+      "page_size_bytes": 4096
+    },
+    "df_before": {
+      "filesystem": "/dev/disk1s2",
+      "mount": "/System/Volumes/Data",
+      "size_gib": 931,
+      "used_gib": 752,
+      "available_gib": 149
+    },
+    "df_after": {
+      "filesystem": "/dev/disk1s2",
+      "mount": "/System/Volumes/Data",
+      "size_gib": 931,
+      "used_gib": 752,
+      "available_gib": 150
+    },
+    "filesystem_identity": {
+      "volume_name": "Macintosh HD",
+      "volume_uuid": "59E274A1-2F59-4D41-85BE-858FCA330138",
+      "file_system": "APFS"
+    },
+    "repo_disk_usage_before": "1.1G",
+    "repo_disk_usage_after": "1.1G"
+  },
+  "resource_usage": {
+    "peak_rss_bytes": 844484608,
+    "peak_memory_footprint_bytes": 1215823872,
+    "source": "/usr/bin/time -l"
+  },
+  "input_output_hashes": {
+    "execution_source_spec": {
+      "path": "configs/coordinate_execution_sources.toml",
+      "sha256": "ab64ea164dca5848f70a42d86da20793a811a37a3265aa7da987c2b2b3c4d72b",
+      "byte_size": 3168
+    },
+    "frozen_inputs": {
+      "dataset_csv": {
+        "path": "dataset_K562_multilabel_with_NEGs.csv",
+        "sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945",
+        "byte_size": 724425277
+      },
+      "dataset_audit": {
+        "path": "manifests/dataset_audit.json",
+        "sha256": "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c",
+        "byte_size": 27550
+      },
+      "proteins_config": {
+        "path": "configs/proteins.tsv",
+        "sha256": "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9",
+        "byte_size": 1143
+      },
+      "study_config": {
+        "path": "configs/coordinate_feasibility.toml",
+        "sha256": "91c88168225648d16835f0a0d322dcb0317ce9baaa4a4a8bdb4907f917b4ec5c",
+        "byte_size": 1932
+      }
+    },
+    "generated_artifacts": {
+      "sample_ids_tsv": {
+        "path": "artifacts/coordinate_feasibility/sample_ids.tsv",
+        "sha256": "17b7f98dd2db22422c1140f918bf86e58c24644b1f82741887dd54897d578896",
+        "byte_size": 320732
+      },
+      "sample_state_json": {
+        "path": "artifacts/coordinate_feasibility/sample_state.json",
+        "sha256": "16b91ca51470140966332020044861d5cfd0b9d43bdbe24a4b030d2c0a4e54eb",
+        "byte_size": 1591701
+      },
+      "sample_sequences_fasta": {
+        "path": "artifacts/coordinate_feasibility/sample_sequences.fasta",
+        "sha256": "337bb9d76e61e4eb2ed1eb87a2f847e9c61a80928936957a81f9e6cff7b4c3d1",
+        "byte_size": 5126981
+      },
+      "control_sequences_fasta": {
+        "path": "artifacts/coordinate_feasibility/control_sequences.fasta",
+        "sha256": "770139ac26de540ffb71487009ea73678c5c61bab6796bf5224c8fbd2ed02673",
+        "byte_size": 52086
+      },
+      "state_json": {
+        "path": "artifacts/coordinate_feasibility/state.json",
+        "sha256": "77e5f46a17f5ca69ab2346a3b27a06c5cd0fd627ff15ee14addb27e369500146",
+        "byte_size": 379
+      },
+      "provenance_json": {
+        "path": "artifacts/coordinate_feasibility/provenance.json",
+        "sha256": "cacc0246e70da3016919f31f2dd4a2b3d71a7efb77aa79d38535842acce81eda",
+        "byte_size": 3684
+      }
+    },
+    "captured_logs": {
+      "stdout_log": {
+        "path": "/private/tmp/claude-501/-Users-guyassa-Desktop-Technion-courses-winter-2026-bioinformatics/30383258-e89e-44f4-8038-523a1a3ff805/scratchpad/b2_run/stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byte_size": 0
+      },
+      "stderr_and_time_report_log": {
+        "path": "/private/tmp/claude-501/-Users-guyassa-Desktop-Technion-courses-winter-2026-bioinformatics/30383258-e89e-44f4-8038-523a1a3ff805/scratchpad/b2_run/stderr_time.log",
+        "sha256": "b486feae702ba5d40a9d66d626e3b493dd90452ac2cef9cc0e6d5dfbd7df880a",
+        "byte_size": 777
+      }
+    }
+  },
+  "sampling_reconciliation": {
+    "total_biological_assignments": 10000,
+    "unique_biological_assignments": 10000,
+    "representative_count": 5000,
+    "quota_count": 626,
+    "filler_count": 4374,
+    "representative_quota_filler_pairwise_disjoint": true,
+    "representative_quota_filler_sum_equals_total": true,
+    "sample_state_and_sample_ids_tsv_agree_exactly": true,
+    "num_proteins_checked": 122,
+    "min_known_positive_count_across_proteins": 25,
+    "min_known_negative_count_across_proteins": 23,
+    "all_proteins_meet_min_20_positive_and_20_negative": true,
+    "any_quota_unsatisfied": false
+  },
+  "decode_round_trip_reconciliation": {
+    "fasta_record_count": 10000,
+    "fasta_unique_ids": 10000,
+    "fasta_ids_equal_sample_ids_tsv_ids": true,
+    "all_sequences_length_500nt": true,
+    "all_sequences_alphabet_ACGT_only": true,
+    "all_sequences_reencode_to_source_csv_bitstring": true,
+    "csv_read_method": "streamed row-by-row; no second decoded copy retained",
+    "mismatches": 0
+  },
+  "control_reconciliation": {
+    "control_record_count": 100,
+    "control_unique_ids": 100,
+    "control_ids_tied_to_first_100_sorted_representative_ids": true,
+    "all_controls_length_500nt": true,
+    "all_controls_alphabet_ACGT_only": true,
+    "all_controls_differ_from_paired_biological_sequence": true,
+    "all_controls_dinucleotide_counts_match_paired_biological_sequence": true,
+    "all_100_controls_pairwise_distinct": true,
+    "pairwise_collisions_found": 0
+  },
+  "state_json_check": {
+    "completed_stages": [
+      "sample",
+      "decode",
+      "controls"
+    ],
+    "no_mapping_index_download_derive_report_stage_executed": true
+  },
+  "provenance_json_check": {
+    "four_frozen_input_hashes_match_execution_source_spec": true,
+    "generated_artifact_hashes_match_disk": true,
+    "no_reference_index_alignment_exact_match_or_report_artifact_recorded_as_executed": true,
+    "note": "provenance.json's per-build download/derive/index/align/exact_match sections all show executed=false. The index.json skip_reason text referencing '--dry-run' for hg38/hg19 reflects pre-existing indices/<build>/index.json records already present on disk before this B2 invocation started (file mtimes ~10:44 local, prior to this run's 11:05 local start), left over from earlier B1 fixture/dry-run testing that used the default indices/ path. This B2 invocation did not pass --dry-run, did not run the index/derive/download/align/exact_match stages, and did not create or modify any file under indices/ or references/; those directories' contents are unchanged by this run and remain git-ignored."
+  },
+  "no_prohibited_action_occurred": {
+    "network_request_made": false,
+    "reference_downloaded": false,
+    "genome_index_built": false,
+    "mapper_binary_invoked": false,
+    "bwa_invoked": false,
+    "minimap2_invoked": false,
+    "seqkit_invoked": false,
+    "report_stage_run": false,
+    "combined_report_stage_run": false,
+    "cleanup_run": false,
+    "code_tests_or_config_changed": false,
+    "indices_or_references_directories_modified_by_this_run": false
+  },
+  "disk": {
+    "free_disk_gib_before": 149,
+    "free_disk_gib_after": 150,
+    "min_free_disk_gib_required": 80,
+    "observed_new_bytes_artifacts_dir": 7095563
+  },
+  "next_action": "Reviewer acceptance of Task 001B checkpoint B2 (sample/control manifest and count reconciliation) is required before checkpoint B3 (hg38 preparation) may begin."
+}

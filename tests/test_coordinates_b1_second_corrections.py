@@ -650,6 +650,17 @@ class C4CleanupPinningTests(unittest.TestCase):
             self.assertTrue(index_dir.exists())
 
     def test_altered_report_after_provenance_recorded_is_refused(self):
+        """B1 acceptance correction
+        (docs/reviews/001b_b1_final_correction_review.md): cleanup now reads
+        ``reconciliation.status`` from the SELECTED report_state.json
+        generation, never the human-convenience fixed-path report.json
+        mirror -- so a mirror whose reconciliation status disagrees with the
+        selected (accepted) generation must be irrelevant, while the
+        SELECTED generation's own status is still what decides. This is the
+        precise B1-1138022 defect: the pre-correction cleanup read
+        ``reconciliation_passed`` directly off the fixed-path mirror, not
+        via the selected generation.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _git_init(tmp_path)
@@ -660,16 +671,59 @@ class C4CleanupPinningTests(unittest.TestCase):
 
             from test_coordinates_runner_b1 import _write_realistic_cleanup_evidence
 
-            _write_realistic_cleanup_evidence(
+            paths = _write_realistic_cleanup_evidence(
                 output_dir=output_dir,
                 index_dir=index_dir,
                 build="hg38",
                 reconciliation_status="passed",
                 derived_dir=derived_dir,
             )
-            # The report still says "passed", but its bytes were altered
-            # after provenance.json recorded its hash.
-            (output_dir / "hg38" / "report.json").write_text(
+            # The SELECTED generation still says "passed" (untouched); only
+            # the MIRROR's reconciliation status was changed to "failed"
+            # after provenance.json recorded the selected generation's hash
+            # -- the mirror is irrelevant, so cleanup must still proceed.
+            paths["mirror_report_json_path"].write_text(json.dumps({"reconciliation": {"status": "failed"}}))
+
+            main(
+                [
+                    "--config", str(FIXTURE_CONFIG),
+                    "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
+                    "--output-dir", str(output_dir),
+                    "--indices-dir", str(indices_dir),
+                    "--derived-dir", str(derived_dir),
+                    "--repo-root", str(tmp_path),
+                    "--cleanup-index", "hg38",
+                ]
+            )  # must not raise: the tampered mirror is irrelevant
+            self.assertFalse(index_dir.exists())
+
+    def test_altered_selected_report_generation_is_refused(self):
+        """The counterpart of the above: tampering the SELECTED
+        report_state.json generation itself (never touching the mirror)
+        must still refuse cleanup.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _git_init(tmp_path)
+            output_dir = tmp_path / "out"
+            indices_dir = tmp_path / "indices"
+            index_dir = indices_dir / "hg38"
+            derived_dir = tmp_path / "derived"
+
+            from test_coordinates_runner_b1 import _write_realistic_cleanup_evidence
+
+            paths = _write_realistic_cleanup_evidence(
+                output_dir=output_dir,
+                index_dir=index_dir,
+                build="hg38",
+                reconciliation_status="passed",
+                derived_dir=derived_dir,
+            )
+            # The SELECTED generation's report.json was altered after
+            # report_state.json/provenance.json recorded its hash; the
+            # mirror is untouched.
+            paths["report_json_path"].write_text(
                 json.dumps({"reconciliation": {"status": "passed"}, "tampered": True})
             )
 

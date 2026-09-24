@@ -11,7 +11,8 @@ from unittest import mock
 
 from rbpbench.coordinates.alignment import build_candidate_loci, parse_sam_line
 from rbpbench.coordinates.config import load_config
-from rbpbench.coordinates.runner import _locus_detail, build_mapping_rows, main, stage_combined_report
+from rbpbench.coordinates.manifest import manifest_content_sha256
+from rbpbench.coordinates.runner import _locus_detail, build_mapping_rows, main, stage_combined_report, stage_report
 from rbpbench.coordinates.sampling import SamplingResult
 from rbpbench.data.audit import sha256_file
 
@@ -1198,6 +1199,15 @@ class CombinedReportBlocksOnFailedReconciliationTests(unittest.TestCase):
     (never silently finalize) when any evaluated per-build reconciliation
     failed, rather than laundering an internally-inconsistent per-build
     report into a combined report that looks trustworthy.
+
+    B1 acceptance correction (docs/reviews/001b_b1_final_correction_review.md):
+    stage_report itself already refuses to promote a failed reconciliation to
+    report_state.json (B1-F2), so a genuinely failed build can never leave a
+    hash-verified accepted report_state.json behind. combined_report (now
+    reading only the selected report_state.json generation, never the
+    fixed-path report.json mirror) therefore observes a failed build as "no
+    valid accepted report exists yet" and must still stop -- via that
+    corrected fail-closed path, not by reading a hand-written mirror file.
     """
 
     def _empty_sample(self) -> SamplingResult:
@@ -1212,23 +1222,53 @@ class CombinedReportBlocksOnFailedReconciliationTests(unittest.TestCase):
     def test_failed_build_reconciliation_stops_combined_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
-            (output_dir / "hg38").mkdir()
-            (output_dir / "hg38" / "report.json").write_text(
-                json.dumps(
-                    {
-                        "reconciliation": {
-                            "status": "failed",
-                            "passed": False,
-                            "issues": [{"check": "sample_total", "detail": "mismatch"}],
-                        }
-                    }
-                )
+            build_dir = output_dir / "hg38"
+            reference = output_dir / "reference.fasta"
+            reference.write_text(">chr1\n" + "A" * 20 + "\n")
+            manifest = json.loads(
+                _write_reference_manifest(output_dir / "manifest.json", build="hg38", reference=reference).read_text()
             )
-
+            bwa_sam = output_dir / "align_bwa_mem.sam"
+            mm2_sam = output_dir / "align_minimap2_splice.sam"
+            bed = output_dir / "exact_match_hits.bed"
+            bwa_sam.write_text("")
+            mm2_sam.write_text("")
+            bed.write_text("")
+            align_record = {
+                "executed": True,
+                "reference_sha256": manifest["sha256"],
+                "reference_manifest_content_sha256": manifest_content_sha256(manifest),
+                "sam_paths": {"bwa_mem": str(bwa_sam), "minimap2_splice": str(mm2_sam)},
+            }
+            exact_match_record = {
+                "executed": True,
+                "reference_sha256": manifest["sha256"],
+                "reference_manifest_content_sha256": manifest_content_sha256(manifest),
+                "bed_path": str(bed),
+            }
             cfg = load_config(FIXTURE_CONFIG)
+            # A deliberately mismatched expected_total makes an EVALUATED
+            # reconciliation genuinely fail; stage_report discards the
+            # candidate generation and never writes report_state.json.
+            build_report_payload = stage_report(
+                self._empty_sample(),
+                cfg=cfg,
+                build_output_dir=build_dir,
+                expected_total=999,
+                expected_representative=1,
+                expected_controls=0,
+                build="hg38",
+                align_record=align_record,
+                exact_match_record=exact_match_record,
+                reference=reference,
+                reference_manifest=manifest,
+            )
+            self.assertEqual(build_report_payload["reconciliation"]["status"], "failed")
+            self.assertFalse((build_dir / "report_state.json").exists())
+
             with self.assertRaises(SystemExit) as ctx:
                 stage_combined_report(self._empty_sample(), cfg=cfg, output_dir=output_dir, builds=("hg38",))
-            self.assertIn("reconciliation failed", str(ctx.exception))
+            self.assertIn("report_state.json", str(ctx.exception))
             # No top-level combined report was written as a side effect of
             # the failed attempt (only the per-build report.json exists).
             self.assertFalse((output_dir / "report.json").exists())
@@ -1238,12 +1278,22 @@ class CombinedReportBlocksOnFailedReconciliationTests(unittest.TestCase):
         # same as a "failed" one and must not block finalization.
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
-            (output_dir / "hg38").mkdir()
-            (output_dir / "hg38" / "report.json").write_text(
-                json.dumps({"reconciliation": {"status": "not_evaluated", "passed": False, "issues": []}})
+            build_dir = output_dir / "hg38"
+            cfg = load_config(FIXTURE_CONFIG)
+            stage_report(
+                self._empty_sample(),
+                cfg=cfg,
+                build_output_dir=build_dir,
+                expected_total=0,
+                expected_representative=0,
+                expected_controls=0,
+                build="hg38",
+                align_record={"executed": False},
+                exact_match_record={"executed": False},
+                reference=None,
+                reference_manifest=None,
             )
 
-            cfg = load_config(FIXTURE_CONFIG)
             combined = stage_combined_report(self._empty_sample(), cfg=cfg, output_dir=output_dir, builds=("hg38",))
             self.assertFalse(combined["per_build"]["hg38"]["mapping_evaluated"])
 

@@ -400,7 +400,7 @@ class DiskBudgetWiringTests(unittest.TestCase):
 
 def _write_realistic_cleanup_evidence(
     *, output_dir: Path, index_dir: Path, build: str, reconciliation_status: str, derived_dir: Path | None = None
-):
+) -> dict:
     """B1-C4/F6: cleanup now verifies actual artifact hashes (index files via
     ``index.json``'s own recorded manifest path, mapping outputs, and the
     accepted report/provenance/report-Markdown hashes), never merely the
@@ -409,6 +409,17 @@ def _write_realistic_cleanup_evidence(
     valid, executed, hash-verified ``derive.json`` (B1-F6) is now also
     mandatory before cleanup proceeds at all; ``derived_dir``, when given,
     receives one pointing at a real reference file.
+
+    B1 acceptance correction: the accepted report/Markdown/mappings evidence
+    now lives at a SELECTED ``report_state.json`` generation (exactly the
+    shape ``stage_report`` itself produces), never merely at the fixed-path
+    mirror filenames — cleanup (and provenance) treat that generation as the
+    sole ground truth. The conventional fixed-path mirrors are also written,
+    matching content, for realism and for tests that specifically probe
+    "mirrors are irrelevant" behavior. Returns a dict of the key paths
+    (``report_state_path``, the selected ``report_json_path``/
+    ``report_md_path``/``mappings_tsv_gz_path``, and the mirror
+    equivalents) so callers can target tampering precisely.
     """
     build_dir = output_dir / build
     index_dir.mkdir(parents=True)
@@ -489,16 +500,49 @@ def _write_realistic_cleanup_evidence(
             }
         )
     )
-    report_path = build_dir / "report.json"
+    # B1 acceptance correction: the SELECTED generation -- report_state.json
+    # is the sole ground truth cleanup/provenance now read from. It lives
+    # under generations/, exactly as stage_report itself writes it.
+    generation_dir = build_dir / "generations" / "report_fixture"
+    generation_dir.mkdir(parents=True)
+    report_path = generation_dir / "report.json"
     report_path.write_text(json.dumps({"reconciliation": {"status": reconciliation_status}}))
-    report_md_path = build_dir / "report.md"
+    report_md_path = generation_dir / "report.md"
     report_md_path.write_text("# report\n")
-    mappings_path = build_dir / "mappings.tsv.gz"
+    mappings_path = generation_dir / "mappings.tsv.gz"
     mappings_path.write_bytes(b"fake mappings gz bytes")
+
+    report_state = {
+        "executed": True,
+        "generation_dir": str(generation_dir),
+        "report_json_path": str(report_path),
+        "report_json_sha256": sha256_file(report_path),
+        "report_md_path": str(report_md_path),
+        "report_md_sha256": sha256_file(report_md_path),
+        "mappings_tsv_gz_path": str(mappings_path),
+        "mappings_tsv_gz_sha256": sha256_file(mappings_path),
+        "reference_index_path": None,
+        "reference_index_sha256": None,
+        "reconciliation_status": reconciliation_status,
+        "upstream_align_generation_digest": None,
+        "upstream_exact_match_generation_digest": None,
+    }
+    report_state_path = build_dir / "report_state.json"
+    report_state_path.write_text(json.dumps(report_state))
+
+    # Human-convenience fixed-path mirrors: matching content, but never
+    # consulted by cleanup/provenance any more (B1 acceptance correction).
+    mirror_report_path = build_dir / "report.json"
+    mirror_report_path.write_text(report_path.read_text())
+    mirror_report_md_path = build_dir / "report.md"
+    mirror_report_md_path.write_text(report_md_path.read_text())
+    mirror_mappings_path = build_dir / "mappings.tsv.gz"
+    mirror_mappings_path.write_bytes(mappings_path.read_bytes())
 
     # B1-C4/F6: cleanup also verifies the accepted report/report-Markdown/
     # mappings hashes against provenance.json, never a bare
-    # reconciliation-status string.
+    # reconciliation-status string. provenance.json must identify the exact
+    # SELECTED generation's paths/hashes, not the mirrors.
     (output_dir / "provenance.json").write_text(
         json.dumps(
             {
@@ -514,6 +558,16 @@ def _write_realistic_cleanup_evidence(
             }
         )
     )
+
+    return {
+        "report_state_path": report_state_path,
+        "report_json_path": report_path,
+        "report_md_path": report_md_path,
+        "mappings_tsv_gz_path": mappings_path,
+        "mirror_report_json_path": mirror_report_path,
+        "mirror_report_md_path": mirror_report_md_path,
+        "mirror_mappings_tsv_gz_path": mirror_mappings_path,
+    }
 
 
 class CleanupCliWiringTests(unittest.TestCase):

@@ -811,6 +811,11 @@ class F6CleanupPinningTests(unittest.TestCase):
             self.assertTrue(index_dir.exists())
 
     def test_altered_report_markdown_is_refused(self):
+        """B1 acceptance correction: cleanup/provenance verify the SELECTED
+        report_state.json generation's report.md, never the fixed-path
+        mirror -- so tampering must target that selected generation to be
+        caught.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _git_init(tmp_path)
@@ -818,18 +823,19 @@ class F6CleanupPinningTests(unittest.TestCase):
             indices_dir = tmp_path / "indices"
             index_dir = indices_dir / "hg38"
             derived_dir = tmp_path / "derived"
-            _write_realistic_cleanup_evidence(
+            paths = _write_realistic_cleanup_evidence(
                 output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed",
                 derived_dir=derived_dir,
             )
-            # The report Markdown was altered after provenance.json recorded
-            # its hash (report.json/mappings.tsv.gz are untouched).
-            (output_dir / "hg38" / "report.md").write_text("# tampered\n")
+            # The SELECTED generation's report Markdown was altered after
+            # report_state.json/provenance.json recorded its hash (the
+            # mirror report.md is untouched).
+            paths["report_md_path"].write_text("# tampered\n")
 
             from rbpbench.coordinates.runner import _verify_report_evidence_hashes
 
             violations = _verify_report_evidence_hashes(output_dir / "hg38", cfg=_cfg(), output_dir=output_dir)
-            self.assertTrue(any("report_md" in v for v in violations))
+            self.assertTrue(any("report.md" in v for v in violations))
 
             with self.assertRaises(SystemExit):
                 main(
@@ -845,6 +851,43 @@ class F6CleanupPinningTests(unittest.TestCase):
                     ]
                 )
             self.assertTrue(index_dir.exists())
+
+    def test_altered_mirror_report_markdown_is_ignored(self):
+        """The counterpart: tampering ONLY the fixed-path report.md mirror
+        (the SELECTED generation is untouched) must never affect cleanup --
+        mirrors are a human convenience only, never authoritative evidence.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _git_init(tmp_path)
+            output_dir = tmp_path / "out"
+            indices_dir = tmp_path / "indices"
+            index_dir = indices_dir / "hg38"
+            derived_dir = tmp_path / "derived"
+            paths = _write_realistic_cleanup_evidence(
+                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed",
+                derived_dir=derived_dir,
+            )
+            paths["mirror_report_md_path"].write_text("# tampered mirror\n")
+
+            from rbpbench.coordinates.runner import _verify_report_evidence_hashes
+
+            violations = _verify_report_evidence_hashes(output_dir / "hg38", cfg=_cfg(), output_dir=output_dir)
+            self.assertEqual(violations, ())
+
+            main(
+                [
+                    "--config", str(FIXTURE_CONFIG),
+                    "--csv", str(FIXTURE_CSV),
+                    "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
+                    "--output-dir", str(output_dir),
+                    "--indices-dir", str(indices_dir),
+                    "--derived-dir", str(derived_dir),
+                    "--repo-root", str(tmp_path),
+                    "--cleanup-index", "hg38",
+                ]
+            )  # must not raise
+            self.assertFalse(index_dir.exists())
 
     def test_resolve_git_repo_root_finds_the_real_repository(self):
         # This test file itself lives inside the real repository checkout.

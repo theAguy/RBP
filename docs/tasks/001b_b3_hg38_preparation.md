@@ -1,6 +1,7 @@
 # Task 001B checkpoint B3 — hg38 preparation plan
 
-**Status:** draft for Claude planning review; no B3 execution authorized
+**Status:** second review reconciled; B3A may begin only from its bounded
+executor handoff; B3B remains unauthorized
 **Parent:** `docs/tasks/001b_coordinate_feasibility_execution.md`
 **Branch:** `issue-001b-coordinate-execution`
 **Depends on:** B1 accepted at `31c57cd`; B2 accepted at `e62026b`
@@ -76,6 +77,10 @@ atomically; otherwise the old record must survive unchanged.
   compare their live MD5s with the frozen values.
 - Reject malformed MD5 tokens and duplicate/conflicting basename entries; do
   not silently let a later line overwrite an earlier one.
+- Make checksum parsing return both the basename-to-MD5 mapping and explicit
+  parse violations (malformed token/path, duplicate basename, conflicting
+  duplicate). `stage_download` adds those violations to its existing
+  fail-closed violation list. It must never silently skip or overwrite them.
 - Then download the two source files, compare downloaded MD5s with both the
   live listing and frozen values, enforce the authoritative compressed FASTA
   byte size, and record SHA-256/size/URL/listing evidence as already planned.
@@ -109,10 +114,12 @@ The probe must:
    derived hg38 FASTA/manifest, and selected BWA/minimap2 index generation.
 2. Build a 10,100-record pattern FASTA transactionally from the accepted
    10,000 biological and 100 control FASTAs, with exact ID-set/count/hash
-   evidence.
+   evidence. Do not reuse `_prepare_mapping_reads`, which writes a mutable
+   fixed-path file and is not transactional.
 3. Select the largest included contig from accepted `contig_lengths`, stream
-   exactly that contig to the candidate probe generation, and verify its ID,
-   length, alphabet/base count, and source-reference binding.
+   exactly that contig line-by-line to the candidate probe workspace, and
+   verify its ID, length, alphabet/base count, and source-reference binding.
+   Do not materialize the approximately 249-Mb contig as one Python string.
 4. Select a deterministic 500-nt A/C/G/T-only window from that contig for a
    one-query mapper smoke. Record accession and zero-based coordinates but not
    the sequence in the sanitized manifest.
@@ -127,17 +134,45 @@ The probe must:
    the single invocation. Persist and hash BED/stdout, stderr, elapsed time,
    peak RSS, host-memory snapshots, and output size.
 7. Validate every nonempty output row as BED6, require a known pattern ID and
-   coordinates within the selected contig, and reject duplicate counting of
-   the same hit. Zero hits is an honest result, not a failure.
+   `0 <= start < end <= contig_length` on the single selected contig, and
+   reject duplicate counting of the same pattern/contig/start/end/strand hit.
+   Zero hits is an honest result, not a failure.
 8. Produce one immutable probe generation selected by `probe.json` only after
    all checks pass. Restart validity must bind B2 artifacts, reference/
    manifest, exact index generation, binaries, command parameters, and probe
-   implementation commit. Failed/non-executed retries must not overwrite a
-   prior accepted probe.
-9. Charge probe files/logs to the persistent 30-GiB ledger and apply an
-   explicit live cap to SeqKit output. Fixed-path copies, if any, are
-   non-authoritative.
-10. Be fully tested with tiny synthetic references and fake tools plus the
+   implementation commit. Add a `probe_fingerprint()` chained from the exact
+   B2 sample/control hashes, raw reference/manifest hashes, index fingerprint
+   and generation digest, binary identities, command parameters, and clean Git
+   commit. Failed/non-executed retries must not overwrite a prior accepted
+   probe.
+9. Use a temporary candidate workspace for the reproducible pattern FASTA,
+   extracted contig, and smoke query. Hash and describe them, but remove them
+   before selecting the immutable probe output generation; their authoritative
+   sources remain the accepted B2 FASTAs and derived reference. The selected
+   generation retains only `probe.json`-named evidence: BWA/minimap2 SAM and
+   stderr, SeqKit BED and stderr, and machine-readable validation/resource
+   records.
+10. Enforce two explicit, non-overlapping budget rules:
+    - before the probe, reserve at most 1 GiB of candidate-work space from the
+      existing `environment_manifests_logs_margin` and at most 1 GiB of
+      retained probe output from the existing 4-GiB build-output allowance;
+      call the whole-run projected-peak check with a conservative 2-GiB next
+      step allowance, without adding a new category that would make the
+      frozen 30-GiB table sum exceed 30 GiB;
+    - live-cap the combined retained BWA/minimap2/SeqKit outputs and logs at 1
+      GiB. Record their accepted byte total in `probe.json`, seed those bytes
+      into the same `BuildOutputBudget` used later by align, exact-match, and
+      report, and update `_build_budget_excluding` accordingly. Thus B4 has at
+      most 3 GiB left and probe+B4 accepted build outputs can never exceed 4
+      GiB.
+11. Keep the selected probe output generation and persistent logs through B4
+    review. They remain part of the 30-GiB measured ledger and 4-GiB per-build
+    counter. No deletion is authorized in B3; any later removal requires a
+    separately reviewed, hash-evidenced cleanup decision.
+12. Extend cumulative provenance with probe selected paths, hashes, upstream
+    bindings, resource data, and accepted bytes, while keeping probe evidence
+    distinct from B4 align/exact-match/report evidence.
+13. Be fully tested with tiny synthetic references and fake tools plus the
    already pinned real binaries on tiny fixtures. No NCBI URL or human
    reference is touched in B3A.
 
@@ -148,6 +183,11 @@ The probe must:
   path as the only copy.
 - Extend cumulative provenance with download, derive, index, and probe selected
   paths/hashes without treating dry-run records as real evidence.
+- Make FASTA/assembly-report line handling tolerate both LF and CRLF without
+  changing emitted reference bytes for ordinary LF inputs.
+- Generalize the clean Git-commit provenance helper if needed so derivation
+  and probe can bind their implementation commits without cross-module
+  coupling.
 - The B3 sanitized manifest must contain hashes/sizes, commands, timings,
   memory/disk snapshots, contig/category/masking summaries, resolved minimap2
   parameters, and projection results, but no sequences or complete BED/SAM
@@ -170,6 +210,10 @@ accepted environment, execution-source spec, B2 output directory, pinned
 source/derived/index roots, `--host-role approved_mac`, at most four threads,
 and `--allow-mapping`. Never use `--stage all` or `--force`.
 
+Execution is split by an independent human gate.
+
+### B3B-1 — source acquisition and derivation
+
 Execute in order, stopping immediately on any failure:
 
 1. **Preflight:** record current host/RAM/disk/volume/tool/input evidence. Free
@@ -185,6 +229,16 @@ Execute in order, stopping immediately on any failure:
    total bases; category counts; accession-to-chromosome names; uppercase,
    lowercase, ambiguous counts; masking status; and expected RefSeq
    `GCF_000001405.40` identity. Do not compare with UCSC filenames/content.
+
+Then commit/return only a sanitized source/derivation manifest and stop. The
+planning reviewer must accept the downloaded-source evidence, repeated
+derivation hash, complete derived-reference manifest, contig policy, masking,
+disk ledger, and all stop-condition checks before B3B-2 is authorized.
+
+### B3B-2 — indexing and feasibility probe
+
+Only after a second executor handoff:
+
 5. **Index:** build only hg38's BWA and minimap2 indices. Require fresh
    preflight, the frozen commands, zero exits, separate persistent logs,
    creation-time file hashes/sizes, minimap2 `k=15`, `w=5`, non-HPC,
@@ -251,7 +305,7 @@ a recorded decision, not a retry.
 
 ## B3 return and gate
 
-After successful B3B execution, commit only the sanitized
+After successful B3B-2 execution, commit only the sanitized
 `manifests/coordinate_preparation_hg38_b3.json` plus any already-reviewed B3A
 code/tests/docs. Keep source/derived FASTAs, indices, pattern FASTA, largest
 contig, SAM/BED outputs, and logs ignored and uncommitted.

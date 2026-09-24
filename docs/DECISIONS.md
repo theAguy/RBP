@@ -188,3 +188,20 @@
 - Only checkpoint B1 is authorized next. Human references, the real CSV, and
   real mapping remain prohibited until their later checkpoint gates are
   separately approved.
+
+## 2026-09-24 — B3B-1 NCBI checksum identity
+
+- The first real GRCh38.p14 checksum-listing request exposed an operational
+  defect: NCBI legitimately reuses generic basenames in different
+  `assembly_structure` subdirectories, while the parser collapsed every
+  entry to its basename and falsely reported conflicts.
+- Checksum-listing file identity is therefore the normalized relative path,
+  not the basename. Duplicate or conflicting entries remain hard failures
+  when the same exact normalized path repeats; distinct paths that share a
+  basename are valid and remain distinct.
+- The two frozen study files must be found at the exact root-relative paths
+  derived from their source URLs relative to the checksum-listing directory.
+  A nested same-basename entry cannot satisfy that requirement.
+- This is an operational correctness correction only. No source URL, frozen
+  MD5, byte size, assembly, contig policy, sampling rule, scientific
+  threshold, or resource ceiling changes.

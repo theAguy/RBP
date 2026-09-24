@@ -1,7 +1,8 @@
 # Task 001B checkpoint B3 — hg38 preparation plan
 
-**Status:** second review reconciled; B3A may begin only from its bounded
-executor handoff; B3B remains unauthorized
+**Status:** B3A accepted at `768771c`; the first B3B-1 attempt stopped safely
+after the checksum listing exposed a path-identity defect; a bounded checksum
+correction is required before B3B-1 may resume; B3B-2 remains unauthorized
 **Parent:** `docs/tasks/001b_coordinate_feasibility_execution.md`
 **Branch:** `issue-001b-coordinate-execution`
 **Depends on:** B1 accepted at `31c57cd`; B2 accepted at `e62026b`
@@ -69,18 +70,26 @@ atomically; otherwise the old record must survive unchanged.
 ### A1 — bind downloads to the actual remote basenames
 
 - Derive the expected FASTA and assembly-report basenames from their frozen
-  URLs (or store equivalent explicit frozen remote filenames).
-- Use those exact basenames both for local generation files and live checksum
-  lookup. Never infer the checksum key from the shorter assembly label.
+  URLs (or store equivalent explicit frozen remote filenames) for the local
+  generation filenames. For live checksum lookup, derive each target's exact
+  normalized path relative to the directory containing the frozen
+  `md5checksums.txt`; never infer either identity from the shorter assembly
+  label.
 - Fetch the small `md5checksums.txt` first. Before downloading the large
   FASTA, require the exact intended FASTA and assembly-report entries and
   compare their live MD5s with the frozen values.
-- Reject malformed MD5 tokens and duplicate/conflicting basename entries; do
-  not silently let a later line overwrite an earlier one.
-- Make checksum parsing return both the basename-to-MD5 mapping and explicit
-  parse violations (malformed token/path, duplicate basename, conflicting
-  duplicate). `stage_download` adds those violations to its existing
-  fail-closed violation list. It must never silently skip or overwrite them.
+- Parse listing identity by normalized relative path, not basename. Reject
+  malformed MD5 tokens/paths and duplicate/conflicting entries for the same
+  exact normalized path; do not silently let a later line overwrite an
+  earlier one. Distinct subdirectory paths may legitimately share a basename
+  and must remain distinct.
+- Make checksum parsing return both the normalized-relative-path-to-MD5
+  mapping and explicit parse violations (malformed token/path, duplicate
+  exact path, conflicting exact-path duplicate). `stage_download` adds those
+  violations to its existing fail-closed violation list. It must never
+  silently skip or overwrite them, and it must require the two target entries
+  at their exact expected root-relative paths rather than adopting a
+  same-basename entry from a nested directory.
 - Then download the two source files, compare downloaded MD5s with both the
   live listing and frozen values, enforce the authoritative compressed FASTA
   byte size, and record SHA-256/size/URL/listing evidence as already planned.

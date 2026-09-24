@@ -1,8 +1,9 @@
 # Task 001B checkpoint B3 — hg38 preparation plan
 
 **Status:** B3A accepted at `768771c`; the first B3B-1 attempt stopped safely
-after the checksum listing exposed a path-identity defect; a bounded checksum
-correction is required before B3B-1 may resume; B3B-2 remains unauthorized
+after the checksum listing exposed a path-identity defect; correction
+`eab0a35` is accepted and B3B-1 may resume only from its bounded recovery
+handoff; B3B-2 remains unauthorized
 **Parent:** `docs/tasks/001b_coordinate_feasibility_execution.md`
 **Branch:** `issue-001b-coordinate-execution`
 **Depends on:** B1 accepted at `31c57cd`; B2 accepted at `e62026b`

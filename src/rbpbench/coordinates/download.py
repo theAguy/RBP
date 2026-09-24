@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,12 @@ def parse_md5checksums(text: str) -> dict[str, str]:
     Lines that do not split into exactly an MD5 token and a path token are
     silently skipped (never raise): the caller is responsible for treating a
     missing expected entry as a violation (B1-C1).
+
+    Kept for backward compatibility with existing callers that only need the
+    lenient mapping; :func:`parse_md5checksums_evidence` (B3A-A1) is the
+    fail-closed sibling that additionally surfaces malformed/duplicate/
+    conflicting entries as structured violations rather than silently
+    dropping or overwriting them.
     """
     entries: dict[str, str] = {}
     for line in text.splitlines():
@@ -68,6 +75,80 @@ def parse_md5checksums(text: str) -> dict[str, str]:
         digest, path = parts
         entries[Path(path).name] = digest
     return entries
+
+
+_MD5_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
+@dataclass(frozen=True)
+class ChecksumParseViolation:
+    kind: str  # "malformed_token" | "malformed_path" | "duplicate_basename" | "conflicting_duplicate"
+    detail: str
+
+    def to_dict(self) -> dict:
+        return {"kind": self.kind, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class ParsedChecksumListing:
+    entries: dict[str, str]
+    violations: tuple[ChecksumParseViolation, ...]
+
+    @property
+    def ok(self) -> bool:
+        return len(self.violations) == 0
+
+
+def parse_md5checksums_evidence(text: str) -> ParsedChecksumListing:
+    """B3A-A1: fail-closed sibling of :func:`parse_md5checksums`.
+
+    Returns both the basename-to-MD5 mapping AND explicit structured parse
+    violations: a malformed MD5 token (not exactly 32 hex characters), a
+    malformed/empty path, a REPEATED basename entry (whether or not its
+    value agrees with the earlier one -- never silently let a later line
+    overwrite an earlier one), and a conflicting duplicate (repeated
+    basename with a different MD5 value, called out separately for a more
+    specific message). A line that fails to split into exactly two
+    whitespace-separated tokens is itself a malformed-line violation, not
+    silently skipped.
+    """
+    entries: dict[str, str] = {}
+    violations: list[ChecksumParseViolation] = []
+    seen_basenames: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            violations.append(ChecksumParseViolation("malformed_path", f"line does not split into <md5> <path>: {line!r}"))
+            continue
+        digest, path = parts
+        if not _MD5_TOKEN_RE.match(digest):
+            violations.append(ChecksumParseViolation("malformed_token", f"MD5 token is not 32 hex characters: {digest!r}"))
+            continue
+        basename = Path(path).name
+        if not basename:
+            violations.append(ChecksumParseViolation("malformed_path", f"path has no basename: {path!r}"))
+            continue
+        if basename in seen_basenames:
+            if entries.get(basename) != digest:
+                violations.append(
+                    ChecksumParseViolation(
+                        "conflicting_duplicate",
+                        f"basename {basename!r} repeats with a different MD5 ({entries.get(basename)!r} vs {digest!r})",
+                    )
+                )
+            else:
+                violations.append(
+                    ChecksumParseViolation("duplicate_basename", f"basename {basename!r} repeats in the listing")
+                )
+            # Never let a later duplicate line silently overwrite the
+            # earlier accepted entry, whether or not it agrees.
+            continue
+        seen_basenames.add(basename)
+        entries[basename] = digest.lower()
+    return ParsedChecksumListing(entries=entries, violations=tuple(violations))
 
 
 class DownloadVerificationError(RuntimeError):
@@ -164,5 +245,8 @@ __all__ = [
     "restart_safe_download",
     "md5_file",
     "parse_md5checksums",
+    "ChecksumParseViolation",
+    "ParsedChecksumListing",
+    "parse_md5checksums_evidence",
     "urllib_transport",
 ]

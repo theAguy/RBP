@@ -769,14 +769,26 @@ class R7AcquisitionDerivationTests(unittest.TestCase):
     def test_download_checksum_mismatch_is_refused_and_leaves_no_partial_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             sources_dir = Path(tmp) / "sources"
+            spec = self._source_spec()
 
             def bad_transport(url, dest_path):
-                dest_path.write_bytes(b"not the expected bytes")
+                # B3A-A1: the small listing is fetched/validated FIRST, so it
+                # must itself be well-formed and agree with the frozen plan
+                # MD5s (the live-vs-frozen check this test is not about) for
+                # the actual FASTA-download MD5 mismatch below to even be
+                # reached.
+                if "md5" in url:
+                    dest_path.write_text(
+                        f"{spec.fasta_upstream_md5}  ./{spec.fasta_remote_basename}\n"
+                        f"{spec.assembly_report_md5}  ./{spec.assembly_report_remote_basename}\n"
+                    )
+                else:
+                    dest_path.write_bytes(b"not the expected bytes")
 
             with self.assertRaises(Exception):
                 stage_download(
                     build="hg38",
-                    source_spec=self._source_spec(),
+                    source_spec=spec,
                     sources_dir=sources_dir,
                     allow_mapping=True,
                     host_role="approved_mac",
@@ -794,19 +806,31 @@ class R7AcquisitionDerivationTests(unittest.TestCase):
             import hashlib
 
             payload = b"x" * 50
-
-            def transport(url, dest_path):
-                # Correct MD5 for this payload, but the wrong byte size
-                # relative to the spec's authoritative plan size.
-                dest_path.write_bytes(payload)
+            payload_md5 = hashlib.md5(payload).hexdigest()
 
             import dataclasses
 
             adjusted_spec = dataclasses.replace(
                 spec,
-                fasta_upstream_md5=hashlib.md5(payload).hexdigest(),
-                assembly_report_md5=hashlib.md5(payload).hexdigest(),
+                fasta_upstream_md5=payload_md5,
+                assembly_report_md5=payload_md5,
             )
+
+            def transport(url, dest_path):
+                if "md5" in url:
+                    # B3A-A1: the listing is fetched/validated first; its
+                    # entries for both intended basenames must agree with the
+                    # frozen plan MD5s so the test actually reaches the
+                    # byte-size check this test targets.
+                    dest_path.write_text(
+                        f"{payload_md5}  ./{adjusted_spec.fasta_remote_basename}\n"
+                        f"{payload_md5}  ./{adjusted_spec.assembly_report_remote_basename}\n"
+                    )
+                else:
+                    # Correct MD5 for this payload, but the wrong byte size
+                    # relative to the spec's authoritative plan size.
+                    dest_path.write_bytes(payload)
+
             record = stage_download(
                 build="hg38",
                 source_spec=adjusted_spec,
@@ -850,8 +874,8 @@ class R7AcquisitionDerivationTests(unittest.TestCase):
                 fasta_compressed_byte_size=len(fasta_body_gz),
                 assembly_report_md5=report_md5,
             )
-            fasta_name = f"{adjusted.assembly}_genomic.fna.gz"
-            report_name = f"{adjusted.assembly}_assembly_report.txt"
+            fasta_name = adjusted.fasta_remote_basename
+            report_name = adjusted.assembly_report_remote_basename
             checksum_listing = f"{fasta_md5}  ./{fasta_name}\n{report_md5}  ./{report_name}\n"
 
             def fake_transport(url, dest_path):

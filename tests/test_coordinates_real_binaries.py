@@ -17,8 +17,15 @@ import unittest
 from pathlib import Path
 
 from rbpbench.coordinates.alignment import build_candidate_loci, classify_primary, ClassificationThresholds, parse_sam_line
-from rbpbench.coordinates.commands import bwa_mem_command, minimap2_splice_command, seqkit_locate_command
+from rbpbench.coordinates.commands import (
+    bwa_index_command,
+    bwa_mem_command,
+    minimap2_index_command,
+    minimap2_splice_command,
+    seqkit_locate_command,
+)
 from rbpbench.coordinates.exact_match import exact_occurrence_count, exact_unique_confirmed, parse_seqkit_bed
+from rbpbench.coordinates.probe import build_pattern_fasta, extract_contig_streaming, select_probe_window, validate_probe_bed_rows
 
 _HAVE_BWA = shutil.which("bwa") is not None
 _HAVE_MINIMAP2 = shutil.which("minimap2") is not None
@@ -154,6 +161,92 @@ class EndToEndRealBinarySmokeTests(unittest.TestCase):
             records = [parse_sam_line(line) for line in sam_text.splitlines() if line and not line.startswith("@")]
             records = [r for r in records if r is not None]
             self.assertTrue(records)
+
+
+@unittest.skipUnless(_HAVE_BWA and _HAVE_MINIMAP2 and _HAVE_SEQKIT, "requires real bwa/minimap2/seqkit on PATH")
+class ProbeMechanicsRealBinarySmokeTests(unittest.TestCase):
+    """Task 001B checkpoint B3A, "Minimum regression set" item 16: a guarded
+    real-binary tiny probe integration test, against the genuinely installed,
+    pinned bwa/minimap2/seqkit binaries -- never fake executables.
+
+    Exercises the SAME building blocks ``rbpbench.coordinates.runner.stage_probe``
+    orchestrates (streaming contig extraction, deterministic window
+    selection, transactional pattern-FASTA construction, real one-thread
+    BWA/minimap2 smoke mapping, real SeqKit locate, and BED6 validation)
+    directly against real binaries, bypassing ``stage_probe``'s own
+    preflight/authorization gating -- consistent with every other real-binary
+    test in this file, which call the pinned tools directly rather than
+    through the runner's CLI-level orchestration (whose RAM/disk thresholds
+    are not something a real-binary unit test should depend on). Nothing
+    here touches the real dataset, a real B2 FASTA, or a real human
+    reference/index; the reference is a tiny synthetic fixture.
+    """
+
+    def test_probe_pipeline_end_to_end_against_real_binaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            import random
+
+            rng = random.Random(3)
+            # A largest ("chr1", 400 nt) and a smaller ("chr2", 100 nt)
+            # contig, so largest-contig selection is exercised for real.
+            chr1_body = "".join(rng.choice("ACGT") for _ in range(400))
+            chr2_body = "".join(rng.choice("ACGT") for _ in range(100))
+            reference = tmp_path / "reference.fasta"
+            reference.write_text(f">chr1\n{chr1_body}\n>chr2\n{chr2_body}\n")
+
+            # Real BWA/minimap2 indices, built once (not through stage_index,
+            # to avoid its own RAM/disk preflight gate -- same rationale as
+            # the module docstring above).
+            bwa_prefix = tmp_path / "idx" / "hg38"
+            bwa_prefix.parent.mkdir(parents=True, exist_ok=True)
+            _run(bwa_index_command(reference, bwa_prefix).argv, timeout=120)
+            mm2_index = tmp_path / "idx" / "hg38.mmi"
+            _run(minimap2_index_command(reference, mm2_index).argv, timeout=120)
+
+            # Accepted B2-shaped biological/control FASTAs (tiny fixture).
+            bio_fasta = tmp_path / "sample_sequences.fasta"
+            bio_fasta.write_text(f">bio1\n{chr1_body[0:20]}\n>bio2\n{chr2_body[0:20]}\n")
+            ctrl_fasta = tmp_path / "control_sequences.fasta"
+            ctrl_fasta.write_text(f">control_bio1\n{chr1_body[20:40]}\n")
+
+            pattern_result = build_pattern_fasta(bio_fasta, ctrl_fasta, tmp_path / "patterns.fasta")
+            self.assertEqual(pattern_result.count, 3)
+
+            contig_extraction = extract_contig_streaming(reference, accession="chr1", output_path=tmp_path / "contig.fna")
+            self.assertEqual(contig_extraction.length, 400)
+
+            window = select_probe_window(
+                contig_extraction.output_path, accession="chr1", contig_length=400, window_length=60
+            )
+            smoke_seq = chr1_body[window.start:window.end]
+            self.assertEqual(len(smoke_seq), 60)
+            smoke_query_id = f"probe_smoke_chr1_{window.start}_{window.end}"
+            smoke_query = tmp_path / "smoke_query.fasta"
+            smoke_query.write_text(f">{smoke_query_id}\n{smoke_seq}\n")
+
+            bwa_sam_text = _run(bwa_mem_command(bwa_prefix, smoke_query, threads=1).argv, timeout=60).stdout
+            bwa_records = [r for r in (parse_sam_line(line) for line in bwa_sam_text.splitlines()) if r is not None]
+            primary_bwa = [r for r in bwa_records if r.is_primary and r.query_name == smoke_query_id]
+            self.assertEqual(len(primary_bwa), 1)
+            self.assertEqual(primary_bwa[0].chrom, "chr1")
+
+            mm2_sam_text = _run(minimap2_splice_command(mm2_index, smoke_query, threads=1).argv, timeout=60).stdout
+            mm2_records = [
+                r for r in (parse_sam_line(line) for line in mm2_sam_text.splitlines() if not line.startswith("@")) if r is not None
+            ]
+            primary_mm2 = [r for r in mm2_records if r.is_primary and r.query_name == smoke_query_id]
+            self.assertEqual(len(primary_mm2), 1)
+            self.assertEqual(primary_mm2[0].chrom, "chr1")
+
+            seqkit_cmd = seqkit_locate_command(pattern_result.output_path, contig_extraction.output_path)
+            bed_lines = _run(seqkit_cmd.argv, timeout=60).stdout.splitlines()
+            validation = validate_probe_bed_rows(
+                bed_lines, known_pattern_ids=pattern_result.id_set, contig_accession="chr1", contig_length=400
+            )
+            self.assertTrue(validation.ok, validation.violations)
+            # bio1's own 20-nt substring must be found exactly on chr1.
+            self.assertGreaterEqual(validation.hit_count, 1)
 
 
 if __name__ == "__main__":

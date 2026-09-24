@@ -928,7 +928,7 @@ class SelectionRecordWriteFailureTests(unittest.TestCase):
                 fasta_compressed_byte_size=len(fasta_body_gz),
                 assembly_report_md5=report_md5,
             )
-            listing = f"{fasta_md5}  ./{adjusted.assembly}_genomic.fna.gz\n{report_md5}  ./{adjusted.assembly}_assembly_report.txt\n"
+            listing = f"{fasta_md5}  ./{adjusted.fasta_remote_basename}\n{report_md5}  ./{adjusted.assembly_report_remote_basename}\n"
 
             def transport(url, dest_path):
                 if "fna.gz" in url:

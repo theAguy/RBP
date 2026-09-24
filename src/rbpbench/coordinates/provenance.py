@@ -14,6 +14,7 @@ from __future__ import annotations
 import platform
 import resource
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,57 @@ def resolve_binary_provenance(exe_name: str, *, version: str | None) -> BinaryPr
     resolved = shutil.which(exe_name)
     digest = sha256_file(Path(resolved)) if resolved else None
     return BinaryProvenance(exe_name=exe_name, resolved_path=resolved, sha256=digest, version=version)
+
+
+def current_git_commit(*, cwd: Path | None = None) -> str | None:
+    """The checked-out ``HEAD`` commit hash, or ``None`` (never raises) when
+    Git is unavailable or ``cwd`` is not inside a working tree.
+
+    B3A-A4: generalized here (rather than living only in
+    ``rbpbench.coordinates.derive_reference``) so both derivation and the
+    probe stage can bind their own implementation commit into their
+    provenance without either importing the other's module — a probe
+    binding a Git commit is not conceptually coupled to the derivation
+    module's own concerns.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10, check=False, cwd=cwd
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def git_is_clean(*, cwd: Path | None = None) -> bool | None:
+    """Whether the working tree at ``cwd`` has no uncommitted changes
+    (``git status --porcelain`` is empty), or ``None`` (never a fabricated
+    boolean) when Git is unavailable or ``cwd`` is not inside a working tree.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True, timeout=10, check=False, cwd=cwd
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() == ""
+
+
+def host_memory_snapshot() -> dict:
+    """Best-effort host-memory snapshot for provenance evidence (B3A-A3 item
+    6): physical RAM only (the same detector ``rbpbench.coordinates.preflight``
+    already uses), not a true available/reclaimable-memory reading — an exact
+    live available-memory sampler is out of this task's scope, so this is
+    recorded honestly as an approximation, the same pattern
+    :func:`peak_rss_kib_of_children` already follows.
+    """
+    from rbpbench.coordinates.preflight import detect_physical_ram_gib
+
+    return {"physical_ram_gib": detect_physical_ram_gib(), "source": "preflight.detect_physical_ram_gib"}
 
 
 def peak_rss_kib_of_children() -> int:
@@ -140,4 +192,7 @@ __all__ = [
     "resolve_binary_provenance",
     "run_tool_with_provenance",
     "peak_rss_kib_of_children",
+    "current_git_commit",
+    "git_is_clean",
+    "host_memory_snapshot",
 ]

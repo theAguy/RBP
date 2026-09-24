@@ -15,6 +15,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -43,6 +44,23 @@ class ReferenceSourceSpec:
     assembly_report_url: str
     assembly_report_md5: str
     md5checksums_url: str
+
+    @property
+    def fasta_remote_basename(self) -> str:
+        """B3A-A1: the exact remote basename (e.g.
+        ``GCF_000001405.40_GRCh38.p14_genomic.fna.gz``), derived from the
+        frozen ``fasta_url``'s own final path segment -- never the shorter
+        ``assembly`` label (``GRCh38.p14``), which real NCBI basenames do not
+        match. Used for BOTH the local destination filename and the live
+        ``md5checksums.txt`` lookup key, so the two can never silently
+        diverge.
+        """
+        return Path(urlparse(self.fasta_url).path).name
+
+    @property
+    def assembly_report_remote_basename(self) -> str:
+        """Same rule as :attr:`fasta_remote_basename`, for the assembly report."""
+        return Path(urlparse(self.assembly_report_url).path).name
 
 
 @dataclass(frozen=True)

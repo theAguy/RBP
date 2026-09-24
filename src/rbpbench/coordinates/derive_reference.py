@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import gzip
 import os
-import subprocess
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from rbpbench.coordinates.provenance import current_git_commit
 from rbpbench.data.audit import sha256_file
 
 _DEFAULT_ASSEMBLY_REPORT_COLUMNS = (
@@ -74,7 +74,12 @@ def parse_assembly_report(path: Path) -> tuple[AssemblyReportRecord, ...]:
     records: list[AssemblyReportRecord] = []
     with Path(path).open() as handle:
         for raw_line in handle:
-            line = raw_line.rstrip("\n")
+            # B3A-A4: strip both LF and CRLF line endings so a CRLF-sourced
+            # assembly report is handled safely -- a bare rstrip("\n") would
+            # leave a trailing "\r" attached to the last column of every row
+            # (silently corrupting e.g. Sequence-Length parsing or accession
+            # strings) without ever raising.
+            line = raw_line.rstrip("\r\n")
             if not line:
                 continue
             if line.startswith("#"):
@@ -141,6 +146,61 @@ class ReferenceDerivation:
     category_counts: dict[str, int]
     accession_to_assembly_chrom_name: dict[str, str]
     masking: dict
+    # B3A-A2: per-accession sequence lengths, keyed identically to
+    # ``contigs`` -- required so B3 can deterministically select and prove
+    # the largest included contig from the accepted manifest alone, without
+    # re-deriving or re-scanning the reference FASTA.
+    contig_lengths: dict[str, int] = field(default_factory=dict)
+
+
+def largest_contig(contig_lengths: dict[str, int]) -> str:
+    """B3A-A2: the deterministic largest-included-contig rule -- greatest
+    length first, then accession lexicographic order as the ONLY tie-break.
+
+    Tie-break convention (a genuine ambiguity in the reconciled plan text,
+    resolved here explicitly): among contigs tied for the greatest length,
+    the one that sorts FIRST in ascending accession lexicographic order
+    wins (e.g. ``NC_TEST1.1`` before ``NC_TEST2.1``) -- the ordinary reading
+    of "alphabetically first" -- not the lexicographically greatest. A pure
+    function over already-validated ``contig_lengths`` so the B3 probe stage
+    (and its tests) can select/prove the same contig independent of any file
+    I/O.
+    """
+    if not contig_lengths:
+        raise DerivationError("largest_contig: contig_lengths is empty")
+    return min(contig_lengths.items(), key=lambda item: (-item[1], item[0]))[0]
+
+
+def validate_contig_lengths(
+    contig_lengths: dict[str, int], *, contigs: tuple[str, ...], assembly_report_lengths: dict[str, int], total_emitted_bases: int
+) -> tuple[str, ...]:
+    """B3A-A2 fail-closed validation of accepted ``contig_lengths`` evidence:
+    exact key equality with ``contigs``, positive integer lengths, agreement
+    with the assembly report's own declared length for that accession, and
+    that the lengths sum to the total emitted FASTA base count. Returns the
+    violations (empty means valid).
+    """
+    violations: list[str] = []
+    if set(contig_lengths) != set(contigs):
+        violations.append(
+            f"contig_lengths keys {sorted(contig_lengths)} do not exactly equal contigs {sorted(contigs)}"
+        )
+    for accession, length in contig_lengths.items():
+        if not isinstance(length, int) or length <= 0:
+            violations.append(f"contig_lengths[{accession!r}] = {length!r} is not a positive integer")
+            continue
+        expected = assembly_report_lengths.get(accession)
+        if expected is not None and length != expected:
+            violations.append(
+                f"contig_lengths[{accession!r}] = {length} does not agree with assembly-report length {expected}"
+            )
+    observed_total = sum(v for v in contig_lengths.values() if isinstance(v, int) and v > 0)
+    if observed_total != total_emitted_bases:
+        violations.append(
+            f"sum(contig_lengths.values()) = {observed_total} does not agree with the total emitted FASTA base "
+            f"count {total_emitted_bases}"
+        )
+    return tuple(violations)
 
 
 def _masking_status(counts: dict[str, int]) -> str:
@@ -220,7 +280,13 @@ def derive_reference_fasta(
             current: str | None = None
             writing = False
             for raw_line in src:
-                line = raw_line.rstrip("\n")
+                # B3A-A4: CRLF-safe -- a bare rstrip("\n") would leave a
+                # trailing "\r" as part of the last written base of every
+                # sequence line (and, on a header line, part of the parsed
+                # accession), silently corrupting derived length/base counts
+                # for a CRLF-sourced FASTA while never raising. Ordinary LF
+                # input is unaffected: rstrip("\r\n") strips nothing extra.
+                line = raw_line.rstrip("\r\n")
                 if line.startswith(">"):
                     current = line[1:].split()[0]
                     seen_counts[current] += 1
@@ -254,8 +320,20 @@ def derive_reference_fasta(
                 violations.append(
                     f"{accession}: derived length {actual} != assembly-report length {record.sequence_length}"
                 )
-        if violations:
-            raise DerivationError("derived-reference verification failed: " + "; ".join(violations))
+        # B3A-A2: contig_lengths must key-match `contigs`/agree with the
+        # assembly report/sum to the total emitted base count before this
+        # derivation is accepted -- the same "verification violation ->
+        # never promote" fail-closed shape as the checks above.
+        contig_lengths = {accession: written_lengths.get(accession, 0) for accession in selected}
+        total_emitted_bases = mask_counts["upper"] + mask_counts["lower"] + mask_counts["ambiguous"]
+        length_violations = validate_contig_lengths(
+            contig_lengths,
+            contigs=tuple(sorted(selected)),
+            assembly_report_lengths={accession: record.sequence_length for accession, record in selected.items()},
+            total_emitted_bases=total_emitted_bases,
+        )
+        if length_violations:
+            raise DerivationError("derived-reference contig_lengths verification failed: " + "; ".join(length_violations))
     except BaseException:
         if tmp_fasta.exists():
             tmp_fasta.unlink()
@@ -275,19 +353,8 @@ def derive_reference_fasta(
         category_counts=category_counts,
         accession_to_assembly_chrom_name={accession: chrom_name_of[accession] for accession in contigs},
         masking={**mask_counts, "status": _masking_status(mask_counts)},
+        contig_lengths=contig_lengths,
     )
-
-
-def current_git_commit(*, cwd: Path | None = None) -> str | None:
-    try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10, check=False, cwd=cwd
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if completed.returncode != 0:
-        return None
-    return completed.stdout.strip() or None
 
 
 def build_reference_manifest(
@@ -327,6 +394,7 @@ def build_reference_manifest(
         "sha256": derivation.output_fasta_sha256,
         "contigs": list(derivation.contigs),
         "contig_categories": dict(derivation.contig_categories),
+        "contig_lengths": dict(derivation.contig_lengths),
         "category_counts": dict(derivation.category_counts),
         "accession_to_assembly_chrom_name": dict(derivation.accession_to_assembly_chrom_name),
         "masking": dict(derivation.masking),
@@ -356,6 +424,8 @@ __all__ = [
     "DerivationError",
     "ReferenceDerivation",
     "derive_reference_fasta",
+    "largest_contig",
+    "validate_contig_lengths",
     "current_git_commit",
     "build_reference_manifest",
     "CATEGORY_CHROMOSOME",

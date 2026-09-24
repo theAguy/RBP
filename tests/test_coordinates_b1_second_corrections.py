@@ -79,8 +79,11 @@ class C1ChecksumListingTests(unittest.TestCase):
     restart skip.
     """
 
-    def _good_transport(self, *, fasta_body_gz: bytes, report_body: str, fasta_md5: str, report_md5: str, assembly: str):
-        listing = f"{fasta_md5}  ./{assembly}_genomic.fna.gz\n{report_md5}  ./{assembly}_assembly_report.txt\n"
+    def _good_transport(
+        self, *, fasta_body_gz: bytes, report_body: str, fasta_md5: str, report_md5: str,
+        fasta_remote_basename: str, assembly_report_remote_basename: str,
+    ):
+        listing = f"{fasta_md5}  ./{fasta_remote_basename}\n{report_md5}  ./{assembly_report_remote_basename}\n"
 
         def transport(url, dest_path):
             if "fna.gz" in url:
@@ -106,7 +109,10 @@ class C1ChecksumListingTests(unittest.TestCase):
         # plan MD5 (a live-list/plan-value mismatch) even though the
         # downloaded bytes themselves are internally consistent.
         wrong_live_md5 = "f" * 32
-        listing = f"{wrong_live_md5}  ./{adjusted.assembly}_genomic.fna.gz\n{report_md5}  ./{adjusted.assembly}_assembly_report.txt\n"
+        listing = (
+            f"{wrong_live_md5}  ./{adjusted.fasta_remote_basename}\n"
+            f"{report_md5}  ./{adjusted.assembly_report_remote_basename}\n"
+        )
 
         def transport(url, dest_path):
             if "fna.gz" in url:
@@ -174,7 +180,8 @@ class C1ChecksumListingTests(unittest.TestCase):
         )
         transport = self._good_transport(
             fasta_body_gz=fasta_body_gz, report_body=report_body, fasta_md5=fasta_md5, report_md5=report_md5,
-            assembly=adjusted.assembly,
+            fasta_remote_basename=adjusted.fasta_remote_basename,
+            assembly_report_remote_basename=adjusted.assembly_report_remote_basename,
         )
         with tempfile.TemporaryDirectory() as tmp:
             record = stage_download(
@@ -211,7 +218,8 @@ class C1ChecksumListingTests(unittest.TestCase):
             )
             transport = self._good_transport(
                 fasta_body_gz=fasta_body_gz, report_body=report_body, fasta_md5=fasta_md5, report_md5=report_md5,
-                assembly=adjusted.assembly,
+                fasta_remote_basename=adjusted.fasta_remote_basename,
+                assembly_report_remote_basename=adjusted.assembly_report_remote_basename,
             )
 
             with mock.patch("rbpbench.coordinates.runner.urllib_transport", transport):

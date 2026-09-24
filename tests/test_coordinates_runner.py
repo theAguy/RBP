@@ -238,7 +238,9 @@ class RunnerIntegrationTests(unittest.TestCase):
             state = json.loads((output_dir / "state.json").read_text())
             expected_keys = {"preflight", "sample", "decode", "controls", "combined_report"} | {
                 f"{stage}:{build}"
-                for stage in ("download", "derive", "index", "align", "exact_match", "report")
+                # B3A-A3: "probe" is now its own build-scoped stage alongside
+                # download/derive/index/align/exact_match/report.
+                for stage in ("download", "derive", "index", "probe", "align", "exact_match", "report")
                 for build in ("hg38", "hg19")
             }
             self.assertEqual(set(state["completed_stages"]), expected_keys)

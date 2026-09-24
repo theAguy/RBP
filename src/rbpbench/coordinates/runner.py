@@ -67,16 +67,22 @@ from rbpbench.coordinates.commands import (
 from rbpbench.coordinates.config import FeasibilityConfig, load_config
 from rbpbench.coordinates.controls import generate_control
 from rbpbench.coordinates.decode import decode_and_validate, fasta_record
-from rbpbench.coordinates.derive_reference import build_reference_manifest, current_git_commit, derive_reference_fasta
+from rbpbench.coordinates.derive_reference import (
+    build_reference_manifest,
+    current_git_commit,
+    derive_reference_fasta,
+    largest_contig,
+)
 from rbpbench.coordinates.download import (
     DownloadVerificationError,
     Transport,
-    parse_md5checksums,
+    parse_md5checksums_evidence,
     restart_safe_download,
     urllib_transport,
 )
 from rbpbench.coordinates.diskbudget import (
     BUILD_OUTPUT_ALLOWANCE_GIB,
+    GIB,
     PLANNED_ALLOWANCES_GIB,
     BuildOutputBudget,
     DiskBudgetExceeded,
@@ -100,8 +106,26 @@ from rbpbench.coordinates.indexing import (
 )
 from rbpbench.coordinates.manifest import manifest_content_sha256, validate_reference_manifest
 from rbpbench.coordinates.preflight import APPROVED_MAC, DEV_VM, run_preflight
-from rbpbench.coordinates.provenance import resolve_binary_provenance, run_tool_with_provenance
-from rbpbench.coordinates.reference import IndexedFastaReader, load_fasta_sequences, prepare_reference_index
+from rbpbench.coordinates.probe import (
+    ProbeError,
+    build_pattern_fasta,
+    extract_contig_streaming,
+    probe_fingerprint,
+    select_probe_window,
+    validate_probe_bed_rows,
+)
+from rbpbench.coordinates.provenance import (
+    git_is_clean,
+    host_memory_snapshot,
+    resolve_binary_provenance,
+    run_tool_with_provenance,
+)
+from rbpbench.coordinates.reference import (
+    IndexedFastaReader,
+    build_fasta_index,
+    load_fasta_sequences,
+    prepare_reference_index,
+)
 from rbpbench.coordinates.report import (
     MappingResult,
     build_combined_report,
@@ -121,13 +145,28 @@ STAGES = (
     "download",
     "derive",
     "index",
+    "probe",
     "align",
     "exact_match",
     "report",
     "combined_report",
 )
-BUILD_SCOPED_STAGES = ("download", "derive", "index", "align", "exact_match", "report")
+BUILD_SCOPED_STAGES = ("download", "derive", "index", "probe", "align", "exact_match", "report")
 DEFAULT_BUILDS = ("hg38", "hg19")
+
+# B3A-A3: the probe stage's own retained-output live sub-cap, carved out of
+# (never additional to) the existing 4-GiB BUILD_OUTPUT_ALLOWANCE_GIB shared
+# with align/exact_match/report for the same build (see
+# docs/tasks/001b_b3_hg38_preparation.md, A3 item 10).
+PROBE_OUTPUT_ALLOWANCE_GIB = 1.0
+# B3A-A3 item 10: the probe stage's own pre-flight disk-budget reservations,
+# drawn from the existing (not a new) 1.0-GiB
+# ``environment_manifests_logs_margin`` category and a conservative 2-GiB
+# whole-run projected-peak "next step" allowance -- never adding a new
+# PLANNED_ALLOWANCES_GIB category, so the frozen 30-GiB table sum is
+# unchanged.
+PROBE_CANDIDATE_WORK_ALLOWANCE_GIB = 1.0
+PROBE_PROJECTED_PEAK_NEXT_STEP_GIB = 2.0
 
 # B1-F5: the ONLY stage that may accompany the single authorized
 # build-scoped stage in one real --allow-mapping invocation without crossing
@@ -147,6 +186,7 @@ _ALWAYS_ALLOWED_WITH_MAPPING = frozenset({"preflight"})
 _B2_ONLY_STAGES = frozenset({"sample", "decode", "controls"})
 
 CONTROL_ID_PREFIX = "control_"
+_ACGT_ONLY = frozenset("ACGT")
 
 MAPPING_TSV_COLUMNS = (
     "sample_id",
@@ -760,6 +800,11 @@ def stage_download(
             "fasta_url": source_spec.fasta_url,
             "assembly_report_url": source_spec.assembly_report_url,
             "md5checksums_url": source_spec.md5checksums_url,
+            # B3A-A1: the exact remote basenames (derived from the frozen
+            # URLs' own final path segment, never the shorter assembly
+            # label) this attempt binds local files and checksum lookup to.
+            "fasta_remote_basename": source_spec.fasta_remote_basename,
+            "assembly_report_remote_basename": source_spec.assembly_report_remote_basename,
         },
         "executed": False,
         "skip_reason": None,
@@ -787,61 +832,87 @@ def stage_download(
     )
 
     generation_dir = _new_generation_dir(sources_dir, prefix="download")
+    violations: list[str] = []
+    fasta_result = None
+    report_result = None
     try:
-        fasta_dest = generation_dir / f"{source_spec.assembly}_genomic.fna.gz"
-        report_dest = generation_dir / f"{source_spec.assembly}_assembly_report.txt"
+        # B3A-A1: fetch and parse the SMALL checksum listing FIRST, through
+        # the same injected-transport interface used for the FASTA/report
+        # below — never a bare, ungated network call of its own. The exact
+        # intended FASTA/assembly-report entries (by their real remote
+        # basename, never the shorter assembly label) must be present and
+        # agree with the frozen plan values BEFORE the large-FASTA transport
+        # call is ever made.
         checksum_dest = generation_dir / "md5checksums.txt"
-
-        fasta_result = restart_safe_download(
-            source_spec.fasta_url, fasta_dest, expected_md5=source_spec.fasta_upstream_md5, transport=transport
-        )
-        report_result = restart_safe_download(
-            source_spec.assembly_report_url,
-            report_dest,
-            expected_md5=source_spec.assembly_report_md5,
-            transport=transport,
-        )
-        # B1-C1: the live checksum listing is fetched through the SAME
-        # injected-transport interface used for the FASTA/report above —
-        # never a bare, ungated network call of its own.
         transport(source_spec.md5checksums_url, checksum_dest)
         if not checksum_dest.is_file():
             raise DownloadVerificationError(
                 f"transport for {source_spec.md5checksums_url!r} did not produce a file at {checksum_dest}"
             )
-        live_entries = parse_md5checksums(checksum_dest.read_text())
+        listing = parse_md5checksums_evidence(checksum_dest.read_text())
+        live_entries = listing.entries
+        # B3A-A1: structured malformed/duplicate/conflicting listing
+        # evidence is added to this SAME fail-closed violation list, never a
+        # separate silent channel — a structurally broken listing is exactly
+        # as disqualifying as a value mismatch.
+        violations.extend(
+            f"md5checksums.txt parse violation ({v.kind}): {v.detail}" for v in listing.violations
+        )
 
-        # B1-C1: require exactly the two intended entries, then compare the
-        # live listing against both the frozen plan MD5 and the freshly
-        # downloaded file's own MD5. Plan-time size/MD5 values remain
-        # authoritative (second-review R11): any disagreement is a hard stop
-        # requiring a recorded decision, never silent re-pinning.
-        violations: list[str] = []
-        for label, dest, frozen_md5, downloaded_md5 in (
-            ("fasta", fasta_dest, source_spec.fasta_upstream_md5, fasta_result.md5),
-            ("assembly_report", report_dest, source_spec.assembly_report_md5, report_result.md5),
+        fasta_basename = source_spec.fasta_remote_basename
+        report_basename = source_spec.assembly_report_remote_basename
+        # B1-C1/B3A-A1: require exactly the two intended entries (keyed by
+        # their real remote basename) and compare the live listing against
+        # the frozen plan MD5. Plan-time size/MD5 values remain authoritative
+        # (second-review R11): any disagreement is a hard stop requiring a
+        # recorded decision, never silent re-pinning.
+        for label, basename, frozen_md5 in (
+            ("fasta", fasta_basename, source_spec.fasta_upstream_md5),
+            ("assembly_report", report_basename, source_spec.assembly_report_md5),
         ):
-            live_md5 = live_entries.get(dest.name)
+            live_md5 = live_entries.get(basename)
             if live_md5 is None:
-                violations.append(f"live md5checksums.txt has no entry for {dest.name!r} ({label})")
+                violations.append(f"live md5checksums.txt has no entry for {basename!r} ({label})")
                 continue
             if live_md5 != frozen_md5:
                 violations.append(
-                    f"live md5checksums.txt entry for {dest.name!r} ({label}) is {live_md5!r}, but the "
+                    f"live md5checksums.txt entry for {basename!r} ({label}) is {live_md5!r}, but the "
                     f"authoritative plan value is {frozen_md5!r}; this disagreement is a hard stop requiring a "
                     "recorded decision in docs/DECISIONS.md, never silent re-pinning"
                 )
-            if live_md5 != downloaded_md5:
-                violations.append(
-                    f"live md5checksums.txt entry for {dest.name!r} ({label}) is {live_md5!r}, but the "
-                    f"downloaded file's own MD5 is {downloaded_md5!r}"
-                )
-        if fasta_result.byte_size != source_spec.fasta_compressed_byte_size:
-            violations.append(
-                f"downloaded FASTA byte size {fasta_result.byte_size} != authoritative plan size "
-                f"{source_spec.fasta_compressed_byte_size}; this disagreement is a hard stop requiring a recorded "
-                "decision in docs/DECISIONS.md, never silent re-pinning"
+
+        # B3A-A1: only proceed to the large-file transport calls once the
+        # listing itself (and its two intended entries) is confirmed clean —
+        # a checksum-listing failure must never even attempt the large FASTA
+        # transport.
+        if not violations:
+            fasta_dest = generation_dir / fasta_basename
+            report_dest = generation_dir / report_basename
+            fasta_result = restart_safe_download(
+                source_spec.fasta_url, fasta_dest, expected_md5=source_spec.fasta_upstream_md5, transport=transport
             )
+            report_result = restart_safe_download(
+                source_spec.assembly_report_url,
+                report_dest,
+                expected_md5=source_spec.assembly_report_md5,
+                transport=transport,
+            )
+            for label, dest, downloaded_md5 in (
+                ("fasta", fasta_dest, fasta_result.md5),
+                ("assembly_report", report_dest, report_result.md5),
+            ):
+                live_md5 = live_entries.get(dest.name)
+                if live_md5 != downloaded_md5:
+                    violations.append(
+                        f"live md5checksums.txt entry for {dest.name!r} ({label}) is {live_md5!r}, but the "
+                        f"downloaded file's own MD5 is {downloaded_md5!r}"
+                    )
+            if fasta_result.byte_size != source_spec.fasta_compressed_byte_size:
+                violations.append(
+                    f"downloaded FASTA byte size {fasta_result.byte_size} != authoritative plan size "
+                    f"{source_spec.fasta_compressed_byte_size}; this disagreement is a hard stop requiring a "
+                    "recorded decision in docs/DECISIONS.md, never silent re-pinning"
+                )
     except BaseException:
         _discard_generation(generation_dir)
         raise
@@ -1189,6 +1260,425 @@ def stage_index(
         referenced_by=(downstream_align_record or {},),
         upstream_keys=("upstream_index_generation_digest",),
     )
+    return record
+
+
+def _probe_capable(
+    *, allow_mapping: bool, host_role: str, reference: Path | None, sample_fasta: Path | None, control_fasta: Path | None
+) -> str | None:
+    """Same basic capability shape as ``_mapping_capable``/``_index_capable``
+    for the probe stage, which additionally requires the accepted B2
+    biological/control FASTAs (never the reads FASTA the mapping stages use,
+    which already merges biological+control into one mutable file -- the
+    probe builds its own transactional pattern FASTA; see
+    ``rbpbench.coordinates.probe.build_pattern_fasta``).
+    """
+    if not allow_mapping or host_role != APPROVED_MAC:
+        return (
+            "probe requires --allow-mapping together with --host-role=approved_mac "
+            f"(got allow_mapping={allow_mapping}, host_role={host_role!r})"
+        )
+    if reference is None or not Path(reference).is_file():
+        return f"reference FASTA not found or not provided ({reference})"
+    if sample_fasta is None or not Path(sample_fasta).is_file():
+        return f"accepted B2 biological (sample) FASTA not found or not provided ({sample_fasta})"
+    if control_fasta is None or not Path(control_fasta).is_file():
+        return f"accepted B2 control FASTA not found or not provided ({control_fasta})"
+    return None
+
+
+def _verify_b2_evidence_hashes(
+    *, sample_fasta: Path | None, control_fasta: Path | None, sample_fasta_expected_sha256: str | None,
+    control_fasta_expected_sha256: str | None,
+) -> tuple[str, ...]:
+    """B3A-A3 item 1: re-hash the accepted B2 biological/control FASTAs
+    against their expected (caller-supplied, from the accepted B2 checkpoint
+    manifest) hashes immediately before the probe trusts them -- never
+    merely trusting that a path was supplied. Both expected hashes are
+    required (``None`` is itself a violation): a probe run that cannot prove
+    which B2 evidence it used must fail closed, not silently proceed
+    unbound.
+    """
+    violations: list[str] = []
+    if sample_fasta_expected_sha256 is None:
+        violations.append("no accepted B2 biological (sample) FASTA sha256 supplied to bind the probe to")
+    elif not _hash_matches(str(sample_fasta) if sample_fasta else None, sample_fasta_expected_sha256):
+        violations.append("accepted B2 biological (sample) FASTA missing or hash mismatch against expected evidence")
+    if control_fasta_expected_sha256 is None:
+        violations.append("no accepted B2 control FASTA sha256 supplied to bind the probe to")
+    elif not _hash_matches(str(control_fasta) if control_fasta else None, control_fasta_expected_sha256):
+        violations.append("accepted B2 control FASTA missing or hash mismatch against expected evidence")
+    return tuple(violations)
+
+
+def _verify_index_record_for_probe(
+    index_record: dict, *, build: str, expected_reference_sha256: str, expected_reference_manifest_content_sha256: str
+) -> tuple[str, ...]:
+    """B3A-A3 item 1: the accepted index generation the probe is about to
+    smoke-test must itself be executed, hash-verified
+    (:func:`_verify_index_evidence_hashes`), and bound (by its own recorded
+    ``reference_sha256``/``reference_manifest_content_sha256``) to the exact
+    CURRENT reference/manifest the probe is using -- never a stale or
+    foreign index silently accepted merely because a path was supplied.
+    """
+    violations = list(_verify_index_evidence_hashes(index_record))
+    if violations:
+        return tuple(violations)
+    if index_record.get("reference_sha256") != expected_reference_sha256:
+        violations.append("accepted index reference_sha256 does not match the current reference (stale/foreign index)")
+    if index_record.get("reference_manifest_content_sha256") != expected_reference_manifest_content_sha256:
+        violations.append("accepted index reference_manifest_content_sha256 does not match the current reference manifest")
+    return tuple(violations)
+
+
+def _validate_probe_sam(sam_path: Path, *, query_id: str, contigs: frozenset) -> tuple[str, ...]:
+    """B3A-A3 item 5: require the one smoke query to appear exactly once as
+    a PRIMARY, mapped record, on a contig actually in the accepted
+    reference's contig set. Multi-mapping (secondary records) is allowed and
+    never itself a violation.
+    """
+    primary_records = []
+    for line in Path(sam_path).read_text().splitlines():
+        record = parse_sam_line(line)
+        if record is None or record.query_name != query_id or not record.is_primary:
+            continue
+        primary_records.append(record)
+    if len(primary_records) != 1:
+        return (
+            f"expected exactly one primary, mapped SAM record for smoke query {query_id!r} in {sam_path}, "
+            f"found {len(primary_records)}",
+        )
+    if primary_records[0].chrom not in contigs:
+        return (
+            f"smoke query {query_id!r} mapped to {primary_records[0].chrom!r}, which is not in the accepted "
+            "reference's contig set (foreign-contig mapping)",
+        )
+    return ()
+
+
+def stage_probe(
+    cfg: FeasibilityConfig,
+    *,
+    build: str,
+    build_output_dir: Path,
+    allow_mapping: bool,
+    host_role: str,
+    reference: Path | None,
+    reference_manifest: dict | None,
+    reference_manifest_raw_sha256: str | None,
+    index_record: dict,
+    sample_fasta: Path | None,
+    control_fasta: Path | None,
+    sample_fasta_expected_sha256: str | None,
+    control_fasta_expected_sha256: str | None,
+    dry_run: bool,
+    disk_ledger: DiskBudgetLedger | None = None,
+    build_budget: BuildOutputBudget | None = None,
+    window_length: int = 500,
+) -> dict:
+    """B3A-A3: the guarded, build-scoped feasibility probe stage.
+
+    Gated exactly like ``stage_align``/``stage_index``: the absolute
+    ``--dry-run`` guard is checked first, then the same allow-mapping/
+    host-role/reference capability chain, then a *fresh* ``run_preflight``
+    immediately before any real subprocess. NEVER writes ``align.json``,
+    ``exact_match.json``, or any report/combined-report state -- this is its
+    own protected ``probe.json`` record, using the same transactional
+    generation-directory + ``_guarded_write_record`` pattern already used by
+    ``stage_download``/``stage_derive``/``stage_index``.
+    """
+    old_record_path = build_output_dir / "probe.json"
+    record = {"executed": False, "skip_reason": None}
+
+    # Absolute guard, checked before anything else (same as stage_align).
+    if dry_run:
+        record["skip_reason"] = "--dry-run: real probing is never executed under --dry-run"
+        _guarded_write_record(old_record_path, record)
+        return record
+
+    skip_reason = _probe_capable(
+        allow_mapping=allow_mapping, host_role=host_role, reference=reference,
+        sample_fasta=sample_fasta, control_fasta=control_fasta,
+    )
+    if skip_reason is not None:
+        record["skip_reason"] = skip_reason
+        _guarded_write_record(old_record_path, record)
+        return record
+
+    if reference_manifest is None:
+        record["skip_reason"] = f"reference manifest required for probe but not provided for build {build!r}"
+        _guarded_write_record(old_record_path, record)
+        return record
+    manifest_violations = validate_reference_manifest(reference_manifest, build=build, reference=reference)
+    if manifest_violations:
+        record["skip_reason"] = f"reference manifest invalid for build {build!r}: {list(manifest_violations)}"
+        _guarded_write_record(old_record_path, record)
+        return record
+
+    contig_lengths = reference_manifest.get("contig_lengths") or {}
+    if not contig_lengths:
+        record["skip_reason"] = f"reference manifest for build {build!r} has no contig_lengths evidence (B3A-A2 required)"
+        _guarded_write_record(old_record_path, record)
+        return record
+
+    current_reference_sha256 = reference_manifest["sha256"]
+    current_manifest_hash = manifest_content_sha256(reference_manifest)
+
+    # B3A-A3 item 1: require and revalidate accepted B2 sample/control
+    # hashes and the selected BWA/minimap2 index generation BEFORE any
+    # candidate work begins.
+    b2_violations = _verify_b2_evidence_hashes(
+        sample_fasta=sample_fasta, control_fasta=control_fasta,
+        sample_fasta_expected_sha256=sample_fasta_expected_sha256,
+        control_fasta_expected_sha256=control_fasta_expected_sha256,
+    )
+    if b2_violations:
+        record["skip_reason"] = f"accepted B2 evidence is missing or has drifted: {list(b2_violations)}"
+        _guarded_write_record(old_record_path, record)
+        return record
+
+    index_violations = _verify_index_record_for_probe(
+        index_record, build=build, expected_reference_sha256=current_reference_sha256,
+        expected_reference_manifest_content_sha256=current_manifest_hash,
+    )
+    if index_violations:
+        record["skip_reason"] = f"accepted index generation is missing, has drifted, or is foreign: {list(index_violations)}"
+        _guarded_write_record(old_record_path, record)
+        return record
+
+    record["reference_sha256"] = current_reference_sha256
+    record["reference_manifest_content_sha256"] = current_manifest_hash
+    record["reference_manifest_raw_sha256"] = reference_manifest_raw_sha256
+    record["upstream_index_generation_digest"] = index_record.get("generation_digest")
+
+    # Hard prerequisite: a fresh preflight bound to the current OS/
+    # architecture, resources, pinned tool versions, and hashes of this
+    # exact reference/B2-FASTA set -- never merely the flags checked above.
+    build_output_dir.mkdir(parents=True, exist_ok=True)
+    preflight_report = run_preflight(
+        host_role=host_role,
+        resources=cfg.resources,
+        disk_path=build_output_dir,
+        allow_mapping=True,
+        tools=cfg.tools,
+        threads=1,  # B3A-A3 item 5: probe smoke mapping is pinned one-thread.
+        required_input_paths={"reference": reference, "b2_sample": sample_fasta, "b2_control": control_fasta},
+    )
+    _write_json(build_output_dir / "preflight_at_probe_time.json", preflight_report.to_dict())
+    record["preflight_ok"] = preflight_report.ok
+    if not preflight_report.ok:
+        record["skip_reason"] = f"preflight failed closed immediately before probing: {list(preflight_report.violations)}"
+        _guarded_write_record(old_record_path, record)
+        return record
+
+    # B3A-A3 item 10 (budget rule 1 of 2): before any candidate work, the
+    # whole-run projected-peak ledger must accept BOTH a <=1-GiB candidate-
+    # work reservation (drawn from the EXISTING environment/logs margin) AND
+    # a conservative 2-GiB next-step reservation -- neither adds a new
+    # PLANNED_ALLOWANCES_GIB category.
+    _check_disk_budget_or_fail(
+        disk_ledger, label=f"probe_candidate:{build}", allowance_gib=PROBE_CANDIDATE_WORK_ALLOWANCE_GIB,
+        disk_path=build_output_dir,
+    )
+    _check_disk_budget_or_fail(
+        disk_ledger, label=f"probe_projected_peak:{build}", allowance_gib=PROBE_PROJECTED_PEAK_NEXT_STEP_GIB,
+        disk_path=build_output_dir,
+    )
+
+    accession = largest_contig(contig_lengths)
+    contig_length = contig_lengths[accession]
+
+    # B3A-A3 item 10 (budget rule 2 of 2): the probe's OWN retained-output
+    # live sub-cap (<=1 GiB), independent of (and seeded into) the shared
+    # per-build BuildOutputBudget later stages use.
+    probe_output_budget = start_build_output_budget(total_allowance_gib=PROBE_OUTPUT_ALLOWANCE_GIB)
+
+    generation_dir = _new_generation_dir(build_output_dir, prefix="probe")
+    candidate_dir = generation_dir / "candidate"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    bwa_sam = generation_dir / "probe_bwa_mem.sam"
+    bwa_stderr = generation_dir / "probe_bwa_mem.stderr.log"
+    mm2_sam = generation_dir / "probe_minimap2_splice.sam"
+    mm2_stderr = generation_dir / "probe_minimap2_splice.stderr.log"
+    seqkit_bed = generation_dir / "probe_seqkit_locate.bed"
+    seqkit_stderr = generation_dir / "probe_seqkit_locate.stderr.log"
+
+    try:
+        # Item 2: transactional 10,100(-equivalent) pattern FASTA.
+        pattern_result = build_pattern_fasta(sample_fasta, control_fasta, candidate_dir / "patterns.fasta")
+
+        # Item 3: streaming single-largest-contig extraction, never
+        # materializing the (potentially ~249-Mb) contig as one string.
+        contig_extraction = extract_contig_streaming(
+            reference, accession=accession, output_path=candidate_dir / "contig.fna"
+        )
+        extraction_violations: list[str] = []
+        if contig_extraction.length != contig_length:
+            extraction_violations.append(
+                f"extracted contig {accession!r} length {contig_extraction.length} != accepted contig_lengths "
+                f"{contig_length}"
+            )
+        total_extracted_bases = contig_extraction.upper_count + contig_extraction.lower_count + contig_extraction.ambiguous_count
+        if total_extracted_bases != contig_extraction.length:
+            extraction_violations.append("extracted contig base-count evidence is internally inconsistent")
+        if extraction_violations:
+            raise ProbeError("; ".join(extraction_violations))
+
+        # Item 4: deterministic A/C/G/T-only smoke window.
+        window = select_probe_window(
+            contig_extraction.output_path, accession=accession, contig_length=contig_length, window_length=window_length
+        )
+        contig_index = build_fasta_index(contig_extraction.output_path)
+        smoke_seq = IndexedFastaReader(contig_extraction.output_path, contig_index).fetch(accession, window.start, window.end)
+        if len(smoke_seq) != window_length or set(smoke_seq) - _ACGT_ONLY:
+            raise ProbeError(f"selected smoke window did not yield a clean {window_length}-nt A/C/G/T sequence")
+        smoke_query_id = f"probe_smoke_{accession}_{window.start}_{window.end}"
+        smoke_query_path = candidate_dir / "smoke_query.fasta"
+        smoke_query_path.write_text(f">{smoke_query_id}\n{smoke_seq}\n")
+
+        # Item 5: pinned, one-thread BWA-MEM and minimap2 smoke mapping
+        # against the accepted build indices.
+        bwa_index_prefix = Path(index_record["bwa_index_prefix"])
+        minimap2_index = Path(index_record["minimap2_index"])
+        bwa_cmd = bwa_mem_command(bwa_index_prefix, smoke_query_path, threads=1)
+        mm2_cmd = minimap2_splice_command(minimap2_index, smoke_query_path, threads=1)
+        bwa_binary = resolve_binary_provenance("bwa", version=preflight_report.tool_versions.get("bwa"))
+        mm2_binary = resolve_binary_provenance("minimap2", version=preflight_report.tool_versions.get("minimap2"))
+        seqkit_binary = resolve_binary_provenance("seqkit", version=preflight_report.tool_versions.get("seqkit"))
+
+        bwa_provenance = run_tool_with_provenance(
+            bwa_cmd.argv, tool="probe_bwa_mem", output_path=bwa_sam, stderr_path=bwa_stderr,
+            command_text=format_command(bwa_cmd.argv), binary=bwa_binary, run_fn=_run_tool_to_file,
+            run_kwargs={"max_output_bytes": probe_output_budget.remaining_bytes},
+        )
+        probe_output_budget.accept(bwa_sam.stat().st_size + bwa_stderr.stat().st_size)
+
+        mm2_provenance = run_tool_with_provenance(
+            mm2_cmd.argv, tool="probe_minimap2_splice", output_path=mm2_sam, stderr_path=mm2_stderr,
+            command_text=format_command(mm2_cmd.argv), binary=mm2_binary, run_fn=_run_tool_to_file,
+            run_kwargs={"max_output_bytes": probe_output_budget.remaining_bytes},
+        )
+        probe_output_budget.accept(mm2_sam.stat().st_size + mm2_stderr.stat().st_size)
+
+        smoke_violations: list[str] = []
+        smoke_violations.extend(check_minimap2_mapping_stderr(mm2_stderr.read_text()))
+        contigs_frozenset = frozenset(reference_manifest.get("contigs", ()))
+        smoke_violations.extend(_validate_probe_sam(bwa_sam, query_id=smoke_query_id, contigs=contigs_frozenset))
+        smoke_violations.extend(_validate_probe_sam(mm2_sam, query_id=smoke_query_id, contigs=contigs_frozenset))
+        if smoke_violations:
+            raise ProbeError("; ".join(smoke_violations))
+
+        # Item 6/7: pinned SeqKit 2.13.0, exact B4 command semantics, against
+        # ONLY the extracted largest contig, with all patterns in one
+        # invocation.
+        seqkit_cmd = seqkit_locate_command(pattern_result.output_path, contig_extraction.output_path)
+        host_mem_before = host_memory_snapshot()
+        seqkit_provenance = run_tool_with_provenance(
+            seqkit_cmd.argv, tool="probe_seqkit_locate", output_path=seqkit_bed, stderr_path=seqkit_stderr,
+            command_text=format_command(seqkit_cmd.argv), binary=seqkit_binary, run_fn=_run_tool_to_file,
+            run_kwargs={"max_output_bytes": probe_output_budget.remaining_bytes},
+        )
+        host_mem_after = host_memory_snapshot()
+        seqkit_bytes_used = seqkit_bed.stat().st_size + seqkit_stderr.stat().st_size
+        probe_output_budget.accept(seqkit_bytes_used)
+
+        bed_validation = validate_probe_bed_rows(
+            seqkit_bed.read_text().splitlines(), known_pattern_ids=pattern_result.id_set,
+            contig_accession=accession, contig_length=contig_length,
+        )
+        if not bed_validation.ok:
+            raise ProbeError("; ".join(bed_validation.violations))
+    except ProbeError as exc:
+        # Item 7/8: a business-rule validation failure (bad extraction,
+        # unmapped/foreign-contig smoke mapping, malformed BED evidence) is
+        # an honest, non-executed probe outcome -- discard the candidate
+        # generation and record it via skip_reason, the same graceful shape
+        # every other guarded stage uses, never an uncaught exception.
+        _discard_generation(generation_dir)
+        record["skip_reason"] = f"probe validation failed: {exc}"
+        _guarded_write_record(old_record_path, record)
+        return record
+    except BaseException:
+        # Anything else (a genuine infrastructure failure: a killed
+        # subprocess, an unexpected I/O error, a mocked interruption in
+        # tests) discards the candidate generation and propagates, exactly
+        # like every other guarded stage's transactional generation
+        # handling.
+        _discard_generation(generation_dir)
+        raise
+
+    if disk_ledger is not None:
+        disk_ledger.record_step(f"probe:{build}", path=build_output_dir)
+
+    accepted_bytes = (
+        bwa_sam.stat().st_size + bwa_stderr.stat().st_size
+        + mm2_sam.stat().st_size + mm2_stderr.stat().st_size
+        + seqkit_bed.stat().st_size + seqkit_stderr.stat().st_size
+    )
+
+    # Item 9/11: the ephemeral candidate workspace (pattern FASTA, extracted
+    # contig, smoke query) is hashed/described above but never itself
+    # retained -- only probe.json-named evidence (BWA/minimap2 SAM+stderr,
+    # SeqKit BED+stderr, and this machine-readable record) survives. B3A
+    # authorizes no deletion of the SELECTED probe generation itself.
+    shutil.rmtree(candidate_dir, ignore_errors=True)
+
+    fingerprint = probe_fingerprint(
+        b2_sample_sha256=sample_fasta_expected_sha256,
+        b2_control_sha256=control_fasta_expected_sha256,
+        reference_sha256=current_reference_sha256,
+        reference_manifest_content_sha256=current_manifest_hash,
+        index_generation_digest=index_record.get("generation_digest"),
+        bwa_binary_sha256=bwa_binary.sha256,
+        minimap2_binary_sha256=mm2_binary.sha256,
+        seqkit_binary_sha256=seqkit_binary.sha256,
+        bwa_command=format_command(bwa_cmd.argv),
+        minimap2_command=format_command(mm2_cmd.argv),
+        seqkit_command=format_command(seqkit_cmd.argv),
+        git_commit=current_git_commit(),
+    )
+
+    record["executed"] = True
+    record["build"] = build
+    record["selected_contig"] = {"accession": accession, "length": contig_length}
+    record["smoke_window"] = {"accession": window.accession, "start": window.start, "end": window.end}
+    record["pattern_fasta"] = pattern_result.to_dict()
+    record["candidate_contig_evidence"] = contig_extraction.to_dict()
+    record["sam_paths"] = {"bwa_mem": str(bwa_sam), "minimap2_splice": str(mm2_sam)}
+    record["stderr_paths"] = {
+        "bwa_mem": str(bwa_stderr), "minimap2_splice": str(mm2_stderr), "seqkit_locate": str(seqkit_stderr),
+    }
+    record["bed_path"] = str(seqkit_bed)
+    record["bed_validation"] = bed_validation.to_dict()
+    record["resource_evidence"] = {
+        "bwa_mem": bwa_provenance.to_dict(),
+        "minimap2_splice": mm2_provenance.to_dict(),
+        "seqkit_locate": seqkit_provenance.to_dict(),
+        "host_memory_before": host_mem_before,
+        "host_memory_after": host_mem_after,
+    }
+    record["accepted_bytes"] = accepted_bytes
+    record["probe_output_allowance_bytes"] = int(PROBE_OUTPUT_ALLOWANCE_GIB * GIB)
+    record["git_commit"] = current_git_commit()
+    record["git_clean"] = git_is_clean()
+    record["probe_fingerprint"] = fingerprint
+    record["generation_digest"] = content_fingerprint(
+        "probe_generation", bwa_provenance.output_sha256, mm2_provenance.output_sha256, seqkit_provenance.output_sha256,
+        fingerprint,
+    )
+
+    # B3A-A3 item 10: seed the probe's own accepted bytes into the SAME
+    # shared per-build BuildOutputBudget later used by align/exact_match/
+    # report for this build, so probe+B4 accepted build outputs can never
+    # together exceed the combined 4-GiB cap.
+    if build_budget is not None:
+        build_budget.accept(accepted_bytes)
+
+    try:
+        _guarded_write_record(old_record_path, record)
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
     return record
 
 
@@ -2347,6 +2837,7 @@ def _write_provenance(
     disk_ledger: DiskBudgetLedger | None = None,
     download_records: dict[str, dict] | None = None,
     derive_records: dict[str, dict] | None = None,
+    probe_records: dict[str, dict] | None = None,
 ) -> dict:
     """Connect provenance to the runner: declared input hashes (dataset CSV,
     config, dataset audit, protein config), resolved binary hashes/versions,
@@ -2431,6 +2922,9 @@ def _write_provenance(
             "download": (download_records or {}).get(build, {}),
             "derive": (derive_records or {}).get(build, {}),
             "index": index_records.get(build, {}),
+            # B3A-A3 item 12: probe evidence is kept its own distinct
+            # sub-key, never merged into align/exact_match/report evidence.
+            "probe": (probe_records or {}).get(build, {}),
             "align": align_records.get(build, {}),
             "exact_match": exact_match_records.get(build, {}),
             "reference_manifest": reference_manifests.get(build),
@@ -2554,6 +3048,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="BUILD=PATH",
         help="Override the default indices/<build>/<build>.mmi minimap2 index path for one build",
+    )
+    parser.add_argument(
+        "--b2-sample-fasta",
+        type=Path,
+        default=None,
+        help="Accepted B2 biological (sample) FASTA the 'probe' stage builds its pattern FASTA from",
+    )
+    parser.add_argument(
+        "--b2-sample-fasta-sha256",
+        default=None,
+        help="Accepted B2 biological (sample) FASTA's expected sha256, from the accepted B2 checkpoint manifest",
+    )
+    parser.add_argument(
+        "--b2-control-fasta",
+        type=Path,
+        default=None,
+        help="Accepted B2 control FASTA the 'probe' stage builds its pattern FASTA from",
+    )
+    parser.add_argument(
+        "--b2-control-fasta-sha256",
+        default=None,
+        help="Accepted B2 control FASTA's expected sha256, from the accepted B2 checkpoint manifest",
     )
     parser.add_argument(
         "--disk-budget-path",
@@ -2726,6 +3242,28 @@ def _verify_index_evidence_hashes(index_record: dict) -> tuple[str, ...]:
             manifest, key="minimap2_index", actual_path=Path(mm2_index) if mm2_index else None
         ),
     )
+
+
+def _verify_probe_evidence_hashes(probe_record: dict) -> tuple[str, ...]:
+    """Same principle as :func:`_verify_align_evidence_hashes`, for the
+    probe stage's retained BWA/minimap2 SAM and SeqKit BED outputs. Used by
+    the runner's own restart-skip revalidation so a probe generation
+    altered/removed on disk since acceptance can never stay silently
+    "skippable".
+    """
+    if not probe_record.get("executed"):
+        return ("probe.json does not record executed=true",)
+    violations: list[str] = []
+    sam_paths = probe_record.get("sam_paths", {})
+    resource_evidence = probe_record.get("resource_evidence", {})
+    for tool, sam_key in (("bwa_mem", "bwa_mem"), ("minimap2_splice", "minimap2_splice")):
+        expected = (resource_evidence.get(tool) or {}).get("output_sha256")
+        if not _hash_matches(sam_paths.get(sam_key), expected):
+            violations.append(f"probe {tool} output missing or hash mismatch (recorded evidence has drifted)")
+    expected_bed = (resource_evidence.get("seqkit_locate") or {}).get("output_sha256")
+    if not _hash_matches(probe_record.get("bed_path"), expected_bed):
+        violations.append("probe seqkit_locate output missing or hash mismatch (recorded evidence has drifted)")
+    return tuple(violations)
 
 
 def _verify_report_evidence_hashes(
@@ -3109,6 +3647,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         build: (sha256_file(path) if path.is_file() else None) for build, path in references.items()
     }
     base_fingerprint = content_fingerprint("sample_decode_controls", dataset_csv_hash, config_hash)
+    # B3A-A3: the probe stage's own accepted-B2-evidence inputs, current
+    # hashes computed once here (build-independent -- the accepted B2
+    # biological/control FASTAs are the same reads mapped against every
+    # build) for both restart fingerprinting and the actual probe call.
+    b2_sample_fasta_hash = sha256_file(args.b2_sample_fasta) if args.b2_sample_fasta and args.b2_sample_fasta.is_file() else None
+    b2_control_fasta_hash = sha256_file(args.b2_control_fasta) if args.b2_control_fasta and args.b2_control_fasta.is_file() else None
 
     def download_fingerprint(build: str) -> str:
         source_spec = execution_source_spec.reference_sources.get(build) if execution_source_spec else None
@@ -3131,6 +3675,30 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.allow_mapping,
             args.host_role,
             args.threads,
+            args.dry_run,
+        )
+
+    def probe_restart_fingerprint(build: str) -> str:
+        """B3A-A3: restart-validity fingerprint for the probe stage's CLI
+        invocation (distinct from ``rbpbench.coordinates.probe.probe_fingerprint``,
+        the evidence-chain fingerprint recorded ON an accepted probe.json).
+        Chained from index's last recorded fingerprint/executed status (the
+        same pattern ``align_fingerprint`` uses) plus the current B2
+        sample/control FASTA hashes, so a changed accepted index OR changed
+        B2 evidence forces a re-probe.
+        """
+        recorded_index_fp = state.get("stage_fingerprints", {}).get(_stage_key("index", build), "never_run")
+        return content_fingerprint(
+            "probe",
+            base_fingerprint,
+            reference_hashes.get(build),
+            reference_manifest_hashes.get(build),
+            recorded_index_fp,
+            bool(index_records.get(build, {}).get("executed")),
+            b2_sample_fasta_hash,
+            b2_control_fasta_hash,
+            args.allow_mapping,
+            args.host_role,
             args.dry_run,
         )
 
@@ -3244,6 +3812,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     download_records: dict[str, dict] = {}
     derive_records: dict[str, dict] = {}
     index_records: dict[str, dict] = {}
+    probe_records: dict[str, dict] = {}
     align_records: dict[str, dict] = {}
     exact_match_records: dict[str, dict] = {}
     report_states: dict[str, dict] = {}
@@ -3266,6 +3835,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         derive_records[build] = json.loads(derive_path.read_text()) if derive_path.exists() else {"executed": False}
         index_records[build] = json.loads(index_path.read_text()) if index_path.exists() else {"executed": False}
+        probe_path = build_dir / "probe.json"
+        probe_records[build] = json.loads(probe_path.read_text()) if probe_path.exists() else {"executed": False}
         align_records[build] = json.loads(align_path.read_text()) if align_path.exists() else {"executed": False}
         exact_match_records[build] = (
             json.loads(exact_path.read_text()) if exact_path.exists() else {"executed": False}
@@ -3278,11 +3849,21 @@ def main(argv: Sequence[str] | None = None) -> None:
         writer-stage's CURRENT accepted bytes for this same build, never
         including ``exclude_stage``'s own prior bytes (which this very
         attempt is about to supersede).
+
+        B3A-A3 item 10: also seeds the probe stage's own already-accepted
+        bytes (never more than its own 1-GiB PROBE_OUTPUT_ALLOWANCE_GIB
+        sub-cap), so probe+B4 accepted build outputs can never together
+        exceed the combined 4-GiB BUILD_OUTPUT_ALLOWANCE_GIB.
         """
         align_record = align_records.get(build, {})
         exact_match_record = exact_match_records.get(build, {})
         report_state = report_states.get(build, {})
+        probe_record = probe_records.get(build, {})
         already_accepted = 0
+        if exclude_stage != "probe" and probe_record.get("executed"):
+            already_accepted += probe_record.get("accepted_bytes") or _current_output_bytes(
+                (*(probe_record.get("sam_paths") or {}).values(), *(probe_record.get("stderr_paths") or {}).values(), probe_record.get("bed_path"))
+            )
         if exclude_stage != "align" and align_record.get("executed"):
             already_accepted += _current_output_bytes(
                 (*(align_record.get("sam_paths") or {}).values(), *(align_record.get("stderr_paths") or {}).values())
@@ -3423,6 +4004,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                     fingerprint = derive_fingerprint(build)
                 elif stage == "index":
                     fingerprint = index_fingerprint(build)
+                elif stage == "probe":
+                    fingerprint = probe_restart_fingerprint(build)
                 elif stage == "align":
                     fingerprint = align_fingerprint(build)
                 elif stage == "exact_match":
@@ -3443,6 +4026,19 @@ def main(argv: Sequence[str] | None = None) -> None:
                         revalidation_violations = _verify_derive_evidence_hashes(derive_records.get(build, {}))
                     elif stage == "index":
                         revalidation_violations = _verify_index_evidence_hashes(index_records.get(build, {}))
+                    elif stage == "probe":
+                        # B3A-A3: re-verify the probe's own retained SAM/BED
+                        # evidence AND that the accepted index generation it
+                        # was bound to is still current, before letting a
+                        # restart skip it.
+                        probe_record_current = probe_records.get(build, {})
+                        revalidation_violations = _verify_probe_evidence_hashes(probe_record_current)
+                        if not revalidation_violations:
+                            revalidation_violations = _verify_index_record_for_probe(
+                                index_records.get(build, {}), build=build,
+                                expected_reference_sha256=probe_record_current.get("reference_sha256"),
+                                expected_reference_manifest_content_sha256=probe_record_current.get("reference_manifest_content_sha256"),
+                            )
                     elif stage == "align":
                         revalidation_violations = (
                             *_verify_align_evidence_hashes(align_records.get(build, {})),
@@ -3539,6 +4135,29 @@ def main(argv: Sequence[str] | None = None) -> None:
                     index_records[build] = index_record
                     executed = bool(index_record.get("executed"))
                     state["mapping_executed"].setdefault(build, {})["index"] = executed
+                    retryable = args.allow_mapping and not executed
+                elif stage == "probe":
+                    probe_record = stage_probe(
+                        cfg,
+                        build=build,
+                        build_output_dir=build_dir,
+                        allow_mapping=args.allow_mapping,
+                        host_role=args.host_role,
+                        reference=references.get(build),
+                        reference_manifest=reference_manifests.get(build),
+                        reference_manifest_raw_sha256=reference_manifest_hashes.get(build),
+                        index_record=index_records.get(build, {"executed": False}),
+                        sample_fasta=args.b2_sample_fasta,
+                        control_fasta=args.b2_control_fasta,
+                        sample_fasta_expected_sha256=args.b2_sample_fasta_sha256,
+                        control_fasta_expected_sha256=args.b2_control_fasta_sha256,
+                        dry_run=args.dry_run,
+                        disk_ledger=disk_ledger,
+                        build_budget=_build_budget_excluding(build, exclude_stage="probe"),
+                    )
+                    probe_records[build] = probe_record
+                    executed = bool(probe_record.get("executed"))
+                    state["mapping_executed"].setdefault(build, {})["probe"] = executed
                     retryable = args.allow_mapping and not executed
                 elif stage == "align":
                     align_record = stage_align(
@@ -3752,6 +4371,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         disk_ledger=disk_ledger,
         download_records=download_records,
         derive_records=derive_records,
+        probe_records=probe_records,
     )
 
     if args.dry_run:

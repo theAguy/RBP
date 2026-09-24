@@ -864,6 +864,100 @@ class SelectionRecordWriteFailureTests(unittest.TestCase):
     def _boom(self, *_args, **_kwargs):
         raise RuntimeError("simulated selection-record write failure")
 
+    def test_download_selection_write_failure_discards_the_new_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            from rbpbench.coordinates.execution_sources import load_execution_sources
+
+            spec = load_execution_sources(FIXTURE_EXECUTION_SOURCES).reference_sources["hg38"]
+            import gzip
+            import hashlib
+
+            fasta_body_gz = gzip.compress(b"tiny fixture fasta bytes")
+            report_body = "tiny fixture report bytes"
+            fasta_md5 = hashlib.md5(fasta_body_gz).hexdigest()
+            report_md5 = hashlib.md5(report_body.encode()).hexdigest()
+            import dataclasses
+
+            adjusted = dataclasses.replace(
+                spec,
+                fasta_upstream_md5=fasta_md5,
+                fasta_compressed_byte_size=len(fasta_body_gz),
+                assembly_report_md5=report_md5,
+            )
+            listing = f"{fasta_md5}  ./{adjusted.assembly}_genomic.fna.gz\n{report_md5}  ./{adjusted.assembly}_assembly_report.txt\n"
+
+            def transport(url, dest_path):
+                if "fna.gz" in url:
+                    dest_path.write_bytes(fasta_body_gz)
+                elif "md5" in url:
+                    dest_path.write_text(listing)
+                else:
+                    dest_path.write_text(report_body)
+
+            sources_dir = tmp_path / "sources"
+            first = stage_download(
+                build="hg38", source_spec=adjusted, sources_dir=sources_dir, allow_mapping=True,
+                host_role="approved_mac", dry_run=False, transport=transport,
+            )
+            self.assertTrue(first["executed"])
+            original_record = json.loads((sources_dir / "download.json").read_text())
+            generations_before = set((sources_dir / "generations").glob("*"))
+
+            with mock.patch("rbpbench.coordinates.runner._guarded_write_record", side_effect=self._boom):
+                with self.assertRaises(RuntimeError):
+                    stage_download(
+                        build="hg38", source_spec=adjusted, sources_dir=sources_dir, allow_mapping=True,
+                        host_role="approved_mac", dry_run=False, transport=transport,
+                    )
+
+            self.assertEqual(json.loads((sources_dir / "download.json").read_text()), original_record)
+            generations_after = set((sources_dir / "generations").glob("*"))
+            self.assertEqual(generations_before, generations_after)
+
+    def test_derive_selection_write_failure_discards_the_new_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            from rbpbench.coordinates.execution_sources import load_execution_sources
+
+            spec = load_execution_sources(FIXTURE_EXECUTION_SOURCES).reference_sources["hg38"]
+            source_fasta = tmp_path / "source.fna"
+            source_fasta.write_text(">NC_TEST1.1\nACGTACGT\n")
+            report_path = tmp_path / "report.txt"
+            report_header = (
+                "# Sequence-Name\tSequence-Role\tAssigned-Molecule\tAssigned-Molecule-Location/Type\t"
+                "GenBank-Accn\tRelationship\tRefSeq-Accn\tAssembly-Unit\tSequence-Length\tUCSC-style-name\n"
+            )
+            report_path.write_text(
+                report_header + "1\tassembled-molecule\t1\tChromosome\tNC_TEST1.1\t=\tNC_TEST1.1\tPrimary Assembly\t8\tNC_TEST1.1\n"
+            )
+            download_record = {
+                "executed": True,
+                "fasta": {"dest_path": str(source_fasta), "sha256": sha256_file(source_fasta)},
+                "assembly_report": {"dest_path": str(report_path), "sha256": sha256_file(report_path)},
+                "checksum_listing": {"dest_path": str(report_path), "sha256": sha256_file(report_path)},
+            }
+            derived_dir = tmp_path / "derived"
+
+            first = stage_derive(
+                build="hg38", source_spec=spec, derived_dir=derived_dir, allow_mapping=True,
+                host_role="approved_mac", download_record=download_record, dry_run=False,
+            )
+            self.assertTrue(first["executed"])
+            original_record = json.loads((derived_dir / "derive.json").read_text())
+            generations_before = set((derived_dir / "generations").glob("*"))
+
+            with mock.patch("rbpbench.coordinates.runner._guarded_write_record", side_effect=self._boom):
+                with self.assertRaises(RuntimeError):
+                    stage_derive(
+                        build="hg38", source_spec=spec, derived_dir=derived_dir, allow_mapping=True,
+                        host_role="approved_mac", download_record=download_record, dry_run=False,
+                    )
+
+            self.assertEqual(json.loads((derived_dir / "derive.json").read_text()), original_record)
+            generations_after = set((derived_dir / "generations").glob("*"))
+            self.assertEqual(generations_before, generations_after)
+
     def test_index_selection_write_failure_discards_the_new_generation(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

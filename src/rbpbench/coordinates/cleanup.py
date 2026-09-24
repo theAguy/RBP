@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,40 @@ class CleanupRefused(RuntimeError):
     """Raised when a cleanup target or precondition fails a safety check.
     Nothing is deleted when this is raised.
     """
+
+
+def resolve_git_repo_root(cwd: Path) -> Path | None:
+    """Independently resolve the checked-out Git working-tree root for
+    ``cwd`` via ``git rev-parse --show-toplevel`` (B1-F6): the CLI-level
+    cleanup entry point must never simply trust a caller-supplied
+    ``--repo-root`` at face value, even when it happens to agree with
+    ``--indices-dir``'s parent — two mutually-consistent CLI flags prove
+    nothing about whether that path is actually the real repository root.
+    Returns ``None`` (never raises) when ``git`` is unavailable or ``cwd`` is
+    not inside a Git working tree; the caller must fail closed on ``None``,
+    never silently fall back to trusting the CLI-supplied root.
+
+    Low-level callers in this module (:func:`plan_index_cleanup`,
+    :func:`execute_index_cleanup`) never call this themselves and keep
+    accepting an explicit ``repo_root`` parameter unchanged, so direct unit
+    tests of those functions (the "low-level test boundary") remain free to
+    inject any root without needing a real Git checkout.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            cwd=str(cwd),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    output = completed.stdout.strip()
+    return Path(output) if output else None
 
 
 @dataclass(frozen=True)
@@ -266,6 +301,7 @@ def execute_index_cleanup(
 __all__ = [
     "CleanupRefused",
     "CleanupPlan",
+    "resolve_git_repo_root",
     "plan_index_cleanup",
     "execute_index_cleanup",
     "write_cleanup_receipt",

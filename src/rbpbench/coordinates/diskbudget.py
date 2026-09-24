@@ -199,6 +199,47 @@ def check_pinned_volumes(paths: dict[str, Path], *, primary: Path) -> tuple[str,
     return tuple(violations)
 
 
+@dataclass
+class BuildOutputBudget:
+    """One shared LIVE per-build output-byte counter (B1-F1): a single
+    instance's ``remaining_bytes`` is the actual combined 4-GiB allowance
+    left for one build's SAM/BED/log, mappings, reference-index, and report
+    artifacts, given everything already accepted for that SAME build
+    (whichever of download/derive/index/align/exact_match/report already
+    holds accepted output on disk) — never each writer/stage independently
+    granted its own full 4 GiB.
+
+    A fresh instance is constructed immediately before each build-scoped
+    stage call, seeded with the CURRENT on-disk accepted bytes of every
+    OTHER stage for this build (never the stage about to run's own prior
+    bytes, which are about to be superseded by this very attempt — counting
+    them would double-charge a stage against itself on every retry). Each
+    writer inside that one stage call then shares this same instance,
+    calling :meth:`accept` immediately after its own output is accepted so a
+    later writer in the same stage (e.g. minimap2 after bwa in ``align``, or
+    minimap2 after bwa within one ``align`` attempt) sees the reduced
+    remainder.
+    """
+
+    total_allowance_bytes: int
+    accepted_bytes: int = 0
+
+    @property
+    def remaining_bytes(self) -> int:
+        return max(0, self.total_allowance_bytes - self.accepted_bytes)
+
+    def accept(self, num_bytes: int) -> None:
+        self.accepted_bytes += max(0, num_bytes)
+
+
+def start_build_output_budget(
+    *, already_accepted_bytes: int = 0, total_allowance_gib: float = BUILD_OUTPUT_ALLOWANCE_GIB
+) -> BuildOutputBudget:
+    return BuildOutputBudget(
+        total_allowance_bytes=int(total_allowance_gib * GIB), accepted_bytes=already_accepted_bytes
+    )
+
+
 @dataclass(frozen=True)
 class ProjectedPeakCheck:
     ok: bool
@@ -267,6 +308,8 @@ __all__ = [
     "DiskBudgetExceeded",
     "DiskSnapshot",
     "snapshot",
+    "BuildOutputBudget",
+    "start_build_output_budget",
     "DiskBudgetLedger",
     "save_ledger",
     "load_ledger",

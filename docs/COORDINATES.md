@@ -231,14 +231,25 @@ human reference, build a human-genome index, or run real mapping.
   runner's `--cleanup-index BUILD` flag) removes exactly
   `<repo-root>/indices/<build>/` — pinned to the CLI's own `--repo-root`
   (default `.`), never an arbitrary `--indices-dir`: the resolved target
-  must equal exactly `repo-root/indices/<build>` or cleanup refuses. Every
+  must equal exactly `repo-root/indices/<build>` or cleanup refuses. The
+  CLI entry point additionally resolves the checked-out Git working-tree
+  root INDEPENDENTLY (`resolve_git_repo_root`, `git rev-parse
+  --show-toplevel`) and refuses a `--repo-root` that disagrees with it —
+  two mutually-consistent CLI flags (`--repo-root` and `--indices-dir`'s
+  parent) prove nothing about whether the agreed-upon path is actually the
+  real repository root; root injection remains available only at the
+  low-level `cleanup.py` function boundary for direct unit tests. Every
   path component between the target and `--repo-root` is checked for a
   symlink (not merely the immediate parent), and the target must still be
   equal to, contain, or be contained by neither the reference directory (the
   *actual* accepted reference recorded by `derive.json`, not a hardcoded
-  guess) nor the output directory. Deletion requires index provenance,
-  successful mapping outputs, *and* the accepted report/`provenance.json`
-  hashes to already be recorded and hash-verified on disk (not merely a bare
+  guess) nor the output directory. A valid, executed, hash-verified
+  `derive.json` record is now mandatory before cleanup proceeds at all — a
+  missing, unreadable, or hash-drifted derive record refuses cleanup
+  outright rather than silently dropping the accepted-reference guard.
+  Deletion requires index provenance, successful mapping outputs, *and* the
+  accepted report/report-Markdown/`provenance.json` hashes to already be
+  recorded and hash-verified on disk (not merely a bare
   `reconciliation.status == "passed"` string). The pre-deletion file
   list/hashes/sizes and the full index manifest are captured once into a
   receipt outside the disposable directory; the post-deletion write reuses
@@ -256,41 +267,81 @@ human reference, build a human-genome index, or run real mapping.
   projected free disk would fall under 80 GiB; `check_pinned_volumes` covers
   `--output-dir`, `--indices-dir`, `--sources-dir`, `--derived-dir`, and
   every `--reference` override. Recorded in `provenance.json`'s
-  `disk_budget` key. Within one build, `align`'s BWA/minimap2 writers and
-  `exact_match`'s SeqKit writer share ONE combined 4-GiB build-output
-  allowance (`BUILD_OUTPUT_ALLOWANCE_GIB`) — each writer's live cap is the
-  remainder after every earlier writer's actual accepted bytes for that
-  build, never its own independent full 4 GiB.
+  `disk_budget` key. Within one build, `align`'s BWA/minimap2 writers,
+  `exact_match`'s SeqKit writer, and `report`'s mappings/reference-index/
+  report-JSON/report-Markdown writers ALL share ONE live
+  `BuildOutputBudget` object (`rbpbench.coordinates.diskbudget`) covering the
+  combined 4-GiB build-output allowance (`BUILD_OUTPUT_ALLOWANCE_GIB`) —
+  freshly seeded, before each stage call, with every OTHER stage's current
+  accepted bytes for that build (never the stage about to run's own prior
+  bytes). Each writer's live cap is the remainder after every earlier
+  writer's actual accepted bytes; the cap covers COMBINED stdout+stderr,
+  polled live while the subprocess is still running, not stdout alone.
 - **Transactional multi-file promotion**: `download`, `derive`, `index`,
-  `align`, and `exact_match` each write their complete multi-file output set
-  directly into a fresh, uniquely-named `<base-dir>/generations/<id>/`
-  directory (`_new_generation_dir`) — never at a fixed, reused final path.
-  The set only becomes "accepted" when the stage's own JSON record
-  (`download.json`/`derive.json`/`index.json`/`align.json`/
-  `exact_match.json`) is written, atomically, pointing at that directory's
-  paths; a failure at any point before that write — including between
-  building the two index files, or between the derived FASTA and its
-  manifest — discards the new generation and leaves the previously accepted
-  one (if any), still referenced by the prior record, byte-for-byte intact.
+  `align`, `exact_match`, and `report` each write their complete multi-file
+  output set directly into a fresh, uniquely-named
+  `<base-dir>/generations/<id>/` directory (`_new_generation_dir`) — never
+  at a fixed, reused final path. The set only becomes "accepted" when the
+  stage's own JSON record (`download.json`/`derive.json`/`index.json`/
+  `align.json`/`exact_match.json`/`report_state.json`) is written,
+  atomically, pointing at that directory's paths; a failure at any point
+  before that write — including between building the two index files, or
+  between the derived FASTA and its manifest, or while writing the
+  selection record itself (in which case the new generation is explicitly
+  discarded) — leaves the previously accepted one (if any), still
+  referenced by the prior record, byte-for-byte intact. `report` additionally
+  validates reconciliation status AND the combined disk budget BEFORE any
+  promotion decision, so a failed forced retry can never overwrite a
+  previously accepted report; human-convenience mirror copies of
+  `report.json`/`report.md`/`mappings.tsv.gz`/`reference_index.json` at the
+  conventional fixed `<build>/` filenames are written only AFTER
+  `report_state.json` is durably committed, and are never treated as ground
+  truth by `combined_report`/cleanup/provenance.
   A restart skip additionally re-verifies the current accepted evidence
   against its recorded hashes before trusting it (never fingerprint
   equality alone): `_verify_download_evidence_hashes`,
   `_verify_derive_evidence_hashes`, `_verify_index_evidence_hashes`,
-  `_verify_align_evidence_hashes`, `_verify_exact_match_evidence_hashes`;
-  `align`'s skip check additionally re-verifies the *current* resolved index
-  binding, and `derive` itself re-hashes its accepted source inputs
-  immediately before deriving.
+  `_verify_align_evidence_hashes`, `_verify_exact_match_evidence_hashes`,
+  `_verify_report_state_evidence_hashes`; `align`'s skip check additionally
+  re-verifies the *current* resolved index binding, and `derive` itself
+  re-hashes its accepted source inputs (including the derived MANIFEST's own
+  hash, not merely its path) immediately before deriving.
+- **Chained generation digests**: every accepted stage record carries its
+  own content-derived `generation_digest` (identical content — even
+  rebuilt into a fresh generation directory by a forced same-input rerun —
+  yields the same digest), and each downstream record
+  (`align.json`'s `upstream_index_generation_digest`,
+  `exact_match.json`'s `upstream_align_generation_digest`,
+  `report_state.json`'s `upstream_align_generation_digest`/
+  `upstream_exact_match_generation_digest`) names the EXACT upstream
+  generation it was produced from. Restart-skip revalidation compares the
+  recorded digest against the upstream stage's CURRENT digest, so a forced
+  upstream rerun that changes actual content (even one whose own declared
+  inputs never changed) forces the downstream stage to re-verify, while a
+  byte-equivalent rebuild correctly stays skippable. A generation still
+  referenced by an accepted downstream record is never pruned.
+- Both the raw reference-manifest FILE hash (`reference_manifest_raw_sha256`)
+  and the canonical parsed-content hash (`reference_manifest_content_sha256`)
+  are recorded on `index.json`/`align.json`/`exact_match.json`/
+  `report_state.json` and on the index manifest itself, and both are
+  compared downstream — two manifest files that parse to identical content
+  but differ byte-for-byte (e.g. whitespace-only reformatting) are still
+  distinguished.
 - Real mapping now requires **exactly one** explicit `--build`; the runner
   refuses `--allow-mapping` with zero or multiple builds.
 - Checkpoint compatibility is executable, not a convention: a real
   (non-`--dry-run`) `--allow-mapping` invocation's `--stage` list must name
   exactly one build-scoped stage (`download`/`derive`/`index`/`align`/
-  `exact_match`/`report`) — `sample`/`decode`/`controls`/`preflight` may
-  still accompany it, since none is gated by a checkpoint boundary, but a
-  list spanning e.g. `index` through `report` in one invocation (crossing
-  B3 preparation into B4+ execution without a review stop) is refused before
-  any data access or subprocess execution. `combined_report` never needs
-  `--allow-mapping` at all and always runs in its own separate invocation.
+  `exact_match`/`report`), accompanied by nothing but `preflight` —
+  `sample`/`decode`/`controls` must run in their OWN separate invocation
+  (they may still freely carry `--allow-mapping`, which is simply unused by
+  them, as long as no build-scoped stage accompanies them in the same
+  call), so a list spanning e.g. `index` through `report`, or mixing a B2
+  stage with a build-scoped one, in one invocation (crossing a checkpoint
+  review gate without a stop) is refused before any data access or
+  subprocess execution. `combined_report` must never accompany
+  `--allow-mapping` at all, even alone, and always runs in its own separate,
+  unauthorized invocation.
 - `check_minimap2_mapping_stderr` rejects minimap2's literal multi-part-index
   warning text (`"multi-part index"`/`"multipart index"`), not merely a
   multiple-`[M::mm_idx_stat]`-line count: a single mapping invocation only

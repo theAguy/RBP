@@ -550,6 +550,26 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
             "--build", "hg38",
         ]
 
+    @staticmethod
+    def _without_mapping_authorization(argv: list) -> list:
+        """B1-F5: combined_report must never run with --allow-mapping; strip
+        it (and the paired --host-role value) from an otherwise-authorized
+        argv list built for the earlier per-build stages.
+        """
+        result: list = []
+        skip_next = False
+        for token in argv:
+            if skip_next:
+                skip_next = False
+                continue
+            if token == "--allow-mapping":
+                continue
+            if token == "--host-role":
+                skip_next = True
+                continue
+            result.append(token)
+        return result
+
     def test_manifest_becoming_invalid_while_fasta_unchanged_blocks_align(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -620,7 +640,7 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
                 common = self._authorized_common(output_dir, reference, manifest_path)
                 for stage in ("sample", "decode", "controls", "align", "exact_match", "report"):
                     main([*common, "--stage", stage])
-                main([*common, "--stage", "combined_report"])
+                main([*self._without_mapping_authorization(common), "--stage", "combined_report"])
 
                 combined_before = json.loads((output_dir / "report.json").read_text())
                 self.assertIsNone(combined_before["per_build"]["hg38"]["retention"]["combined"]["by_contig_category"])
@@ -640,7 +660,7 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
 
                 for stage in ("align", "exact_match", "report"):
                     main([*common, "--stage", stage])
-                main([*common, "--stage", "combined_report"])
+                main([*self._without_mapping_authorization(common), "--stage", "combined_report"])
 
             align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
             self.assertTrue(align_record["executed"])
@@ -696,13 +716,15 @@ class ReferenceManifestFingerprintTests(unittest.TestCase):
                 other_payload = dict(original_manifest)
                 other_payload["contig_categories"] = {"chr1": "unlocalized_scaffold"}
                 other_manifest_path.write_text(json.dumps(other_payload))
+                # B1-F5: combined_report must never accompany --allow-mapping,
+                # even alone; it needs neither mapping authorization nor a
+                # host role since it only reads already-accepted per-build
+                # reports back from disk.
                 argv = [
                     "--config", str(FIXTURE_CONFIG),
                     "--csv", str(FIXTURE_CSV),
                     "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
-                    "--allow-mapping",
-                    "--host-role", "approved_mac",
                     "--reference", f"hg38={reference}",
                     "--reference-manifest", f"hg38={other_manifest_path}",
                     "--build", "hg38",
@@ -914,9 +936,11 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
             "--reference-manifest", f"{build}={manifest}",
             "--build", build,
         ]
-        # B1-C5: a real --allow-mapping invocation names exactly one
-        # build-scoped stage; sample/decode/controls may still accompany it.
-        main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align"])
+        # B1-F5: a real --allow-mapping invocation names exactly one
+        # build-scoped stage, accompanied by nothing but "preflight";
+        # sample/decode/controls must run in their own separate invocation.
+        main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls"])
+        main([*common, "--stage", "align"])
         main([*common, "--stage", "exact_match"])
         main([*common, "--stage", "report"])
 
@@ -1018,8 +1042,10 @@ class RunnerRealMappingCapabilityTests(unittest.TestCase):
                     "--reference-manifest", f"hg38={manifest_path}",
                     "--build", "hg38",
                 ]
-                # B1-C5: exactly one build-scoped stage per invocation.
-                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align"])
+                # B1-F5: exactly one build-scoped stage per invocation,
+                # accompanied by nothing but "preflight".
+                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls"])
+                main([*common, "--stage", "align"])
                 main([*common, "--stage", "exact_match"])
                 main([*common, "--stage", "report"])
 
@@ -1094,11 +1120,12 @@ class SequentialTwoBuildProcessingTests(unittest.TestCase):
                 # `decode`/`controls` are build-independent and restart-skip
                 # (matching fingerprint) on the second invocation.
                 for build in ("hg38", "hg19"):
-                    # B1-C5: a real --allow-mapping invocation names exactly
-                    # one build-scoped stage; sample/decode/controls may
-                    # still accompany it.
+                    # B1-F5: a real --allow-mapping invocation names exactly
+                    # one build-scoped stage, accompanied by nothing but
+                    # "preflight"; sample/decode/controls run separately.
                     build_common = [*common, "--allow-mapping", "--build", build]
-                    main([*build_common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align"])
+                    main([*build_common, "--stage", "sample", "--stage", "decode", "--stage", "controls"])
+                    main([*build_common, "--stage", "align"])
                     main([*build_common, "--stage", "exact_match"])
                     main([*build_common, "--stage", "report"])
                 # combined_report reads both already-produced per-build
@@ -1404,9 +1431,11 @@ class ProvenanceCompletenessTests(unittest.TestCase):
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
             with mock.patch.dict(os.environ, env), _approved_host_context():
-                # B1-C5: exactly one build-scoped stage per --allow-mapping
-                # invocation; combined_report never needs --allow-mapping.
-                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align"])
+                # B1-F5: exactly one build-scoped stage per --allow-mapping
+                # invocation, accompanied by nothing but "preflight";
+                # combined_report never needs (and must never have) --allow-mapping.
+                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls"])
+                main([*common, "--stage", "align"])
                 main([*common, "--stage", "exact_match"])
                 main([*common, "--stage", "report"])
                 main(

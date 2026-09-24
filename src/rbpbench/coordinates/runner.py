@@ -57,7 +57,7 @@ from rbpbench.coordinates.alignment import (
     near_tied_secondary_fractions,
     parse_sam_line,
 )
-from rbpbench.coordinates.cleanup import CleanupRefused, execute_index_cleanup, plan_index_cleanup
+from rbpbench.coordinates.cleanup import CleanupRefused, execute_index_cleanup, plan_index_cleanup, resolve_git_repo_root
 from rbpbench.coordinates.commands import (
     bwa_mem_command,
     format_command,
@@ -77,12 +77,13 @@ from rbpbench.coordinates.download import (
 )
 from rbpbench.coordinates.diskbudget import (
     BUILD_OUTPUT_ALLOWANCE_GIB,
-    GIB,
     PLANNED_ALLOWANCES_GIB,
+    BuildOutputBudget,
     DiskBudgetExceeded,
     DiskBudgetLedger,
     check_pinned_volumes,
     check_projected_peak,
+    start_build_output_budget,
     start_ledger,
 )
 from rbpbench.coordinates.exact_match import exact_occurrence_count, exact_unique_confirmed, parse_seqkit_bed
@@ -128,17 +129,22 @@ STAGES = (
 BUILD_SCOPED_STAGES = ("download", "derive", "index", "align", "exact_match", "report")
 DEFAULT_BUILDS = ("hg38", "hg19")
 
-# B1-C5: stages that may freely accompany the single authorized build-scoped
-# stage in one --allow-mapping invocation without crossing a checkpoint
-# review gate — plain data preparation (sample/decode/controls are
-# build-independent and not gated by any B3-B6 checkpoint), preflight (a
-# read-only readiness check), and combined_report (reads already-produced
-# per-build reports back from disk and never itself branches on
-# allow_mapping, so its presence or absence changes nothing about what
-# combined_report does; it typically runs in its own separate,
-# unauthorized invocation, but tolerating --allow-mapping alongside it here
-# is not itself a checkpoint-crossing risk).
-_ALWAYS_ALLOWED_WITH_MAPPING = frozenset({"preflight", "sample", "decode", "controls", "combined_report"})
+# B1-F5: the ONLY stage that may accompany the single authorized
+# build-scoped stage in one real --allow-mapping invocation without crossing
+# a checkpoint review gate is "preflight" (a read-only readiness check that
+# never itself executes real work). sample/decode/controls are B2-only
+# stages and must never be combined with a build-scoped stage under real
+# mapping authorization — doing so could cross the B2 review gate directly
+# into real B3-B6 mapping in one invocation. combined_report must never
+# accompany --allow-mapping AT ALL (even alone): Task 001B requires it to
+# run as its own separate, non-mapping invocation over already-accepted
+# per-build reports, never combined with (or mistaken for) an authorized
+# mapping invocation.
+_ALWAYS_ALLOWED_WITH_MAPPING = frozenset({"preflight"})
+# B2-only stages: fine alone (or together with each other) under
+# --allow-mapping — the flag is simply unused by them — but never together
+# with a build-scoped stage in the same invocation (B1-F5).
+_B2_ONLY_STAGES = frozenset({"sample", "decode", "controls"})
 
 CONTROL_ID_PREFIX = "control_"
 
@@ -469,15 +475,30 @@ def _run_tool_to_file(
     interpolated shell string. Bounded by a generous timeout so a wedged
     mapper process cannot hang the pipeline forever.
 
-    ``max_output_bytes`` (B1-R4), when given, is polled against the growing
-    ``output_path`` while the subprocess is still running; a breach kills the
-    process and raises :class:`DiskBudgetExceeded` rather than ever letting a
-    caller promote a silently-truncated-but-accepted file. A fast-finishing
-    process is still checked once more after it exits, so a tool that writes
-    its whole output before the first poll cannot slip through uncapped.
+    ``max_output_bytes`` (B1-R4/F1), when given, is the maximum COMBINED
+    stdout-plus-stderr byte count for this one call, polled live against the
+    growing ``output_path`` AND ``stderr_path`` together while the subprocess
+    is still running; a breach kills the process and raises
+    :class:`DiskBudgetExceeded` rather than ever letting a caller promote a
+    silently-truncated-but-accepted file. Counting stderr is required, not
+    optional: a tool that writes little to stdout but grows its stderr
+    unbounded must be caught exactly like one that grows stdout unbounded —
+    polling ``output_path`` alone previously let stderr-only growth bypass
+    the cap entirely. A fast-finishing process is still checked once more
+    after it exits, so a tool that writes its whole output before the first
+    poll cannot slip through uncapped.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _combined_bytes() -> int:
+        total = 0
+        if output_path.exists():
+            total += output_path.stat().st_size
+        if stderr_path.exists():
+            total += stderr_path.stat().st_size
+        return total
+
     with output_path.open("w") as out_handle, stderr_path.open("w") as err_handle:
         process = subprocess.Popen(list(argv), shell=False, stdout=out_handle, stderr=err_handle, text=True)
         start = time.monotonic()
@@ -487,11 +508,7 @@ def _run_tool_to_file(
                 process.wait(timeout=0.2)
                 break
             except subprocess.TimeoutExpired:
-                if (
-                    max_output_bytes is not None
-                    and output_path.exists()
-                    and output_path.stat().st_size > max_output_bytes
-                ):
+                if max_output_bytes is not None and _combined_bytes() > max_output_bytes:
                     process.kill()
                     process.wait()
                     killed_for_budget = True
@@ -500,13 +517,13 @@ def _run_tool_to_file(
                     process.kill()
                     process.wait()
                     raise subprocess.TimeoutExpired(list(argv), _MAPPING_TOOL_TIMEOUT_SECONDS)
-        if not killed_for_budget and max_output_bytes is not None and output_path.stat().st_size > max_output_bytes:
+        if not killed_for_budget and max_output_bytes is not None and _combined_bytes() > max_output_bytes:
             killed_for_budget = True
         if killed_for_budget:
             raise DiskBudgetExceeded(
-                f"output at {output_path} exceeded the {max_output_bytes}-byte build-output allowance while "
-                "writing; the process was terminated before completion and this attempt's output must not be "
-                "promoted (previously accepted evidence, if any, is untouched)"
+                f"combined stdout+stderr for {output_path}/{stderr_path} exceeded the {max_output_bytes}-byte "
+                "build-output allowance while writing; the process was terminated before completion and this "
+                "attempt's output must not be promoted (previously accepted evidence, if any, is untouched)"
             )
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, list(argv))
@@ -536,7 +553,62 @@ def _discard_generation(generation_dir: Path | None) -> None:
         shutil.rmtree(generation_dir, ignore_errors=True)
 
 
-def _prune_superseded_generation(old_record: dict, *, path_fields: Sequence[str], new_generation_dir: Path) -> None:
+def _upstream_generation_digest_violation(
+    record: dict, *, upstream_key: str, current_digest: str | None
+) -> tuple[str, ...]:
+    """B1-F3: whether ``record`` (an exact_match or report accepted record)
+    still names the CURRENT upstream stage's generation digest — used at
+    restart-skip time so a downstream stage is never left "skippable" after
+    its upstream stage produced a genuinely new generation (even when the
+    downstream stage's own declared-input fingerprint never changed, e.g. a
+    forced same-input upstream rerun). ``None`` on either side (no digest
+    recorded — an older record, or the upstream stage never executed) is
+    never treated as a violation by itself; the caller's own evidence-hash
+    check already covers a missing/non-executed record.
+    """
+    recorded = record.get(upstream_key)
+    if recorded is None or current_digest is None:
+        return ()
+    if recorded != current_digest:
+        return (
+            f"{upstream_key}: recorded generation digest {recorded} != current {current_digest} (the upstream "
+            "stage produced a new generation since this record was accepted)",
+        )
+    return ()
+
+
+def _generation_still_referenced(
+    old_generation_digest: str | None, *, downstream_records: Sequence[dict], upstream_keys: Sequence[str]
+) -> bool:
+    """B1-F3: whether any already-accepted downstream record still names
+    ``old_generation_digest`` as the exact upstream generation it was
+    produced from — used to refuse pruning a generation a downstream record
+    still depends on (see ``_prune_superseded_generation``'s
+    ``referenced_by`` argument).
+    """
+    if old_generation_digest is None:
+        return False
+    for record in downstream_records:
+        if not record.get("executed"):
+            continue
+        for key in upstream_keys:
+            value = record.get(key)
+            if isinstance(value, dict):
+                if old_generation_digest in value.values():
+                    return True
+            elif value == old_generation_digest:
+                return True
+    return False
+
+
+def _prune_superseded_generation(
+    old_record: dict,
+    *,
+    path_fields: Sequence[str],
+    new_generation_dir: Path,
+    referenced_by: Sequence[dict] = (),
+    upstream_keys: Sequence[str] = (),
+) -> None:
     """Best-effort disk hygiene, never required for correctness: once a new
     generation has been durably accepted (the caller's new JSON record has
     already been written), the OLD generation directory a just-replaced
@@ -545,8 +617,18 @@ def _prune_superseded_generation(old_record: dict, *, path_fields: Sequence[str]
     real B3-B6 retries. Only ever called AFTER the new record write
     succeeds; defensively never removes anything outside a ``generations/``
     directory this module itself created.
+
+    B1-F3: ``referenced_by``/``upstream_keys``, when given, additionally
+    refuse pruning when an already-accepted downstream record (e.g. an
+    ``align.json`` still naming this exact index generation's digest) still
+    depends on this generation — a forced upstream rerun must never silently
+    delete evidence a downstream accepted record still reproduces from.
     """
     if not old_record.get("executed"):
+        return
+    if upstream_keys and _generation_still_referenced(
+        old_record.get("generation_digest"), downstream_records=referenced_by, upstream_keys=upstream_keys
+    ):
         return
     old_dir: Path | None = None
     for field_name in path_fields:
@@ -784,7 +866,18 @@ def stage_download(
         "byte_size": checksum_dest.stat().st_size,
         "url": source_spec.md5checksums_url,
     }
-    _guarded_write_record(old_record_path, record)
+    # Transaction completion requirement: a failure WRITING the atomic
+    # selection record itself (after every file in the generation has
+    # already been successfully produced) must discard the new generation
+    # — never leave it lingering, unselected, on disk — while the previous
+    # selection (if any) is untouched regardless, since `_guarded_write_record`
+    # itself writes atomically (temp file + os.replace) and therefore can
+    # never corrupt the prior accepted record on a mid-write failure.
+    try:
+        _guarded_write_record(old_record_path, record)
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
     _prune_superseded_generation(old_record, path_fields=("fasta", "assembly_report"), new_generation_dir=generation_dir)
     return record
 
@@ -887,7 +980,19 @@ def stage_derive(
     record["output_fasta"] = str(output_fasta)
     record["output_fasta_sha256"] = derivation.output_fasta_sha256
     record["reference_manifest_path"] = str(manifest_path)
-    _guarded_write_record(old_record_path, record)
+    # B1-F4: the derived MANIFEST's own file hash/size, not merely the
+    # derived FASTA's — required so a later semantic edit to the manifest
+    # file (its content, not merely its path existing) is detectable as
+    # drifted evidence (see _verify_derive_evidence_hashes).
+    record["reference_manifest_sha256"] = sha256_file(manifest_path)
+    record["reference_manifest_byte_size"] = manifest_path.stat().st_size
+    # Transaction completion requirement: see the matching comment in
+    # stage_download.
+    try:
+        _guarded_write_record(old_record_path, record)
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
     _prune_superseded_generation(old_record, path_fields=("output_fasta",), new_generation_dir=generation_dir)
     return record
 
@@ -918,6 +1023,8 @@ def stage_index(
     reference_manifest: dict | None,
     dry_run: bool,
     disk_ledger: DiskBudgetLedger | None = None,
+    reference_manifest_raw_sha256: str | None = None,
+    downstream_align_record: dict | None = None,
 ) -> dict:
     """Prepare the build-specific BWA index prefix and minimap2 ``.mmi`` index
     under ``index_dir`` (the pinned ``indices/<build>/`` directory), with
@@ -1045,6 +1152,7 @@ def stage_index(
             minimap2=mm2_provenance,
             reference_sha256=current_reference_sha256,
             reference_manifest_content_sha256=current_manifest_hash,
+            reference_manifest_raw_sha256=reference_manifest_raw_sha256,
         )
         manifest_path = generation_dir / "index_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -1059,9 +1167,27 @@ def stage_index(
     record["bwa_index_prefix"] = str(bwa_prefix)
     record["minimap2_index"] = str(mm2_index)
     record["index_manifest_path"] = str(manifest_path)
-    _guarded_write_record(old_record_path, record)
+    record["reference_manifest_raw_sha256"] = reference_manifest_raw_sha256
+    # B1-F3: this generation's own content-derived digest — identical index
+    # content (even rebuilt into a fresh generation directory by a forced
+    # same-input rerun) yields the same digest, so downstream (align)
+    # revalidation can distinguish "byte-equivalent rebuild" from "the index
+    # actually changed" rather than trusting only a declared-input
+    # fingerprint chain.
+    record["generation_digest"] = manifest_content_sha256(manifest)
+    # Transaction completion requirement: see the matching comment in
+    # stage_download.
+    try:
+        _guarded_write_record(old_record_path, record)
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
     _prune_superseded_generation(
-        old_record, path_fields=("bwa_index_prefix", "minimap2_index"), new_generation_dir=generation_dir
+        old_record,
+        path_fields=("bwa_index_prefix", "minimap2_index"),
+        new_generation_dir=generation_dir,
+        referenced_by=(downstream_align_record or {},),
+        upstream_keys=("upstream_index_generation_digest",),
     )
     return record
 
@@ -1081,6 +1207,10 @@ def stage_align(
     bwa_index_prefix: Path | None = None,
     minimap2_index: Path | None = None,
     disk_ledger: DiskBudgetLedger | None = None,
+    reference_manifest_raw_sha256: str | None = None,
+    build_budget: BuildOutputBudget | None = None,
+    downstream_exact_match_record: dict | None = None,
+    downstream_report_state: dict | None = None,
 ) -> dict:
     placeholder_ref = reference or Path("reference.fasta")
     placeholder_reads = reads_fasta or Path("sample_sequences.fasta")
@@ -1148,6 +1278,7 @@ def stage_align(
     current_manifest_hash = manifest_content_sha256(reference_manifest)
     record["reference_sha256"] = current_reference_sha256
     record["reference_manifest_content_sha256"] = current_manifest_hash
+    record["reference_manifest_raw_sha256"] = reference_manifest_raw_sha256
 
     # B1-R2: stale/foreign/split-directory-override index rejection. Each
     # override (or the default indices/<build>/ pair) is verified against
@@ -1160,6 +1291,7 @@ def stage_align(
     # self-consistent but foreign index, rebuilt from a different FASTA with
     # its own manifest replaced to match, must still be refused).
     index_violations: list[str] = []
+    upstream_index_generation_digest: dict[str, str | None] = {}
     for override_path, key in ((bwa_index_prefix, "bwa_index"), (minimap2_index, "minimap2_index")):
         if override_path is None:
             continue
@@ -1176,8 +1308,17 @@ def stage_align(
                 expected_build=build,
                 expected_reference_sha256=current_reference_sha256,
                 expected_reference_manifest_content_sha256=current_manifest_hash,
+                expected_reference_manifest_raw_sha256=reference_manifest_raw_sha256,
             )
         )
+        # B1-F3: the exact index generation this align attempt is about to
+        # bind to, content-derived (identical content -> identical digest,
+        # regardless of which generation directory it happens to live in
+        # right now) so downstream restart validation can later detect "the
+        # index was rebuilt/altered since align last accepted it" even when
+        # a forced same-input rerun never changed any declared-input
+        # fingerprint.
+        upstream_index_generation_digest[key] = manifest_content_sha256(override_manifest)
     record["index_manifest_validation"] = {"violations": list(index_violations)}
     if index_violations:
         record["skip_reason"] = f"prepared index failed manifest verification (stale/foreign index): {index_violations}"
@@ -1213,7 +1354,15 @@ def stage_align(
     disk_budget_check = _check_disk_budget_or_fail(
         disk_ledger, label=f"align:{build}", allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB, disk_path=build_output_dir
     )
-    total_allowance_bytes = int(BUILD_OUTPUT_ALLOWANCE_GIB * GIB)
+    # B1-F1: the LIVE per-build output budget, shared with exact_match/report
+    # for this same build across separate invocations (see
+    # ``rbpbench.coordinates.diskbudget.BuildOutputBudget``) — already seeded
+    # by the caller with every OTHER stage's current accepted bytes for this
+    # build. Falls back to a fresh, unseeded budget for direct unit-test
+    # callers that invoke this function without going through ``main``.
+    budget = build_budget if build_budget is not None else start_build_output_budget(
+        total_allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB
+    )
 
     bwa_binary = resolve_binary_provenance("bwa", version=preflight_report.tool_versions.get("bwa"))
     mm2_binary = resolve_binary_provenance("minimap2", version=preflight_report.tool_versions.get("minimap2"))
@@ -1231,6 +1380,11 @@ def stage_align(
     mm2_sam = generation_dir / "align_minimap2_splice.sam"
     mm2_stderr = generation_dir / "align_minimap2_splice.stderr.log"
     try:
+        # B1-F1: bwa's own live cap is the budget's CURRENT remainder
+        # (already net of every other build artifact already accepted for
+        # this build) — both stdout (SAM) and stderr are polled together
+        # inside ``_run_tool_to_file``, so stderr-only growth cannot bypass
+        # this cap.
         bwa_provenance = run_tool_with_provenance(
             bwa_cmd.argv,
             tool="bwa_mem",
@@ -1239,14 +1393,26 @@ def stage_align(
             command_text=format_command(bwa_cmd.argv),
             binary=bwa_binary,
             run_fn=_run_tool_to_file,
-            run_kwargs={"max_output_bytes": total_allowance_bytes},
+            run_kwargs={"max_output_bytes": budget.remaining_bytes},
         )
-        # B1-C3: minimap2's own share of the combined allowance is whatever
-        # bwa did NOT already consume — a single shared live counter across
-        # both writers, rather than each independently capped at the full
-        # 4 GiB (which could accept up to 8 GiB combined).
         bwa_bytes_used = bwa_sam.stat().st_size + bwa_stderr.stat().st_size
-        mm2_max_output_bytes = max(0, total_allowance_bytes - bwa_bytes_used)
+        if bwa_bytes_used > budget.remaining_bytes:
+            raise DiskBudgetExceeded(
+                f"bwa_mem output for build {build!r} used {bwa_bytes_used} bytes, exceeding the remaining "
+                f"{budget.remaining_bytes}-byte combined build-output allowance even though it finished before a "
+                "live poll caught it; refusing to promote"
+            )
+        # Bytes are only durably ``accept``-ed into the shared budget once
+        # this whole align attempt is actually promoted (below, after the
+        # minimap2 mapping-stderr check) — never provisionally, which could
+        # otherwise let a later writer in the SAME process under-count
+        # remaining budget against an attempt that ends up discarded.
+        bwa_probe_remaining = max(0, budget.remaining_bytes - bwa_bytes_used)
+        # B1-C3/F1: minimap2's own share of the combined allowance is
+        # whatever the budget has left AFTER bwa's actual accepted bytes —
+        # a single shared live counter across both writers (and, via
+        # ``budget``, across exact_match/report too), rather than each
+        # independently capped at the full 4 GiB.
         mm2_provenance = run_tool_with_provenance(
             mm2_cmd.argv,
             tool="minimap2_splice",
@@ -1255,8 +1421,15 @@ def stage_align(
             command_text=format_command(mm2_cmd.argv),
             binary=mm2_binary,
             run_fn=_run_tool_to_file,
-            run_kwargs={"max_output_bytes": mm2_max_output_bytes},
+            run_kwargs={"max_output_bytes": bwa_probe_remaining},
         )
+        mm2_bytes_used = mm2_sam.stat().st_size + mm2_stderr.stat().st_size
+        if mm2_bytes_used > bwa_probe_remaining:
+            raise DiskBudgetExceeded(
+                f"minimap2_splice output for build {build!r} used {mm2_bytes_used} bytes, exceeding the remaining "
+                f"{bwa_probe_remaining}-byte combined build-output allowance even though it finished before a "
+                "live poll caught it; refusing to promote"
+            )
 
         # B1-R8: minimap2's own mapping-time stderr must be inspected for
         # the same disqualifying parameter-override/multipart-index
@@ -1276,6 +1449,11 @@ def stage_align(
         _guarded_write_record(build_output_dir / "align.json", record)
         return record
 
+    # B1-F1: only now — after every disqualifying check has passed and this
+    # generation is actually about to be promoted — durably accept both
+    # writers' bytes into the shared per-build budget.
+    budget.accept(bwa_bytes_used + mm2_bytes_used)
+
     if disk_ledger is not None:
         disk_ledger.record_step(f"align:{build}", path=build_output_dir)
 
@@ -1290,14 +1468,40 @@ def stage_align(
         "bwa_index_prefix": str(bwa_index_prefix) if bwa_index_prefix else None,
         "minimap2_index": str(minimap2_index) if minimap2_index else None,
     }
+    record["upstream_index_generation_digest"] = upstream_index_generation_digest
     record["disk_budget_check"] = disk_budget_check
     record["provenance"] = {
         "input_hashes": preflight_report.input_hashes,
         "bwa_mem": bwa_provenance.to_dict(),
         "minimap2_splice": mm2_provenance.to_dict(),
     }
-    _guarded_write_record(old_record_path, record)
-    _prune_superseded_generation(old_record, path_fields=("sam_paths",), new_generation_dir=generation_dir)
+    # B1-F3: this align attempt's own content-derived generation digest,
+    # chaining the exact index generation(s) it actually used — identical
+    # SAM/stderr content and identical upstream index digests always yield
+    # the same value, so a byte-equivalent forced rerun is distinguishable
+    # from a genuinely different one downstream (exact_match/report).
+    record["generation_digest"] = content_fingerprint(
+        "align_generation",
+        bwa_provenance.output_sha256,
+        bwa_provenance.stderr_sha256,
+        mm2_provenance.output_sha256,
+        mm2_provenance.stderr_sha256,
+        tuple(sorted(upstream_index_generation_digest.items())),
+    )
+    # Transaction completion requirement: see the matching comment in
+    # stage_download.
+    try:
+        _guarded_write_record(old_record_path, record)
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
+    _prune_superseded_generation(
+        old_record,
+        path_fields=("sam_paths",),
+        new_generation_dir=generation_dir,
+        referenced_by=(downstream_exact_match_record or {}, downstream_report_state or {}),
+        upstream_keys=("upstream_align_generation_digest",),
+    )
     return record
 
 
@@ -1315,6 +1519,9 @@ def stage_exact_match(
     align_record: dict,
     dry_run: bool,
     disk_ledger: DiskBudgetLedger | None = None,
+    reference_manifest_raw_sha256: str | None = None,
+    build_budget: BuildOutputBudget | None = None,
+    downstream_report_state: dict | None = None,
 ) -> dict:
     placeholder_query = reads_fasta or Path("sample_sequences.fasta")
     placeholder_ref = reference or Path("reference.fasta")
@@ -1367,6 +1574,13 @@ def stage_exact_match(
     if (
         align_record.get("reference_sha256") != current_reference_sha256
         or align_record.get("reference_manifest_content_sha256") != current_manifest_hash
+        # B1-F4: also compare the RAW manifest-file hash, not merely the
+        # canonical parsed-content hash — two manifest files that parse to
+        # identical content but differ byte-for-byte must still be detected.
+        or (
+            reference_manifest_raw_sha256 is not None
+            and align_record.get("reference_manifest_raw_sha256") not in (None, reference_manifest_raw_sha256)
+        )
     ):
         record["skip_reason"] = (
             f"current reference/manifest for build {build!r} does not match the reference recorded by align "
@@ -1377,6 +1591,11 @@ def stage_exact_match(
         return record
     record["reference_sha256"] = current_reference_sha256
     record["reference_manifest_content_sha256"] = current_manifest_hash
+    record["reference_manifest_raw_sha256"] = reference_manifest_raw_sha256
+    # B1-F3: the exact align generation this exact-match attempt is about to
+    # confirm, so downstream restart validation can detect align having
+    # produced a NEW generation since this exact_match record was accepted.
+    record["upstream_align_generation_digest"] = align_record.get("generation_digest")
 
     # Same hard, fresh preflight prerequisite as stage_align — exact-match
     # search gets its own independent binding check, not a reused one.
@@ -1400,17 +1619,16 @@ def stage_exact_match(
     disk_budget_check = _check_disk_budget_or_fail(
         disk_ledger, label=f"exact_match:{build}", allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB, disk_path=build_output_dir
     )
-    total_allowance_bytes = int(BUILD_OUTPUT_ALLOWANCE_GIB * GIB)
-    # B1-C3: SeqKit shares the SAME combined build-output allowance as
-    # align's BWA/minimap2 writers — never its own independent full 4 GiB —
-    # so the accounting reflects what align already accepted for this build.
-    align_already_accepted_bytes = _current_output_bytes(
-        (
-            *(align_record.get("sam_paths") or {}).values(),
-            *(align_record.get("stderr_paths") or {}).values(),
-        )
+    # B1-C3/F1: SeqKit shares the SAME live per-build budget as align's
+    # BWA/minimap2 writers (and report's writers) — never its own
+    # independent full 4 GiB — already seeded by the caller with every OTHER
+    # stage's current accepted bytes for this build.
+    budget = build_budget if build_budget is not None else start_build_output_budget(
+        already_accepted_bytes=_current_output_bytes(
+            (*(align_record.get("sam_paths") or {}).values(), *(align_record.get("stderr_paths") or {}).values())
+        ),
+        total_allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB,
     )
-    seqkit_max_output_bytes = max(0, total_allowance_bytes - align_already_accepted_bytes)
 
     seqkit_binary = resolve_binary_provenance("seqkit", version=preflight_report.tool_versions.get("seqkit"))
 
@@ -1432,11 +1650,20 @@ def stage_exact_match(
             command_text=format_command(query_cmd.argv),
             binary=seqkit_binary,
             run_fn=_run_tool_to_file,
-            run_kwargs={"max_output_bytes": seqkit_max_output_bytes},
+            run_kwargs={"max_output_bytes": budget.remaining_bytes},
         )
+        seqkit_bytes_used = bed_path.stat().st_size + stderr_path.stat().st_size
+        if seqkit_bytes_used > budget.remaining_bytes:
+            raise DiskBudgetExceeded(
+                f"seqkit_locate output for build {build!r} used {seqkit_bytes_used} bytes, exceeding the "
+                f"remaining {budget.remaining_bytes}-byte combined build-output allowance even though it finished "
+                "before a live poll caught it; refusing to promote"
+            )
     except BaseException:
         _discard_generation(generation_dir)
         raise
+
+    budget.accept(seqkit_bytes_used)
 
     if disk_ledger is not None:
         disk_ledger.record_step(f"exact_match:{build}", path=build_output_dir)
@@ -1453,8 +1680,23 @@ def stage_exact_match(
         "input_hashes": preflight_report.input_hashes,
         "seqkit_locate": provenance.to_dict(),
     }
-    _guarded_write_record(old_record_path, record)
-    _prune_superseded_generation(old_record, path_fields=("bed_path",), new_generation_dir=generation_dir)
+    record["generation_digest"] = content_fingerprint(
+        "exact_match_generation", provenance.output_sha256, provenance.stderr_sha256, record["upstream_align_generation_digest"]
+    )
+    # Transaction completion requirement: see the matching comment in
+    # stage_download.
+    try:
+        _guarded_write_record(old_record_path, record)
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
+    _prune_superseded_generation(
+        old_record,
+        path_fields=("bed_path",),
+        new_generation_dir=generation_dir,
+        referenced_by=(downstream_report_state or {},),
+        upstream_keys=("upstream_exact_match_generation_digest",),
+    )
     return record
 
 
@@ -1656,6 +1898,45 @@ def read_mappings_tsv_gz(path: Path) -> list[dict]:
         return list(csv.DictReader(handle, delimiter="\t"))
 
 
+def _report_state_path(build_output_dir: Path) -> Path:
+    return build_output_dir / "report_state.json"
+
+
+def _load_report_state(build_output_dir: Path) -> dict:
+    path = _report_state_path(build_output_dir)
+    if not path.is_file():
+        return {"executed": False}
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"executed": False}
+
+
+def _verify_report_state_evidence_hashes(report_state: dict) -> tuple[str, ...]:
+    """B1-F2: re-verify every artifact the accepted ``report_state.json``
+    record names — inside its own generation directory, the authoritative
+    source — still exists and hash-matches, immediately before a restart
+    skip. Mirrors ``_verify_align_evidence_hashes``/
+    ``_verify_exact_match_evidence_hashes`` for the report stage.
+    """
+    if not report_state.get("executed"):
+        return ("report_state.json does not record executed=true",)
+    violations: list[str] = []
+    if not _hash_matches(report_state.get("report_json_path"), report_state.get("report_json_sha256")):
+        violations.append("report report.json missing or hash mismatch (recorded evidence has drifted)")
+    if not _hash_matches(report_state.get("report_md_path"), report_state.get("report_md_sha256")):
+        violations.append("report report.md missing or hash mismatch (recorded evidence has drifted)")
+    if report_state.get("mappings_tsv_gz_path") is not None and not _hash_matches(
+        report_state.get("mappings_tsv_gz_path"), report_state.get("mappings_tsv_gz_sha256")
+    ):
+        violations.append("report mappings.tsv.gz missing or hash mismatch (recorded evidence has drifted)")
+    if report_state.get("reference_index_path") is not None and not _hash_matches(
+        report_state.get("reference_index_path"), report_state.get("reference_index_sha256")
+    ):
+        violations.append("report reference_index.json missing or hash mismatch (recorded evidence has drifted)")
+    return tuple(violations)
+
+
 def stage_report(
     sample: SamplingResult,
     *,
@@ -1669,10 +1950,33 @@ def stage_report(
     exact_match_record: dict,
     reference: Path | None,
     reference_manifest: dict | None = None,
+    reference_manifest_raw_sha256: str | None = None,
+    build_budget: BuildOutputBudget | None = None,
 ) -> dict:
+    """B1-F2: the complete per-build report artifact set (reference-index
+    diagnostic, compressed mappings table, report JSON, report Markdown) is
+    produced into one fresh, immutable generation directory and validated
+    (reconciliation status AND the combined build-output budget, B1-F1)
+    BEFORE any promotion decision. Promotion is a single atomic write of the
+    protected ``report_state.json`` pointer record (see
+    ``_guarded_write_record``); human-convenience mirror copies at the
+    conventional fixed ``build_output_dir`` filenames (``report.json`` etc.)
+    are written ONLY after that record has already been durably committed —
+    combined_report/cleanup/provenance all treat ``report_state.json`` (never
+    the mirror) as ground truth. A failed reconciliation or a budget breach
+    discards the candidate generation and NEVER touches a previously
+    accepted report at the fixed filenames or ``report_state.json``: a forced
+    retry that fails can never silently erase a previously accepted report
+    (B1-F2's core defect).
+    """
     mapping_evaluated = bool(align_record.get("executed")) and bool(exact_match_record.get("executed"))
     mapping_results: tuple[MappingResult, ...] = ()
     expected_control_ids: tuple[str, ...] = ()
+    reference_binding: dict = {
+        "reference_sha256": None,
+        "reference_manifest_content_sha256": None,
+        "reference_manifest_raw_sha256": reference_manifest_raw_sha256,
+    }
 
     if mapping_evaluated:
         # B1-R1: report's active reference/manifest must equal both the
@@ -1698,53 +2002,166 @@ def stage_report(
             if (
                 upstream_record.get("reference_sha256") != current_reference_sha256
                 or upstream_record.get("reference_manifest_content_sha256") != current_manifest_hash
+                # B1-F4: also compare the RAW manifest-file hash, closing the
+                # gap a canonical-content-only comparison leaves.
+                or (
+                    reference_manifest_raw_sha256 is not None
+                    and upstream_record.get("reference_manifest_raw_sha256")
+                    not in (None, reference_manifest_raw_sha256)
+                )
             ):
                 raise SystemExit(
                     f"report refuses to combine build {build!r}: the current reference/manifest does not match "
                     f"the reference recorded by {label} (stale/foreign reference); refusing to attach current "
                     "evidence to older mapping evidence"
                 )
-        representative_ids = sorted(sample.representative_ids)
-        expected_control_ids = tuple(f"{CONTROL_ID_PREFIX}{sid}" for sid in representative_ids[: expected_controls])
-        expected_ids = {a.sample_id: a.stratum for a in sample.assignments}
-        for control_id in expected_control_ids:
-            expected_ids[control_id] = "control"
+        reference_binding["reference_sha256"] = current_reference_sha256
+        reference_binding["reference_manifest_content_sha256"] = current_manifest_hash
 
-        reference_lookup = None
-        if reference is not None and Path(reference).is_file():
-            # Indexed random access (never a whole-file load): suitable for
-            # an hg38/hg19-scale reference, since only a single sequential
-            # pass builds the index and every lookup thereafter seeks
-            # directly to the requested span.
-            index_entries, index_record = prepare_reference_index(Path(reference))
-            _write_json(build_output_dir / "reference_index.json", index_record)
-            reference_lookup = IndexedFastaReader(Path(reference), index_entries).fetch
-
-        mapping_results, rows = build_mapping_rows(
-            cfg,
-            expected_ids,
-            build=build,
-            bwa_sam=Path(align_record["sam_paths"]["bwa_mem"]),
-            minimap2_sam=Path(align_record["sam_paths"]["minimap2_splice"]),
-            exact_hits_bed=Path(exact_match_record["bed_path"]) if exact_match_record.get("bed_path") else None,
-            reference_lookup=reference_lookup,
-        )
-        write_mappings_tsv_gz(build_output_dir / Path(cfg.outputs.mappings_tsv_gz).name, rows)
-
-    reconciliation = reconcile_counts(
-        sample.assignments,
-        mapping_results,
-        expected_total=expected_total,
-        expected_representative=expected_representative,
-        expected_controls=expected_controls,
-        mapping_evaluated=mapping_evaluated,
-        expected_control_ids=expected_control_ids,
-        expected_builds=(build,) if mapping_evaluated else (),
-        expected_modes=("primary", "splice") if mapping_evaluated else (),
+    build_output_dir.mkdir(parents=True, exist_ok=True)
+    old_state = _load_report_state(build_output_dir)
+    budget = build_budget if build_budget is not None else start_build_output_budget(
+        already_accepted_bytes=_current_output_bytes(
+            (
+                *(align_record.get("sam_paths") or {}).values(),
+                *(align_record.get("stderr_paths") or {}).values(),
+                exact_match_record.get("bed_path"),
+                exact_match_record.get("stderr_path"),
+            )
+        ),
+        total_allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB,
     )
-    report = build_report(sample.assignments, mapping_results, reconciliation=reconciliation)
-    _write_json(build_output_dir / Path(cfg.outputs.report_json).name, report)
-    (build_output_dir / Path(cfg.outputs.report_md).name).write_text(render_markdown(report))
+
+    generation_dir = _new_generation_dir(build_output_dir, prefix="report")
+    mappings_path: Path | None = None
+    reference_index_path: Path | None = None
+    report_json_path = generation_dir / Path(cfg.outputs.report_json).name
+    report_md_path = generation_dir / Path(cfg.outputs.report_md).name
+    try:
+        if mapping_evaluated:
+            representative_ids = sorted(sample.representative_ids)
+            expected_control_ids = tuple(
+                f"{CONTROL_ID_PREFIX}{sid}" for sid in representative_ids[:expected_controls]
+            )
+            expected_ids = {a.sample_id: a.stratum for a in sample.assignments}
+            for control_id in expected_control_ids:
+                expected_ids[control_id] = "control"
+
+            reference_lookup = None
+            if reference is not None and Path(reference).is_file():
+                # Indexed random access (never a whole-file load): suitable
+                # for an hg38/hg19-scale reference, since only a single
+                # sequential pass builds the index and every lookup
+                # thereafter seeks directly to the requested span.
+                index_entries, index_record = prepare_reference_index(Path(reference))
+                reference_index_path = generation_dir / "reference_index.json"
+                _write_json(reference_index_path, index_record)
+                reference_lookup = IndexedFastaReader(Path(reference), index_entries).fetch
+
+            mapping_results, rows = build_mapping_rows(
+                cfg,
+                expected_ids,
+                build=build,
+                bwa_sam=Path(align_record["sam_paths"]["bwa_mem"]),
+                minimap2_sam=Path(align_record["sam_paths"]["minimap2_splice"]),
+                exact_hits_bed=Path(exact_match_record["bed_path"]) if exact_match_record.get("bed_path") else None,
+                reference_lookup=reference_lookup,
+            )
+            mappings_path = generation_dir / Path(cfg.outputs.mappings_tsv_gz).name
+            write_mappings_tsv_gz(mappings_path, rows)
+
+        reconciliation = reconcile_counts(
+            sample.assignments,
+            mapping_results,
+            expected_total=expected_total,
+            expected_representative=expected_representative,
+            expected_controls=expected_controls,
+            mapping_evaluated=mapping_evaluated,
+            expected_control_ids=expected_control_ids,
+            expected_builds=(build,) if mapping_evaluated else (),
+            expected_modes=("primary", "splice") if mapping_evaluated else (),
+        )
+        report = build_report(sample.assignments, mapping_results, reconciliation=reconciliation)
+        report_md_text = render_markdown(report)
+        report_json_text = json.dumps(report, indent=2, sort_keys=True) + "\n"
+        report_json_path.write_text(report_json_text)
+        report_md_path.write_text(report_md_text)
+
+        # B1-F1: the candidate set's combined bytes must fit the remaining
+        # per-build budget BEFORE any promotion decision — never promoted
+        # first and discovered oversized after.
+        candidate_bytes = _current_output_bytes(
+            [mappings_path, reference_index_path, report_json_path, report_md_path]
+        )
+        if candidate_bytes > budget.remaining_bytes:
+            raise DiskBudgetExceeded(
+                f"report artifact set for build {build!r} would use {candidate_bytes} bytes, exceeding the "
+                f"remaining {budget.remaining_bytes}-byte combined build-output allowance; refusing to promote "
+                "(previously accepted report, if any, is untouched)"
+            )
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
+
+    if reconciliation.status == "failed":
+        # B1-F2: NEVER promote on a failed reconciliation — the candidate
+        # generation is discarded and every previously accepted fixed-path
+        # artifact / report_state.json is left byte-for-byte untouched, so a
+        # forced retry that fails can never overwrite a previously accepted
+        # report (the exact B1-F2 defect).
+        _discard_generation(generation_dir)
+        return report
+
+    budget.accept(candidate_bytes)
+
+    new_state = {
+        "executed": True,
+        "generation_dir": str(generation_dir),
+        "mappings_tsv_gz_path": str(mappings_path) if mappings_path is not None else None,
+        "mappings_tsv_gz_sha256": sha256_file(mappings_path) if mappings_path is not None else None,
+        "reference_index_path": str(reference_index_path) if reference_index_path is not None else None,
+        "reference_index_sha256": sha256_file(reference_index_path) if reference_index_path is not None else None,
+        "report_json_path": str(report_json_path),
+        "report_json_sha256": sha256_file(report_json_path),
+        "report_md_path": str(report_md_path),
+        "report_md_sha256": sha256_file(report_md_path),
+        "reconciliation_status": reconciliation.status,
+        "reference_binding": reference_binding,
+        # B1-F3: the exact upstream align/exact_match generations this
+        # report attempt is about to confirm, so downstream restart
+        # validation can detect either having produced a NEW generation
+        # since this report was accepted.
+        "upstream_align_generation_digest": align_record.get("generation_digest"),
+        "upstream_exact_match_generation_digest": exact_match_record.get("generation_digest"),
+    }
+    new_state["generation_digest"] = content_fingerprint(
+        "report_generation",
+        new_state["report_json_sha256"],
+        new_state["report_md_sha256"],
+        new_state["mappings_tsv_gz_sha256"],
+        new_state["upstream_align_generation_digest"],
+        new_state["upstream_exact_match_generation_digest"],
+    )
+    # Transaction completion requirement: see the matching comment in
+    # stage_download.
+    try:
+        _guarded_write_record(_report_state_path(build_output_dir), new_state)
+    except BaseException:
+        _discard_generation(generation_dir)
+        raise
+    _prune_superseded_generation(old_state, path_fields=("report_json_path",), new_generation_dir=generation_dir)
+
+    # Human-convenience mirror at the conventional fixed filenames, written
+    # ONLY after report_state.json (the authoritative commit) has already
+    # succeeded — combined_report/cleanup/provenance never read these mirror
+    # files as ground truth, only report_state.json's generation-dir files.
+    (build_output_dir / Path(cfg.outputs.report_json).name).write_text(report_json_text)
+    (build_output_dir / Path(cfg.outputs.report_md).name).write_text(report_md_text)
+    if mappings_path is not None:
+        shutil.copyfile(mappings_path, build_output_dir / Path(cfg.outputs.mappings_tsv_gz).name)
+    if reference_index_path is not None:
+        shutil.copyfile(reference_index_path, build_output_dir / "reference_index.json")
+
     return report
 
 
@@ -2163,9 +2580,13 @@ def _verify_derive_evidence_hashes(derive_record: dict) -> tuple[str, ...]:
         return tuple(violations)
     if not _hash_matches(derive_record.get("output_fasta"), derive_record.get("output_fasta_sha256")):
         violations.append("derive output_fasta missing or hash mismatch (recorded evidence has drifted)")
-    manifest_path = derive_record.get("reference_manifest_path")
-    if not manifest_path or not Path(manifest_path).is_file():
-        violations.append("derive reference_manifest_path missing (recorded evidence has drifted)")
+    # B1-F4: the derived manifest's own CONTENT must still hash-match, not
+    # merely still exist at the recorded path — a semantic edit to the
+    # manifest file was previously accepted as valid restart evidence.
+    if not _hash_matches(derive_record.get("reference_manifest_path"), derive_record.get("reference_manifest_sha256")):
+        violations.append(
+            "derive reference_manifest_path missing or hash mismatch (recorded evidence has drifted)"
+        )
     return tuple(violations)
 
 
@@ -2216,8 +2637,12 @@ def _verify_report_evidence_hashes(build_dir: Path, *, cfg: FeasibilityConfig, o
     build = build_dir.name
     build_artifacts = (provenance.get("builds", {}).get(build) or {}).get("generated_artifacts") or {}
     violations: list[str] = []
+    # B1-F6: also verify the recorded report Markdown, not merely
+    # report.json/mappings.tsv.gz — a truncated/edited report.md must not be
+    # allowed to slip past cleanup's evidence gate.
     for key, filename in (
         ("report_json", Path(cfg.outputs.report_json).name),
+        ("report_md", Path(cfg.outputs.report_md).name),
         ("mappings_tsv_gz", Path(cfg.outputs.mappings_tsv_gz).name),
     ):
         recorded = build_artifacts.get(key)
@@ -2246,19 +2671,52 @@ def _run_cleanup_index(
     index_dir = indices_dir / build
     build_dir = _build_dir(output_dir, build)
 
-    # B1-C4: the actual accepted reference path (as derive.json recorded
+    # B1-F6: the pinned repository root must be resolved INDEPENDENTLY (the
+    # checked-out Git working-tree top-level), never merely trusted from the
+    # CLI-supplied --repo-root — even when --repo-root and --indices-dir's
+    # parent agree with EACH OTHER, that proves nothing about whether the
+    # agreed-upon path is actually the real repository root. This check is
+    # CLI-level only; the low-level cleanup.py functions keep accepting an
+    # explicit repo_root parameter unchanged for direct unit testing.
+    independent_root = resolve_git_repo_root(repo_root)
+    if independent_root is None:
+        raise SystemExit(
+            f"cleanup refused for build {build!r}: could not independently resolve the checked-out Git "
+            f"repository root from {repo_root} (not inside a Git working tree, or git is unavailable); refusing "
+            "to trust --repo-root alone"
+        )
+    if independent_root.resolve() != Path(repo_root).resolve():
+        raise SystemExit(
+            f"cleanup refused for build {build!r}: --repo-root {repo_root} does not match the independently "
+            f"resolved Git repository root {independent_root}; refusing a non-pinned/conflicting root"
+        )
+
+    # B1-C4/F6: the actual accepted reference path (as derive.json recorded
     # it), never a hardcoded references/derived/<build>/reference.fna guess
     # — a real Task 001B run's derived-reference root may differ from the
-    # documented default via --derived-dir.
+    # documented default via --derived-dir. A valid, executed, hash-verified
+    # derive record is now REQUIRED before cleanup proceeds at all (B1-F6):
+    # a missing/invalid/altered derive record refuses cleanup outright,
+    # rather than silently dropping the accepted-reference guard.
     derive_record_path = derived_dir / build / "derive.json"
-    reference_path: Path | None = None
-    if derive_record_path.is_file():
-        try:
-            derive_record = json.loads(derive_record_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            derive_record = {}
-        if derive_record.get("executed") and derive_record.get("output_fasta"):
-            reference_path = Path(derive_record["output_fasta"])
+    if not derive_record_path.is_file():
+        raise SystemExit(
+            f"cleanup refused for build {build!r}: no derive.json record found at {derive_record_path}; a valid, "
+            "executed, hash-verified derived reference is required before cleanup"
+        )
+    try:
+        derive_record = json.loads(derive_record_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        raise SystemExit(
+            f"cleanup refused for build {build!r}: derive.json at {derive_record_path} is unreadable: {exc}"
+        ) from exc
+    derive_evidence_violations = _verify_derive_evidence_hashes(derive_record)
+    if derive_evidence_violations:
+        raise SystemExit(
+            f"cleanup refused for build {build!r}: accepted derive evidence is missing or has drifted: "
+            f"{list(derive_evidence_violations)}"
+        )
+    reference_path = Path(derive_record["output_fasta"])
 
     # B1-C2: the index manifest now lives inside the accepted generation
     # directory named by index.json, never at a fixed index_dir/
@@ -2360,31 +2818,45 @@ def main(argv: Sequence[str] | None = None) -> None:
             "refused so a single invocation cannot cross review gates"
         )
 
-    # B1-C5: an explicit --stage list can still name every build-scoped
+    # B1-C5/F5: an explicit --stage list can still name every build-scoped
     # stage at once (download, derive, index, align, exact_match, report),
-    # crossing directly from one checkpoint's preparation into another's
-    # full execution without a review stop in between, despite the omitted/
-    # "all" rejection above. The simplest safe rule: exactly one real
-    # build-scoped stage per --allow-mapping invocation. Data-prep stages
-    # that are not gated by a checkpoint boundary (sample/decode/controls,
-    # and preflight) may still accompany it; only under --dry-run is a
+    # or combine a B2-only stage (sample/decode/controls) with a
+    # build-scoped one, or combine combined_report with mapping
+    # authorization — every one of these crosses directly from one
+    # checkpoint's preparation into another's full execution (or from B2
+    # straight into real mapping) without a review stop in between, despite
+    # the omitted/"all" rejection above. The rule: exactly one real
+    # build-scoped stage per --allow-mapping invocation, accompanied by
+    # nothing but "preflight"; combined_report must never accompany
+    # --allow-mapping at all, even alone. Only under --dry-run is a
     # multi-stage plan harmless (nothing ever executes for real), so this
     # check is scoped to real (non-dry-run) authorization only.
     if args.allow_mapping and not args.dry_run:
         requested_stages = tuple(args.stage or ())
+        if "combined_report" in requested_stages:
+            raise SystemExit(
+                "--allow-mapping must never accompany --stage combined_report (B1-F5): combined_report reads "
+                "already-produced per-build reports back from disk and must run as its own separate, "
+                f"non-mapping invocation after the per-build report is accepted; got --stage {list(requested_stages)!r}"
+            )
         build_scoped_requested = sorted(set(s for s in requested_stages if s in BUILD_SCOPED_STAGES))
         disallowed = [
             s for s in requested_stages if s not in BUILD_SCOPED_STAGES and s not in _ALWAYS_ALLOWED_WITH_MAPPING
         ]
         # At most one build-scoped stage (zero is fine: a call may be pure
-        # data-prep, e.g. --stage sample alone); two or more is exactly the
-        # checkpoint-crossing pattern this closes.
-        if len(build_scoped_requested) > 1 or disallowed:
+        # B2 data-prep, e.g. --stage sample alone — allow_mapping is simply
+        # unused by it); two or more is exactly the checkpoint-crossing
+        # pattern this closes. A build-scoped stage combined with ANY
+        # B2-only stage (or anything else besides "preflight") is likewise
+        # refused: sample/decode/controls must never cross the B2 gate
+        # directly into real mapping in the same invocation.
+        if len(build_scoped_requested) > 1 or (build_scoped_requested and disallowed):
             raise SystemExit(
                 "--allow-mapping requires an explicit --stage allowlist naming exactly one build-scoped stage "
-                f"(download/derive/index/align/exact_match/report) per invocation, so a single invocation cannot "
-                f"cross checkpoint review gates; got --stage {list(requested_stages)!r} (build-scoped: "
-                f"{build_scoped_requested!r}, other/disallowed: {disallowed!r})"
+                "(download/derive/index/align/exact_match/report) per invocation, accompanied by nothing but "
+                "'preflight', so a single invocation cannot cross checkpoint review gates; got --stage "
+                f"{list(requested_stages)!r} (build-scoped: {build_scoped_requested!r}, other/disallowed: "
+                f"{disallowed!r})"
             )
 
     references: dict[str, Path] = {}
@@ -2598,6 +3070,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     index_records: dict[str, dict] = {}
     align_records: dict[str, dict] = {}
     exact_match_records: dict[str, dict] = {}
+    report_states: dict[str, dict] = {}
     index_dirs: dict[str, Path] = {build: args.indices_dir / build for build in builds}
     sources_dirs: dict[str, Path] = {
         build: args.sources_dir / execution_source_spec.reference_sources[build].assembly
@@ -2621,6 +3094,37 @@ def main(argv: Sequence[str] | None = None) -> None:
         exact_match_records[build] = (
             json.loads(exact_path.read_text()) if exact_path.exists() else {"executed": False}
         )
+        report_states[build] = _load_report_state(build_dir)
+
+    def _build_budget_excluding(build: str, *, exclude_stage: str) -> BuildOutputBudget:
+        """B1-F1: a fresh, freshly-seeded per-build output budget for the
+        stage about to run — seeded with every OTHER build-scoped
+        writer-stage's CURRENT accepted bytes for this same build, never
+        including ``exclude_stage``'s own prior bytes (which this very
+        attempt is about to supersede).
+        """
+        align_record = align_records.get(build, {})
+        exact_match_record = exact_match_records.get(build, {})
+        report_state = report_states.get(build, {})
+        already_accepted = 0
+        if exclude_stage != "align" and align_record.get("executed"):
+            already_accepted += _current_output_bytes(
+                (*(align_record.get("sam_paths") or {}).values(), *(align_record.get("stderr_paths") or {}).values())
+            )
+        if exclude_stage != "exact_match" and exact_match_record.get("executed"):
+            already_accepted += _current_output_bytes(
+                (exact_match_record.get("bed_path"), exact_match_record.get("stderr_path"))
+            )
+        if exclude_stage != "report" and report_state.get("executed"):
+            already_accepted += _current_output_bytes(
+                (
+                    report_state.get("mappings_tsv_gz_path"),
+                    report_state.get("reference_index_path"),
+                    report_state.get("report_json_path"),
+                    report_state.get("report_md_path"),
+                )
+            )
+        return start_build_output_budget(already_accepted_bytes=already_accepted, total_allowance_gib=BUILD_OUTPUT_ALLOWANCE_GIB)
 
     def _resolved_bwa_index_prefix(build: str) -> Path | None:
         if build in bwa_index_prefix_overrides:
@@ -2653,6 +3157,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             return ()
         current_reference_sha256 = reference_manifest.get("sha256")
         current_manifest_hash = manifest_content_sha256(reference_manifest)
+        align_record = align_records.get(build, {})
+        recorded_upstream_digest = align_record.get("upstream_index_generation_digest") or {}
         violations: list[str] = []
         for override_path, key in (
             (_resolved_bwa_index_prefix(build), "bwa_index"),
@@ -2677,8 +3183,26 @@ def main(argv: Sequence[str] | None = None) -> None:
                     expected_build=build,
                     expected_reference_sha256=current_reference_sha256,
                     expected_reference_manifest_content_sha256=current_manifest_hash,
+                    expected_reference_manifest_raw_sha256=reference_manifest_hashes.get(build),
                 )
             )
+            # B1-F3: the CURRENT resolved index generation's own
+            # content-derived digest must still equal the exact generation
+            # digest align.json recorded when it was accepted — even a
+            # currently-valid, correctly-bound index must be refused if it
+            # is a DIFFERENT generation (by content) than the one align's
+            # accepted SAM output actually used. A forced same-input index
+            # rerun that reproduces byte-identical content keeps the same
+            # digest and is correctly NOT flagged here.
+            recorded_digest = recorded_upstream_digest.get(key)
+            if recorded_digest is not None:
+                current_digest = manifest_content_sha256(override_manifest)
+                if current_digest != recorded_digest:
+                    violations.append(
+                        f"{key}: the current index generation (digest {current_digest}) differs from the exact "
+                        f"generation align.json recorded using (digest {recorded_digest}); the index was rebuilt "
+                        "or altered since align last accepted it"
+                    )
         return tuple(violations)
 
     # One disk-budget ledger, persisted across separate B1-B6 checkpoint
@@ -2749,11 +3273,28 @@ def main(argv: Sequence[str] | None = None) -> None:
                             *_current_index_binding_violations(build),
                         )
                     elif stage == "exact_match":
-                        revalidation_violations = _verify_exact_match_evidence_hashes(
-                            exact_match_records.get(build, {})
+                        revalidation_violations = (
+                            *_verify_exact_match_evidence_hashes(exact_match_records.get(build, {})),
+                            *_upstream_generation_digest_violation(
+                                exact_match_records.get(build, {}),
+                                upstream_key="upstream_align_generation_digest",
+                                current_digest=align_records.get(build, {}).get("generation_digest"),
+                            ),
                         )
-                    else:  # "report" regenerates its own output fully whenever it runs at all
-                        revalidation_violations = ()
+                    else:  # "report"
+                        revalidation_violations = (
+                            *_verify_report_state_evidence_hashes(report_states.get(build, {})),
+                            *_upstream_generation_digest_violation(
+                                report_states.get(build, {}),
+                                upstream_key="upstream_align_generation_digest",
+                                current_digest=align_records.get(build, {}).get("generation_digest"),
+                            ),
+                            *_upstream_generation_digest_violation(
+                                report_states.get(build, {}),
+                                upstream_key="upstream_exact_match_generation_digest",
+                                current_digest=exact_match_records.get(build, {}).get("generation_digest"),
+                            ),
+                        )
 
                     if not revalidation_violations:
                         print(f"skip {key} (already completed with matching inputs; pass --force to redo)")
@@ -2820,6 +3361,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                         reference_manifest=reference_manifests.get(build),
                         dry_run=args.dry_run,
                         disk_ledger=disk_ledger,
+                        reference_manifest_raw_sha256=reference_manifest_hashes.get(build),
+                        downstream_align_record=align_records.get(build),
                     )
                     index_records[build] = index_record
                     executed = bool(index_record.get("executed"))
@@ -2840,6 +3383,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                         bwa_index_prefix=_resolved_bwa_index_prefix(build),
                         minimap2_index=_resolved_minimap2_index(build),
                         disk_ledger=disk_ledger,
+                        reference_manifest_raw_sha256=reference_manifest_hashes.get(build),
+                        build_budget=_build_budget_excluding(build, exclude_stage="align"),
+                        downstream_exact_match_record=exact_match_records.get(build),
+                        downstream_report_state=report_states.get(build),
                     )
                     align_records[build] = align_record
                     executed = bool(align_record.get("executed"))
@@ -2863,6 +3410,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                         align_record=align_records.get(build, {"executed": False}),
                         dry_run=args.dry_run,
                         disk_ledger=disk_ledger,
+                        reference_manifest_raw_sha256=reference_manifest_hashes.get(build),
+                        build_budget=_build_budget_excluding(build, exclude_stage="exact_match"),
+                        downstream_report_state=report_states.get(build),
                     )
                     exact_match_records[build] = exact_match_record
                     executed = bool(exact_match_record.get("executed"))
@@ -2883,7 +3433,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                         exact_match_record=exact_match_records.get(build, {"executed": False}),
                         reference=references.get(build),
                         reference_manifest=reference_manifests.get(build),
+                        reference_manifest_raw_sha256=reference_manifest_hashes.get(build),
+                        build_budget=_build_budget_excluding(build, exclude_stage="report"),
                     )
+                    report_states[build] = _load_report_state(build_dir)
                     retryable = False
                     # B1 required item 9 / B1-R8: a failed reconciliation
                     # must make the runner exit nonzero, checked directly

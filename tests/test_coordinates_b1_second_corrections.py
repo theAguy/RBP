@@ -49,6 +49,7 @@ from test_coordinates_runner import (
     _write_fake_executable,
     _write_reference_manifest,
 )
+from test_coordinates_runner_b1 import _git_init
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -610,6 +611,7 @@ class C4CleanupPinningTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            _git_init(tmp_path)
             output_dir = tmp_path / "out"
             indices_dir = tmp_path / "indices"
             derived_dir = tmp_path / "custom_derived_root"
@@ -650,14 +652,20 @@ class C4CleanupPinningTests(unittest.TestCase):
     def test_altered_report_after_provenance_recorded_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            _git_init(tmp_path)
             output_dir = tmp_path / "out"
             indices_dir = tmp_path / "indices"
             index_dir = indices_dir / "hg38"
+            derived_dir = tmp_path / "derived"
 
             from test_coordinates_runner_b1 import _write_realistic_cleanup_evidence
 
             _write_realistic_cleanup_evidence(
-                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed"
+                output_dir=output_dir,
+                index_dir=index_dir,
+                build="hg38",
+                reconciliation_status="passed",
+                derived_dir=derived_dir,
             )
             # The report still says "passed", but its bytes were altered
             # after provenance.json recorded its hash.
@@ -673,6 +681,7 @@ class C4CleanupPinningTests(unittest.TestCase):
                         "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--indices-dir", str(indices_dir),
+                        "--derived-dir", str(derived_dir),
                         "--repo-root", str(tmp_path),
                         "--cleanup-index", "hg38",
                     ]
@@ -686,14 +695,20 @@ class C4CleanupPinningTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            _git_init(tmp_path)
             output_dir = tmp_path / "out"
             indices_dir = tmp_path / "indices"
             index_dir = indices_dir / "hg38"
+            derived_dir = tmp_path / "derived"
 
             from test_coordinates_runner_b1 import _write_realistic_cleanup_evidence
 
             _write_realistic_cleanup_evidence(
-                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed"
+                output_dir=output_dir,
+                index_dir=index_dir,
+                build="hg38",
+                reconciliation_status="passed",
+                derived_dir=derived_dir,
             )
 
             main(
@@ -703,6 +718,7 @@ class C4CleanupPinningTests(unittest.TestCase):
                     "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--indices-dir", str(indices_dir),
+                    "--derived-dir", str(derived_dir),
                     "--repo-root", str(tmp_path),
                     "--cleanup-index", "hg38",
                 ]
@@ -741,7 +757,30 @@ class C5CheckpointStageCrossingTests(unittest.TestCase):
                 )
             self.assertIn("exactly one build-scoped stage", str(ctx.exception))
 
-    def test_single_build_scoped_stage_with_data_prep_stages_is_allowed(self):
+    def test_single_build_scoped_stage_with_data_prep_stages_is_rejected(self):
+        # Superseded by B1-F5 (docs/reviews/001b_b1_second_correction_review.md):
+        # sample/decode/controls must never accompany a build-scoped stage
+        # under real --allow-mapping authorization, since doing so could
+        # cross the B2 review gate directly into real B3-B6 mapping in one
+        # invocation. Only "preflight" may accompany the single build-scoped
+        # stage now.
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as ctx:
+                main(
+                    [
+                        "--config", str(FIXTURE_CONFIG),
+                        "--csv", str(Path(tmp) / "does_not_exist.csv"),
+                        "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
+                        "--output-dir", str(Path(tmp) / "out"),
+                        "--allow-mapping",
+                        "--host-role", "approved_mac",
+                        "--build", "hg38",
+                        "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align",
+                    ]
+                )
+            self.assertIn("exactly one build-scoped stage", str(ctx.exception))
+
+    def test_single_build_scoped_stage_with_only_preflight_is_allowed(self):
         with tempfile.TemporaryDirectory() as tmp:
             # Must not raise the checkpoint-crossing SystemExit (it may
             # still fail later for unrelated reasons, e.g. no reference).
@@ -755,7 +794,7 @@ class C5CheckpointStageCrossingTests(unittest.TestCase):
                         "--allow-mapping",
                         "--host-role", "approved_mac",
                         "--build", "hg38",
-                        "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "align",
+                        "--stage", "preflight", "--stage", "align",
                     ]
                 )
             except SystemExit as exc:
@@ -822,7 +861,8 @@ class C6RestartValidityAndWarningTests(unittest.TestCase):
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
             with mock.patch.dict(os.environ, env), _approved_host_context():
-                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "index"])
+                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls"])
+                main([*common, "--stage", "index"])
                 index_record = json.loads((indices_dir / "hg38" / "index.json").read_text())
                 self.assertTrue(index_record["executed"])
 
@@ -871,7 +911,8 @@ class C6RestartValidityAndWarningTests(unittest.TestCase):
             ]
             env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
             with mock.patch.dict(os.environ, env), _approved_host_context():
-                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls", "--stage", "index"])
+                main([*common, "--stage", "sample", "--stage", "decode", "--stage", "controls"])
+                main([*common, "--stage", "index"])
                 main([*common, "--stage", "align"])
                 align_record = json.loads((output_dir / "hg38" / "align.json").read_text())
                 self.assertTrue(align_record["executed"])

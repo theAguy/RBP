@@ -309,6 +309,7 @@ def build_index_manifest(
     minimap2: IndexBuildProvenance | dict | None,
     reference_sha256: str | None = None,
     reference_manifest_content_sha256: str | None = None,
+    reference_manifest_raw_sha256: str | None = None,
 ) -> dict:
     """Creation-time index manifest: SHA-256 and byte size for every index
     file, plus each tool's command/provenance/resolved binary version+hash.
@@ -321,7 +322,11 @@ def build_index_manifest(
     was built from, so a later real-mapping attempt can refuse an index
     that — even if internally self-consistent against its own recorded file
     hashes — was never actually proven to derive from the *current*
-    reference (see :func:`verify_index_binding`).
+    reference (see :func:`verify_index_binding`). ``reference_manifest_raw_sha256``
+    (B1-F4) additionally binds the exact RAW manifest FILE bytes supplied on
+    the command line — distinct from the canonical parsed-content hash, which
+    normalizes away whitespace-only formatting differences between two files
+    that parse to the same content.
     """
 
     def _payload(entry: IndexBuildProvenance | dict | None) -> dict | None:
@@ -334,6 +339,7 @@ def build_index_manifest(
         "build": build,
         "reference_sha256": reference_sha256,
         "reference_manifest_content_sha256": reference_manifest_content_sha256,
+        "reference_manifest_raw_sha256": reference_manifest_raw_sha256,
         "bwa_index": _payload(bwa),
         "minimap2_index": _payload(minimap2),
     }
@@ -420,6 +426,7 @@ def verify_index_binding(
     expected_build: str,
     expected_reference_sha256: str,
     expected_reference_manifest_content_sha256: str,
+    expected_reference_manifest_raw_sha256: str | None = None,
 ) -> tuple[str, ...]:
     """Full B1-R2 binding check: the index-manifest's own declared build and
     reference/reference-manifest content hashes must match what this run is
@@ -431,6 +438,12 @@ def verify_index_binding(
     match) from being silently accepted merely because its files match its
     own recorded hashes: the manifest itself must also prove which
     reference it was built from.
+
+    ``expected_reference_manifest_raw_sha256`` (B1-F4), when given, is
+    additionally compared against the manifest's own recorded raw hash: two
+    manifest files that parse to identical content (same canonical hash) but
+    differ byte-for-byte are still distinguished, closing the audit gap a
+    canonical-content-only comparison leaves.
     """
     violations: list[str] = []
     if manifest.get("build") != expected_build:
@@ -442,6 +455,14 @@ def verify_index_binding(
     if manifest.get("reference_manifest_content_sha256") != expected_reference_manifest_content_sha256:
         violations.append(
             f"{key}: index manifest reference_manifest_content_sha256 does not match the current reference manifest"
+        )
+    if (
+        expected_reference_manifest_raw_sha256 is not None
+        and manifest.get("reference_manifest_raw_sha256") != expected_reference_manifest_raw_sha256
+    ):
+        violations.append(
+            f"{key}: index manifest reference_manifest_raw_sha256 does not match the current raw reference-manifest "
+            "file bytes (whitespace/formatting drift or a different file)"
         )
     violations.extend(verify_index_files_against_manifest(manifest, key=key, actual_path=actual_path))
     return tuple(violations)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,16 @@ from test_coordinates_runner import (
 )
 
 _HAVE_REAL_TOOLS = shutil.which("bwa") and shutil.which("minimap2") and shutil.which("seqkit")
+
+
+def _git_init(path: Path) -> None:
+    """B1-F6: cleanup's CLI entry point independently resolves the real Git
+    working-tree root and refuses a --repo-root that disagrees with it; a
+    bare tempdir is never itself a Git working tree, so any CLI-level
+    cleanup test that expects to reach the deletion logic must first make
+    its own tmp root a real (if minimal) Git checkout.
+    """
+    subprocess.run(["git", "init", "--quiet", str(path)], check=True, capture_output=True)
 
 
 def _write_execution_sources_spec(path: Path, *, hashes: dict[str, str]) -> Path:
@@ -387,16 +398,40 @@ class DiskBudgetWiringTests(unittest.TestCase):
             self.assertFalse((output_dir / "hg38" / "align_bwa_mem.sam").exists())
 
 
-def _write_realistic_cleanup_evidence(*, output_dir: Path, index_dir: Path, build: str, reconciliation_status: str):
-    """B1-C4: cleanup now verifies actual artifact hashes (index files via
+def _write_realistic_cleanup_evidence(
+    *, output_dir: Path, index_dir: Path, build: str, reconciliation_status: str, derived_dir: Path | None = None
+):
+    """B1-C4/F6: cleanup now verifies actual artifact hashes (index files via
     ``index.json``'s own recorded manifest path, mapping outputs, and the
-    accepted report/provenance hashes), never merely the ``executed`` JSON
-    booleans, so every cleanup fixture must provide real, hash-matching
-    evidence throughout rather than empty placeholders.
+    accepted report/provenance/report-Markdown hashes), never merely the
+    ``executed`` JSON booleans, so every cleanup fixture must provide real,
+    hash-matching evidence throughout rather than empty placeholders. A
+    valid, executed, hash-verified ``derive.json`` (B1-F6) is now also
+    mandatory before cleanup proceeds at all; ``derived_dir``, when given,
+    receives one pointing at a real reference file.
     """
     build_dir = output_dir / build
     index_dir.mkdir(parents=True)
     build_dir.mkdir(parents=True)
+
+    if derived_dir is not None:
+        build_derived_dir = derived_dir / build
+        build_derived_dir.mkdir(parents=True, exist_ok=True)
+        reference_path = build_derived_dir / "reference.fna"
+        reference_path.write_text(">chr1\nACGT\n")
+        manifest_path = build_derived_dir / "reference_manifest.json"
+        manifest_path.write_text(json.dumps({"schema_version": 2, "build_id": build}))
+        (build_derived_dir / "derive.json").write_text(
+            json.dumps(
+                {
+                    "executed": True,
+                    "output_fasta": str(reference_path),
+                    "output_fasta_sha256": sha256_file(reference_path),
+                    "reference_manifest_path": str(manifest_path),
+                    "reference_manifest_sha256": sha256_file(manifest_path),
+                }
+            )
+        )
 
     bwt_path = index_dir / f"{build}.bwt"
     mmi_path = index_dir / f"{build}.mmi"
@@ -456,11 +491,14 @@ def _write_realistic_cleanup_evidence(*, output_dir: Path, index_dir: Path, buil
     )
     report_path = build_dir / "report.json"
     report_path.write_text(json.dumps({"reconciliation": {"status": reconciliation_status}}))
+    report_md_path = build_dir / "report.md"
+    report_md_path.write_text("# report\n")
     mappings_path = build_dir / "mappings.tsv.gz"
     mappings_path.write_bytes(b"fake mappings gz bytes")
 
-    # B1-C4: cleanup also verifies the accepted report/mappings hashes
-    # against provenance.json, never a bare reconciliation-status string.
+    # B1-C4/F6: cleanup also verifies the accepted report/report-Markdown/
+    # mappings hashes against provenance.json, never a bare
+    # reconciliation-status string.
     (output_dir / "provenance.json").write_text(
         json.dumps(
             {
@@ -468,6 +506,7 @@ def _write_realistic_cleanup_evidence(*, output_dir: Path, index_dir: Path, buil
                     build: {
                         "generated_artifacts": {
                             "report_json": {"path": str(report_path), "sha256": sha256_file(report_path)},
+                            "report_md": {"path": str(report_md_path), "sha256": sha256_file(report_md_path)},
                             "mappings_tsv_gz": {"path": str(mappings_path), "sha256": sha256_file(mappings_path)},
                         }
                     }
@@ -480,11 +519,17 @@ def _write_realistic_cleanup_evidence(*, output_dir: Path, index_dir: Path, buil
 class CleanupCliWiringTests(unittest.TestCase):
     def test_cleanup_index_removes_directory_when_evidence_present(self):
         with tempfile.TemporaryDirectory() as tmp:
+            _git_init(Path(tmp))
             output_dir = Path(tmp) / "out"
             indices_dir = Path(tmp) / "indices"
             index_dir = indices_dir / "hg38"
+            derived_dir = Path(tmp) / "derived"
             _write_realistic_cleanup_evidence(
-                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed"
+                output_dir=output_dir,
+                index_dir=index_dir,
+                build="hg38",
+                reconciliation_status="passed",
+                derived_dir=derived_dir,
             )
 
             main(
@@ -494,6 +539,7 @@ class CleanupCliWiringTests(unittest.TestCase):
                     "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                     "--output-dir", str(output_dir),
                     "--indices-dir", str(indices_dir),
+                    "--derived-dir", str(derived_dir),
                     "--repo-root", str(Path(tmp)),
                     "--cleanup-index", "hg38",
                 ]
@@ -507,11 +553,17 @@ class CleanupCliWiringTests(unittest.TestCase):
 
     def test_cleanup_index_refuses_without_passed_reconciliation(self):
         with tempfile.TemporaryDirectory() as tmp:
+            _git_init(Path(tmp))
             output_dir = Path(tmp) / "out"
             indices_dir = Path(tmp) / "indices"
             index_dir = indices_dir / "hg38"
+            derived_dir = Path(tmp) / "derived"
             _write_realistic_cleanup_evidence(
-                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="failed"
+                output_dir=output_dir,
+                index_dir=index_dir,
+                build="hg38",
+                reconciliation_status="failed",
+                derived_dir=derived_dir,
             )
 
             with self.assertRaises(SystemExit):
@@ -522,6 +574,7 @@ class CleanupCliWiringTests(unittest.TestCase):
                         "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--indices-dir", str(indices_dir),
+                        "--derived-dir", str(derived_dir),
                         "--repo-root", str(Path(tmp)),
                         "--cleanup-index", "hg38",
                     ]
@@ -534,11 +587,17 @@ class CleanupCliWiringTests(unittest.TestCase):
         recorded hash (e.g. silently truncated/edited after the fact).
         """
         with tempfile.TemporaryDirectory() as tmp:
+            _git_init(Path(tmp))
             output_dir = Path(tmp) / "out"
             indices_dir = Path(tmp) / "indices"
             index_dir = indices_dir / "hg38"
+            derived_dir = Path(tmp) / "derived"
             _write_realistic_cleanup_evidence(
-                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed"
+                output_dir=output_dir,
+                index_dir=index_dir,
+                build="hg38",
+                reconciliation_status="passed",
+                derived_dir=derived_dir,
             )
             # Mutate the BED file after its hash was recorded.
             (output_dir / "hg38" / "exact_match_hits.bed").write_text("tampered\n")
@@ -551,6 +610,7 @@ class CleanupCliWiringTests(unittest.TestCase):
                         "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--indices-dir", str(indices_dir),
+                        "--derived-dir", str(derived_dir),
                         "--repo-root", str(Path(tmp)),
                         "--cleanup-index", "hg38",
                     ]
@@ -563,11 +623,17 @@ class CleanupCliWiringTests(unittest.TestCase):
         with otherwise-valid evidence.
         """
         with tempfile.TemporaryDirectory() as tmp:
+            _git_init(Path(tmp))
             output_dir = Path(tmp) / "out"
             indices_dir = Path(tmp) / "not_indices"
             index_dir = indices_dir / "hg38"
+            derived_dir = Path(tmp) / "derived"
             _write_realistic_cleanup_evidence(
-                output_dir=output_dir, index_dir=index_dir, build="hg38", reconciliation_status="passed"
+                output_dir=output_dir,
+                index_dir=index_dir,
+                build="hg38",
+                reconciliation_status="passed",
+                derived_dir=derived_dir,
             )
 
             with self.assertRaises(SystemExit):
@@ -578,6 +644,7 @@ class CleanupCliWiringTests(unittest.TestCase):
                         "--execution-sources", str(FIXTURE_EXECUTION_SOURCES),
                         "--output-dir", str(output_dir),
                         "--indices-dir", str(indices_dir),
+                        "--derived-dir", str(derived_dir),
                         "--repo-root", str(Path(tmp)),
                         "--cleanup-index", "hg38",
                     ]

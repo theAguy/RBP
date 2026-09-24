@@ -963,7 +963,9 @@ class SelectionRecordWriteFailureTests(unittest.TestCase):
             tmp_path = Path(tmp)
             from rbpbench.coordinates.execution_sources import load_execution_sources
 
-            spec = load_execution_sources(FIXTURE_EXECUTION_SOURCES).reference_sources["hg38"]
+            execution_spec = load_execution_sources(FIXTURE_EXECUTION_SOURCES)
+            spec = execution_spec.reference_sources["hg38"]
+            policy = execution_spec.derived_reference_policy
             source_fasta = tmp_path / "source.fna"
             source_fasta.write_text(">NC_TEST1.1\nACGTACGT\n")
             report_path = tmp_path / "report.txt"
@@ -985,6 +987,7 @@ class SelectionRecordWriteFailureTests(unittest.TestCase):
             first = stage_derive(
                 build="hg38", source_spec=spec, derived_dir=derived_dir, allow_mapping=True,
                 host_role="approved_mac", download_record=download_record, dry_run=False,
+                policy=policy,
             )
             self.assertTrue(first["executed"])
             original_record = json.loads((derived_dir / "derive.json").read_text())
@@ -995,6 +998,7 @@ class SelectionRecordWriteFailureTests(unittest.TestCase):
                     stage_derive(
                         build="hg38", source_spec=spec, derived_dir=derived_dir, allow_mapping=True,
                         host_role="approved_mac", download_record=download_record, dry_run=False,
+                        policy=policy,
                     )
 
             self.assertEqual(json.loads((derived_dir / "derive.json").read_text()), original_record)

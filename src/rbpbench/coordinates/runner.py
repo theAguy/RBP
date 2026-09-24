@@ -97,9 +97,11 @@ from rbpbench.coordinates.diskbudget import (
 )
 from rbpbench.coordinates.exact_match import exact_occurrence_count, exact_unique_confirmed, parse_seqkit_bed
 from rbpbench.coordinates.execution_sources import (
+    DerivedReferencePolicy,
     ReferenceSourceSpec,
     SourceUrlLayoutError,
     load_execution_sources,
+    validate_derived_reference_policy,
     verify_local_inputs,
 )
 from rbpbench.coordinates.hashing import content_fingerprint, control_seed
@@ -1016,20 +1018,29 @@ def stage_derive(
     host_role: str,
     download_record: dict,
     dry_run: bool,
+    policy: DerivedReferencePolicy,
     disk_ledger: DiskBudgetLedger | None = None,
 ) -> dict:
-    """B1-C1/C2: streaming, restart-safe derivation of the frozen-contig-
-    policy reference FASTA + manifest from an already-downloaded/verified
-    source, re-hashing the CURRENT source files against ``download_record``
-    immediately before deriving (never merely trusting its ``executed: true``
-    boolean and recorded paths, which could have drifted since download
-    ran). The derived FASTA and its manifest are promoted together as ONE
-    immutable generation (see ``_new_generation_dir``): both are written
-    directly into a fresh ``derived_dir/generations/<id>/`` directory and
-    only become "accepted" once ``derive.json`` is written pointing at both
-    — a failure between writing the FASTA and building/persisting the
-    manifest can therefore never leave a new FASTA paired with a stale or
-    missing manifest at a shared final path.
+    """B1-C1/C2/B3B-1: streaming, restart-safe derivation of the frozen-
+    contig-policy reference FASTA + manifest from an already-downloaded/
+    verified source, re-hashing the CURRENT source files against
+    ``download_record`` immediately before deriving (never merely trusting
+    its ``executed: true`` boolean and recorded paths, which could have
+    drifted since download ran). The derived FASTA and its manifest are
+    promoted together as ONE immutable generation (see
+    ``_new_generation_dir``): both are written directly into a fresh
+    ``derived_dir/generations/<id>/`` directory and only become "accepted"
+    once ``derive.json`` is written pointing at both — a failure between
+    writing the FASTA and building/persisting the manifest can therefore
+    never leave a new FASTA paired with a stale or missing manifest at a
+    shared final path.
+
+    ``policy`` is the exact loaded ``DerivedReferencePolicy`` (the caller
+    must have already validated it with
+    :func:`rbpbench.coordinates.execution_sources.validate_derived_reference_policy`
+    before any data access) — it is passed straight through to
+    :func:`rbpbench.coordinates.derive_reference.derive_reference_fasta`.
+    There is no hard-coded fallback policy on this path.
     """
     old_record_path = derived_dir / "derive.json"
     record = {"executed": False, "skip_reason": None}
@@ -1077,7 +1088,7 @@ def stage_derive(
         output_fasta = generation_dir / "reference.fna"
         manifest_path = generation_dir / "reference_manifest.json"
         derivation = derive_reference_fasta(
-            source_fasta=source_fasta, assembly_report=assembly_report, output_fasta=output_fasta
+            source_fasta=source_fasta, assembly_report=assembly_report, output_fasta=output_fasta, policy=policy
         )
         manifest = build_reference_manifest(
             derivation,
@@ -1111,6 +1122,11 @@ def stage_derive(
     # drifted evidence (see _verify_derive_evidence_hashes).
     record["reference_manifest_sha256"] = sha256_file(manifest_path)
     record["reference_manifest_byte_size"] = manifest_path.stat().st_size
+    # B3B-1: bind the complete canonical policy this generation was derived
+    # under directly into the accepted record too (also embedded in, and
+    # hash-covered by, reference_manifest_sha256 above) so a reviewer can
+    # inspect it without opening the manifest file.
+    record["derived_reference_policy"] = manifest["effective_policy"]
     # Transaction completion requirement: see the matching comment in
     # stage_download.
     try:
@@ -3863,6 +3879,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     execution_source_spec = None
     if args.execution_sources is not None:
         execution_source_spec = load_execution_sources(args.execution_sources)
+        # B3B-1: fail closed on an unknown/empty/duplicate accession
+        # namespace or malformed/empty role policy BEFORE any source/
+        # reference/dataset data access -- in particular, before the CSV
+        # open a few lines below and before any download/derive stage can
+        # run with a policy nothing has validated.
+        policy_violations = validate_derived_reference_policy(execution_source_spec.derived_reference_policy)
+        if policy_violations:
+            raise SystemExit(
+                "execution-source derived-reference policy validation failed closed before opening the CSV: "
+                f"{list(policy_violations)}"
+            )
         local_input_violations = verify_local_inputs(
             execution_source_spec,
             paths={
@@ -3935,8 +3962,18 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     def derive_fingerprint(build: str) -> str:
         recorded_download_fp = state.get("stage_fingerprints", {}).get(_stage_key("download", build), "never_run")
+        # B3B-1: bind the complete canonical derived-reference policy so a
+        # policy-only change invalidates derive restart state -- but,
+        # deliberately, NEVER touches download_fingerprint above, so an
+        # otherwise hash-valid, unchanged download is never invalidated or
+        # repeated merely because the derivation policy changed.
+        policy = execution_source_spec.derived_reference_policy if execution_source_spec else None
         return content_fingerprint(
-            "derive", recorded_download_fp, bool(download_records.get(build, {}).get("executed")), args.dry_run
+            "derive",
+            recorded_download_fp,
+            bool(download_records.get(build, {}).get("executed")),
+            args.dry_run,
+            policy,
         )
 
     def index_fingerprint(build: str) -> str:
@@ -4431,6 +4468,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                         host_role=args.host_role,
                         download_record=download_records.get(build, {"executed": False}),
                         dry_run=args.dry_run,
+                        policy=execution_source_spec.derived_reference_policy,
                         disk_ledger=disk_ledger,
                     )
                     derive_records[build] = derive_record

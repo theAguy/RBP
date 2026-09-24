@@ -8,6 +8,7 @@ from rbpbench.coordinates.derive_reference import (
     CATEGORY_MITOCHONDRION,
     CATEGORY_UNLOCALIZED,
     CATEGORY_UNPLACED,
+    EXCLUSION_REASON_SOURCE_NAMESPACE_UNREPRESENTED,
     DerivationError,
     build_reference_manifest,
     contig_category,
@@ -15,7 +16,27 @@ from rbpbench.coordinates.derive_reference import (
     parse_assembly_report,
     selected_accession,
 )
+from rbpbench.coordinates.execution_sources import DerivedReferencePolicy
 from rbpbench.coordinates.manifest import REQUIRED_REFERENCE_MANIFEST_FIELDS
+
+_ROLES = ("assembled-molecule", "unlocalized-scaffold", "unplaced-scaffold")
+
+# Matches the pre-correction default behavior (RefSeq preferred, GenBank
+# fallback) -- used explicitly by tests whose fixture intentionally relies on
+# a GenBank-only row being included (B3B-1 handoff: "give it an explicit
+# policy permitting GenBank rather than weakening the new RefSeq production
+# policy").
+_POLICY_REFSEQ_THEN_GENBANK = DerivedReferencePolicy(
+    include_sequence_roles_primary_assembly=_ROLES,
+    include_non_nuclear_assembled_molecule=True,
+    accession_preference=("refseq", "genbank"),
+)
+# Matches the real, corrected production policy.
+_POLICY_REFSEQ_ONLY = DerivedReferencePolicy(
+    include_sequence_roles_primary_assembly=_ROLES,
+    include_non_nuclear_assembled_molecule=True,
+    accession_preference=("refseq",),
+)
 
 _ASSEMBLY_REPORT_HEADER = (
     "# Sequence-Name\tSequence-Role\tAssigned-Molecule\tAssigned-Molecule-Location/Type\t"
@@ -91,13 +112,25 @@ class ContigCategoryTests(unittest.TestCase):
             self.assertIsNone(contig_category(records["HSCHR6_MHC"]))
 
     def test_selected_accession_prefers_refseq_falls_back_to_genbank(self):
+        # B3B-1: this fallback only happens when the policy explicitly names
+        # "genbank" in accession_preference -- it is never a silent default.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "assembly_report.txt"
             path.write_text(_TINY_ASSEMBLY_REPORT)
             records = {r.sequence_name: r for r in parse_assembly_report(path)}
-            self.assertEqual(selected_accession(records["1"]), "NC_TEST1.1")
+            self.assertEqual(selected_accession(records["1"], _POLICY_REFSEQ_THEN_GENBANK), "NC_TEST1.1")
             # RefSeq-Accn is "na" -> GenBank fallback, never a renamed alias.
-            self.assertEqual(selected_accession(records["HSCHRUN_RANDOM"]), "KI_TEST2.1")
+            self.assertEqual(selected_accession(records["HSCHRUN_RANDOM"], _POLICY_REFSEQ_THEN_GENBANK), "KI_TEST2.1")
+
+    def test_selected_accession_refseq_only_excludes_genbank_only_row(self):
+        # B3B-1: under a RefSeq-only policy, a present GenBank accession is
+        # NEVER used as a silent fallback -- the row is unrepresented.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "assembly_report.txt"
+            path.write_text(_TINY_ASSEMBLY_REPORT)
+            records = {r.sequence_name: r for r in parse_assembly_report(path)}
+            self.assertEqual(selected_accession(records["1"], _POLICY_REFSEQ_ONLY), "NC_TEST1.1")
+            self.assertIsNone(selected_accession(records["HSCHRUN_RANDOM"], _POLICY_REFSEQ_ONLY))
 
 
 class DeriveReferenceFastaTests(unittest.TestCase):
@@ -121,12 +154,16 @@ class DeriveReferenceFastaTests(unittest.TestCase):
             output_fasta = tmp_path / "derived.fna"
 
             derivation = derive_reference_fasta(
-                source_fasta=fasta_path, assembly_report=report_path, output_fasta=output_fasta
+                source_fasta=fasta_path,
+                assembly_report=report_path,
+                output_fasta=output_fasta,
+                policy=_POLICY_REFSEQ_THEN_GENBANK,
             )
 
             self.assertEqual(
                 set(derivation.contigs), {"NC_TEST1.1", "NT_TEST1.1", "KI_TEST2.1", "NC_TESTMT.1"}
             )
+            self.assertEqual(derivation.exclusion_summary["count"], 0)
             self.assertNotIn("NW_TESTALT.1", derivation.contigs)
             self.assertNotIn("GL_TESTHLA.1", derivation.contigs)
             self.assertEqual(
@@ -149,10 +186,16 @@ class DeriveReferenceFastaTests(unittest.TestCase):
             _, plain_fasta = self._write_fixtures(tmp_path, gz=False)
 
             derivation_gz = derive_reference_fasta(
-                source_fasta=gz_fasta, assembly_report=report_path, output_fasta=tmp_path / "from_gz.fna"
+                source_fasta=gz_fasta,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "from_gz.fna",
+                policy=_POLICY_REFSEQ_THEN_GENBANK,
             )
             derivation_plain = derive_reference_fasta(
-                source_fasta=plain_fasta, assembly_report=report_path, output_fasta=tmp_path / "from_plain.fna"
+                source_fasta=plain_fasta,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "from_plain.fna",
+                policy=_POLICY_REFSEQ_THEN_GENBANK,
             )
             self.assertEqual(derivation_gz.output_fasta_sha256, derivation_plain.output_fasta_sha256)
 
@@ -161,10 +204,16 @@ class DeriveReferenceFastaTests(unittest.TestCase):
             tmp_path = Path(tmp)
             report_path, fasta_path = self._write_fixtures(tmp_path, gz=True)
             first = derive_reference_fasta(
-                source_fasta=fasta_path, assembly_report=report_path, output_fasta=tmp_path / "first.fna"
+                source_fasta=fasta_path,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "first.fna",
+                policy=_POLICY_REFSEQ_THEN_GENBANK,
             )
             second = derive_reference_fasta(
-                source_fasta=fasta_path, assembly_report=report_path, output_fasta=tmp_path / "second.fna"
+                source_fasta=fasta_path,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "second.fna",
+                policy=_POLICY_REFSEQ_THEN_GENBANK,
             )
             self.assertEqual(first.output_fasta_sha256, second.output_fasta_sha256)
 
@@ -173,7 +222,10 @@ class DeriveReferenceFastaTests(unittest.TestCase):
             tmp_path = Path(tmp)
             report_path, fasta_path = self._write_fixtures(tmp_path, gz=True)
             derivation = derive_reference_fasta(
-                source_fasta=fasta_path, assembly_report=report_path, output_fasta=tmp_path / "derived.fna"
+                source_fasta=fasta_path,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "derived.fna",
+                policy=_POLICY_REFSEQ_THEN_GENBANK,
             )
             self.assertEqual(derivation.masking["status"], "soft")
             self.assertGreater(derivation.masking["lower"], 0)
@@ -189,7 +241,10 @@ class DeriveReferenceFastaTests(unittest.TestCase):
             fasta_path.write_text(">NC_TEST1.1\n" + "A" * 40 + "\n>NC_TEST1.1\n" + "A" * 40 + "\n")
             with self.assertRaises(DerivationError):
                 derive_reference_fasta(
-                    source_fasta=fasta_path, assembly_report=report_path, output_fasta=tmp_path / "derived.fna"
+                    source_fasta=fasta_path,
+                    assembly_report=report_path,
+                    output_fasta=tmp_path / "derived.fna",
+                    policy=_POLICY_REFSEQ_ONLY,
                 )
 
     def test_length_mismatch_against_assembly_report_fails_closed(self):
@@ -202,7 +257,10 @@ class DeriveReferenceFastaTests(unittest.TestCase):
             fasta_path.write_text(">NC_TEST1.1\n" + "A" * 39 + "\n")
             with self.assertRaises(DerivationError):
                 derive_reference_fasta(
-                    source_fasta=fasta_path, assembly_report=report_path, output_fasta=tmp_path / "derived.fna"
+                    source_fasta=fasta_path,
+                    assembly_report=report_path,
+                    output_fasta=tmp_path / "derived.fna",
+                    policy=_POLICY_REFSEQ_ONLY,
                 )
 
 
@@ -218,7 +276,10 @@ class BuildReferenceManifestTests(unittest.TestCase):
             output_fasta = tmp_path / "derived.fna"
 
             derivation = derive_reference_fasta(
-                source_fasta=fasta_path, assembly_report=report_path, output_fasta=output_fasta
+                source_fasta=fasta_path,
+                assembly_report=report_path,
+                output_fasta=output_fasta,
+                policy=_POLICY_REFSEQ_THEN_GENBANK,
             )
             manifest = build_reference_manifest(
                 derivation,
@@ -242,6 +303,52 @@ class BuildReferenceManifestTests(unittest.TestCase):
             self.assertIn("masking", manifest)
             self.assertIn("source", manifest)
             self.assertEqual(manifest["source"]["fasta_compressed_upstream_md5"], "a" * 32)
+            self.assertEqual(manifest["effective_policy"]["accession_preference"], ["refseq", "genbank"])
+            self.assertEqual(manifest["exclusion_summary"]["count"], 0)
+            self.assertEqual(manifest["excluded_records"], [])
+
+    def test_manifest_records_refseq_only_exclusion_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            report_path = tmp_path / "assembly_report.txt"
+            report_path.write_text(_TINY_ASSEMBLY_REPORT)
+            fasta_path = tmp_path / "source.fna.gz"
+            with gzip.open(fasta_path, "wt") as handle:
+                handle.write(_tiny_source_fasta_text())
+            output_fasta = tmp_path / "derived.fna"
+
+            derivation = derive_reference_fasta(
+                source_fasta=fasta_path,
+                assembly_report=report_path,
+                output_fasta=output_fasta,
+                policy=_POLICY_REFSEQ_ONLY,
+            )
+            manifest = build_reference_manifest(
+                derivation,
+                build_id="hg38",
+                assembly_accession="GCF_TEST38",
+                source_url="https://example.invalid/hg38.fna.gz",
+                source_fasta_compressed=fasta_path,
+                source_fasta_compressed_upstream_md5="a" * 32,
+                assembly_report=report_path,
+                assembly_report_upstream_md5="b" * 32,
+                derivation_command="derive_reference_fasta(...)",
+                git_commit="deadbeef",
+            )
+            self.assertNotIn("KI_TEST2.1", manifest["contigs"])
+            self.assertEqual(manifest["effective_policy"]["accession_preference"], ["refseq"])
+            self.assertEqual(manifest["exclusion_summary"]["count"], 1)
+            self.assertEqual(manifest["exclusion_summary"]["total_bases"], 16)
+            self.assertEqual(
+                manifest["exclusion_summary"]["reason_counts"],
+                {EXCLUSION_REASON_SOURCE_NAMESPACE_UNREPRESENTED: 1},
+            )
+            self.assertEqual(len(manifest["excluded_records"]), 1)
+            excluded = manifest["excluded_records"][0]
+            self.assertEqual(excluded["accession"], "KI_TEST2.1")
+            self.assertEqual(excluded["sequence_name"], "HSCHRUN_RANDOM")
+            self.assertEqual(excluded["length"], 16)
+            self.assertEqual(excluded["reason"], EXCLUSION_REASON_SOURCE_NAMESPACE_UNREPRESENTED)
 
 
 if __name__ == "__main__":

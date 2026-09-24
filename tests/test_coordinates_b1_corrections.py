@@ -23,6 +23,7 @@ from unittest import mock
 from rbpbench.coordinates.cleanup import CleanupRefused, execute_index_cleanup
 from rbpbench.coordinates.config import load_config
 from rbpbench.coordinates.derive_reference import derive_reference_fasta
+from rbpbench.coordinates.execution_sources import DerivedReferencePolicy
 from rbpbench.coordinates.diskbudget import (
     DiskBudgetExceeded,
     check_pinned_volumes,
@@ -60,6 +61,12 @@ from test_coordinates_runner import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+_POLICY_REFSEQ_ONLY = DerivedReferencePolicy(
+    include_sequence_roles_primary_assembly=("assembled-molecule", "unlocalized-scaffold", "unplaced-scaffold"),
+    include_non_nuclear_assembled_molecule=True,
+    accession_preference=("refseq",),
+)
 
 
 def _cfg():
@@ -927,13 +934,19 @@ class R7AcquisitionDerivationTests(unittest.TestCase):
             good_source.write_text(">NC_TEST1.1\nACGTACGT\n")
             output_fasta = tmp_path / "reference.fna"
 
-            derive_reference_fasta(source_fasta=good_source, assembly_report=report_path, output_fasta=output_fasta)
+            derive_reference_fasta(
+                source_fasta=good_source, assembly_report=report_path, output_fasta=output_fasta,
+                policy=_POLICY_REFSEQ_ONLY,
+            )
             original_bytes = output_fasta.read_bytes()
 
             bad_source = tmp_path / "source_bad.fna"
             bad_source.write_text(">NC_TEST1.1\nACGT\n")  # wrong length vs. report
             with self.assertRaises(Exception):
-                derive_reference_fasta(source_fasta=bad_source, assembly_report=report_path, output_fasta=output_fasta)
+                derive_reference_fasta(
+                    source_fasta=bad_source, assembly_report=report_path, output_fasta=output_fasta,
+                    policy=_POLICY_REFSEQ_ONLY,
+                )
 
             self.assertEqual(output_fasta.read_bytes(), original_bytes)
             leftovers = list(tmp_path.glob("reference.fna.tmp*"))
@@ -1089,7 +1102,9 @@ class R9MaskingClassificationTests(unittest.TestCase):
         source = tmp_path / "source.fna"
         source.write_text(f">NC_TEST1.1\n{sequence}\n")
         output = tmp_path / "out.fna"
-        return derive_reference_fasta(source_fasta=source, assembly_report=report_path, output_fasta=output)
+        return derive_reference_fasta(
+            source_fasta=source, assembly_report=report_path, output_fasta=output, policy=_POLICY_REFSEQ_ONLY
+        )
 
     def test_lowercase_bases_report_soft(self):
         with tempfile.TemporaryDirectory() as tmp:

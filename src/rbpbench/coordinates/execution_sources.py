@@ -124,6 +124,84 @@ class DerivedReferencePolicy:
     accession_preference: tuple[str, ...]
 
 
+# B3B-1 accession-policy correction: the only source accession namespaces the
+# derivation code understands how to read from an NCBI assembly-report row.
+SUPPORTED_ACCESSION_NAMESPACES = ("refseq", "genbank")
+
+# The NCBI Sequence-Role vocabulary values this study's derivation policy may
+# name in ``include_sequence_roles_primary_assembly``. Not every value here is
+# necessarily included by the frozen production policy -- this is the set of
+# values ``contig_category`` (rbpbench.coordinates.derive_reference) knows how
+# to map to a study contig category at all, so an unknown value can never be
+# silently ignored as "just not included".
+KNOWN_SEQUENCE_ROLES = (
+    "assembled-molecule",
+    "unlocalized-scaffold",
+    "unplaced-scaffold",
+)
+
+
+def validate_derived_reference_policy(policy: DerivedReferencePolicy) -> tuple[str, ...]:
+    """B3B-1: fail-closed validation of a loaded :class:`DerivedReferencePolicy`
+    that MUST run before any source/reference/dataset data access (see the
+    runner's execution-source loading, immediately after
+    :func:`load_execution_sources` and before the CSV is opened).
+
+    Checks: ``accession_preference`` is nonempty, names only namespaces in
+    :data:`SUPPORTED_ACCESSION_NAMESPACES`, and has no duplicate entry;
+    ``include_sequence_roles_primary_assembly`` is nonempty and names only
+    nonempty strings from :data:`KNOWN_SEQUENCE_ROLES`, with no duplicate
+    entry. An unknown, empty, or duplicate accession namespace, or a
+    malformed/empty role list, must stop the run here -- never reach
+    derivation and silently misinterpret it. Returns the violations (empty
+    means valid).
+    """
+    violations: list[str] = []
+
+    preference = policy.accession_preference
+    if not preference:
+        violations.append("derived_reference_policy.accession_preference is empty")
+    else:
+        seen_namespaces: set[str] = set()
+        for namespace in preference:
+            if namespace not in SUPPORTED_ACCESSION_NAMESPACES:
+                violations.append(
+                    f"derived_reference_policy.accession_preference names unsupported namespace {namespace!r} "
+                    f"(supported: {SUPPORTED_ACCESSION_NAMESPACES})"
+                )
+            elif namespace in seen_namespaces:
+                violations.append(
+                    f"derived_reference_policy.accession_preference names duplicate namespace {namespace!r}"
+                )
+            seen_namespaces.add(namespace)
+
+    roles = policy.include_sequence_roles_primary_assembly
+    if not roles:
+        violations.append("derived_reference_policy.include_sequence_roles_primary_assembly is empty")
+    else:
+        seen_roles: set[str] = set()
+        for role in roles:
+            if not isinstance(role, str) or not role.strip():
+                violations.append(
+                    "derived_reference_policy.include_sequence_roles_primary_assembly contains an empty/"
+                    f"malformed role {role!r}"
+                )
+                continue
+            if role not in KNOWN_SEQUENCE_ROLES:
+                violations.append(
+                    "derived_reference_policy.include_sequence_roles_primary_assembly names unknown role "
+                    f"{role!r} (known: {KNOWN_SEQUENCE_ROLES})"
+                )
+            elif role in seen_roles:
+                violations.append(
+                    "derived_reference_policy.include_sequence_roles_primary_assembly names duplicate role "
+                    f"{role!r}"
+                )
+            seen_roles.add(role)
+
+    return tuple(violations)
+
+
 @dataclass(frozen=True)
 class ExecutionSourceSpec:
     git_base_commit: str
@@ -220,4 +298,7 @@ __all__ = [
     "LocalInputViolation",
     "verify_local_inputs",
     "SourceUrlLayoutError",
+    "SUPPORTED_ACCESSION_NAMESPACES",
+    "KNOWN_SEQUENCE_ROLES",
+    "validate_derived_reference_policy",
 ]

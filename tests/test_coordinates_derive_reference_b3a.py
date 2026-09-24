@@ -24,6 +24,13 @@ from rbpbench.coordinates.derive_reference import (
     parse_assembly_report,
     validate_contig_lengths,
 )
+from rbpbench.coordinates.execution_sources import DerivedReferencePolicy
+
+_POLICY_REFSEQ_ONLY = DerivedReferencePolicy(
+    include_sequence_roles_primary_assembly=("assembled-molecule", "unlocalized-scaffold", "unplaced-scaffold"),
+    include_non_nuclear_assembled_molecule=True,
+    accession_preference=("refseq",),
+)
 
 _ASSEMBLY_REPORT_HEADER = (
     "# Sequence-Name\tSequence-Role\tAssigned-Molecule\tAssigned-Molecule-Location/Type\t"
@@ -54,7 +61,10 @@ class DeriveReferenceContigLengthsTests(unittest.TestCase):
             fasta_path.write_text(">NC_TEST1.1\n" + "A" * 40 + "\n>NC_TEST2.1\n" + "C" * 20 + "\n")
 
             derivation = derive_reference_fasta(
-                source_fasta=fasta_path, assembly_report=report_path, output_fasta=tmp_path / "derived.fna"
+                source_fasta=fasta_path,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "derived.fna",
+                policy=_POLICY_REFSEQ_ONLY,
             )
             self.assertEqual(derivation.contig_lengths, {"NC_TEST1.1": 40, "NC_TEST2.1": 20})
             self.assertEqual(set(derivation.contig_lengths), set(derivation.contigs))
@@ -68,7 +78,10 @@ class DeriveReferenceContigLengthsTests(unittest.TestCase):
             fasta_path.write_text(">NC_TEST1.1\n" + "A" * 40 + "\n>NC_TEST2.1\n" + "C" * 100 + "\n")
 
             derivation = derive_reference_fasta(
-                source_fasta=fasta_path, assembly_report=report_path, output_fasta=tmp_path / "derived.fna"
+                source_fasta=fasta_path,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "derived.fna",
+                policy=_POLICY_REFSEQ_ONLY,
             )
             self.assertEqual(largest_contig(derivation.contig_lengths), "NC_TEST2.1")
 
@@ -145,10 +158,16 @@ class CrlfEquivalenceTests(unittest.TestCase):
             crlf_fasta.write_bytes(crlf_fasta_text.encode())
 
             lf_derivation = derive_reference_fasta(
-                source_fasta=lf_fasta, assembly_report=report_path, output_fasta=tmp_path / "lf_out.fna"
+                source_fasta=lf_fasta,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "lf_out.fna",
+                policy=_POLICY_REFSEQ_ONLY,
             )
             crlf_derivation = derive_reference_fasta(
-                source_fasta=crlf_fasta, assembly_report=report_path, output_fasta=tmp_path / "crlf_out.fna"
+                source_fasta=crlf_fasta,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "crlf_out.fna",
+                policy=_POLICY_REFSEQ_ONLY,
             )
             self.assertEqual(lf_derivation.output_fasta_sha256, crlf_derivation.output_fasta_sha256)
             self.assertEqual(lf_derivation.contig_lengths, crlf_derivation.contig_lengths)
@@ -165,7 +184,10 @@ class CrlfEquivalenceTests(unittest.TestCase):
                 handle.write(crlf_text)
 
             derivation = derive_reference_fasta(
-                source_fasta=gz_path, assembly_report=report_path, output_fasta=tmp_path / "out.fna"
+                source_fasta=gz_path,
+                assembly_report=report_path,
+                output_fasta=tmp_path / "out.fna",
+                policy=_POLICY_REFSEQ_ONLY,
             )
             self.assertEqual(derivation.contig_lengths, {"NC_TEST1.1": 8, "NC_TEST2.1": 4})
             self.assertNotIn("\r", derivation.output_fasta.read_text())

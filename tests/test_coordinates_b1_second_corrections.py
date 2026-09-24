@@ -68,6 +68,10 @@ def _hg38_source_spec():
     return spec.reference_sources["hg38"]
 
 
+def _derived_policy():
+    return load_execution_sources(FIXTURE_EXECUTION_SOURCES).derived_reference_policy
+
+
 def _fixture_report(*, accession: str, length: int) -> str:
     return _REPORT_HEADER + f"1\tassembled-molecule\t1\tChromosome\t{accession}\t=\t{accession}\tPrimary Assembly\t{length}\t{accession}\n"
 
@@ -292,6 +296,7 @@ class C1DeriveRevalidationTests(unittest.TestCase):
                 host_role="approved_mac",
                 download_record=download_record,
                 dry_run=False,
+                policy=_derived_policy(),
             )
             self.assertFalse(record["executed"])
             self.assertIn("drifted", record["skip_reason"])
@@ -325,6 +330,7 @@ class C1DeriveRevalidationTests(unittest.TestCase):
                 host_role="approved_mac",
                 download_record=download_record,
                 dry_run=False,
+                policy=_derived_policy(),
             )
             self.assertTrue(first["executed"])
             original_fasta_bytes = Path(first["output_fasta"]).read_bytes()
@@ -341,6 +347,7 @@ class C1DeriveRevalidationTests(unittest.TestCase):
                         host_role="approved_mac",
                         download_record=download_record,
                         dry_run=False,
+                        policy=_derived_policy(),
                     )
 
             second_record = json.loads((derived_dir / "derive.json").read_text())

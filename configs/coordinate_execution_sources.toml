@@ -55,6 +55,19 @@ md5checksums_url = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF
 include_sequence_roles_primary_assembly = ["assembled-molecule", "unlocalized-scaffold", "unplaced-scaffold"]
 # Plus the mitochondrial assembled-molecule from the "non-nuclear" unit.
 include_non_nuclear_assembled_molecule = true
-# Preserve the source accession as the FASTA identifier: RefSeq when
-# present, otherwise GenBank. Never rename to a convenience alias.
-accession_preference = ["refseq", "genbank"]
+# Authoritative source accession namespace, in preference order. Preserve
+# the selected accession as the FASTA identifier verbatim -- never rename to
+# a UCSC/convenience alias, infer a substitute accession, or combine RefSeq
+# and GenBank packages.
+#
+# The pinned GCF_... packages above are RefSeq genomic FASTAs whose
+# assembly report explicitly states "RefSeq assembly and GenBank assemblies
+# identical: no" (see docs/DECISIONS.md, 2026-09-24 "B3B-1 RefSeq derivation
+# universe", and docs/reviews/001b_b3b1_derivation_stop_review.md). The
+# authoritative accession namespace for these sources is therefore RefSeq
+# ONLY: a category-eligible row with no usable RefSeq accession (three rows
+# for GRCh38.p14: KI270721.1, KI270734.1, KI270752.1) is an explicit
+# source-namespace-unrepresented exclusion, reported in the derivation
+# result and reference manifest -- never a silent GenBank substitution and
+# never treated as a missing/corrupt selected FASTA record.
+accession_preference = ["refseq"]

@@ -5,13 +5,36 @@ Implements the frozen contig policy from
 ``assembled-molecule``/``unlocalized-scaffold``/``unplaced-scaffold`` from
 the ``Primary Assembly`` unit, plus the mitochondrial ``assembled-molecule``
 from the ``non-nuclear`` unit; exclude everything else (alternate loci,
-patches, decoys, separately packaged HLA contigs). The source accession
-(RefSeq when present, else GenBank) is preserved as the FASTA identifier —
-never a convenience alias.
+patches, decoys, separately packaged HLA contigs). The source accession is
+preserved as the FASTA identifier verbatim — never a UCSC/convenience alias,
+an inferred substitute, or a combination of RefSeq and GenBank packages.
+
+B3B-1 accession-policy correction: this module distinguishes four distinct
+outcomes for an assembly-report row that a reviewer/test must never conflate:
+
+1. **category-ineligible** — the row's Sequence-Role/Assembly-Unit is outside
+   the frozen contig policy (see :func:`contig_category` returning ``None``);
+   not reported as an exclusion at all, it simply never enters selection.
+2. **source-namespace-unrepresented** — the row IS category-eligible, but has
+   no usable accession in the caller's configured
+   ``DerivedReferencePolicy.accession_preference`` namespace(s) (see
+   :func:`selected_accession` returning ``None``). This is an explicit,
+   reported exclusion (``excluded_records``/``exclusion_summary`` on
+   :class:`ReferenceDerivation`) — never inferred by scanning the FASTA for
+   absent headers, and never a corrupt-source or parser-failure diagnosis.
+3. **selected** — a category-eligible row with a usable in-namespace
+   accession; it must then occur exactly once in the source FASTA at the
+   assembly-report length, or derivation fails closed (outcome 4).
+4. **hard missing/duplicate/length-mismatched selected accession** — a
+   *selected* accession absent, duplicated, or length-discordant in the
+   source FASTA. This is always a hard :class:`DerivationError`, never an
+   inferred exclusion of any kind — accession-namespace policy only ever
+   decides which rows are *candidates* for selection, never whether an
+   already-selected accession's presence in the FASTA is optional.
 
 Both the assembly-report parse and the FASTA filter are single sequential
 passes: neither loads a multi-gigabyte reference into memory, so this scales
-to a real hg38/hg19 source FASTA. B1 exercises this only against tiny
+to a real hg38/hg19 source FASTA. B1/B3B-1 exercise this only against tiny
 synthetic fixtures mirroring NCBI's real column layout.
 """
 
@@ -24,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from rbpbench.coordinates.execution_sources import DerivedReferencePolicy, validate_derived_reference_policy
 from rbpbench.coordinates.provenance import current_git_commit
 from rbpbench.data.audit import sha256_file
 
@@ -48,6 +72,15 @@ CATEGORY_CHROMOSOME = "chromosome"
 CATEGORY_MITOCHONDRION = "mitochondrion"
 CATEGORY_UNLOCALIZED = "unlocalized_scaffold"
 CATEGORY_UNPLACED = "unplaced_scaffold"
+
+# B3B-1: the one recognized exclusion reason -- a category-eligible row with
+# no usable accession in the configured source namespace(s).
+EXCLUSION_REASON_SOURCE_NAMESPACE_UNREPRESENTED = "source_namespace_unrepresented"
+
+_NAMESPACE_ACCESSION_FIELD = {
+    "refseq": lambda record: record.refseq_accession,
+    "genbank": lambda record: record.genbank_accession,
+}
 
 
 @dataclass(frozen=True)
@@ -124,12 +157,54 @@ def contig_category(record: AssemblyReportRecord) -> str | None:
     return None
 
 
-def selected_accession(record: AssemblyReportRecord) -> str:
-    """RefSeq accession when present and not the NCBI ``na`` sentinel, else GenBank."""
-    refseq = record.refseq_accession.strip()
-    if refseq and refseq.lower() != "na":
-        return refseq
-    return record.genbank_accession.strip()
+def _valid_raw_accession(value: str) -> str:
+    """A raw assembly-report accession field, or ``""`` if it is empty or the
+    NCBI ``na`` sentinel.
+    """
+    value = value.strip()
+    if not value or value.lower() == "na":
+        return ""
+    return value
+
+
+def selected_accession(record: AssemblyReportRecord, policy: DerivedReferencePolicy) -> str | None:
+    """B3B-1: policy-driven accession-namespace selection.
+
+    Returns the first usable accession found, in ``policy.accession_preference``
+    order, among ONLY the explicitly configured namespaces — never a
+    namespace absent from the policy, even when the record has a usable
+    accession there (e.g. under a RefSeq-only policy, a present GenBank
+    accession is never used as a silent fallback; it must be named
+    ``"genbank"`` in the policy for that to happen). ``None`` means this
+    record has no usable accession in any configured namespace — an explicit
+    ``source_namespace_unrepresented`` exclusion, not a fallback trigger and
+    not an error by itself (see the module docstring).
+
+    Callers must validate ``policy`` with
+    :func:`rbpbench.coordinates.execution_sources.validate_derived_reference_policy`
+    before calling this — it trusts ``policy.accession_preference`` to name
+    only supported namespaces.
+    """
+    for namespace in policy.accession_preference:
+        raw = _NAMESPACE_ACCESSION_FIELD[namespace](record)
+        candidate = _valid_raw_accession(raw)
+        if candidate:
+            return candidate
+    return None
+
+
+def _raw_identifying_accession(record: AssemblyReportRecord) -> str:
+    """The best available raw accession for identifying a
+    source-namespace-unrepresented row in exclusion evidence — independent of
+    ``policy`` (a row can be unrepresented in the configured namespace while
+    still carrying a real accession in a different namespace, and that is
+    exactly the identifier a reviewer needs to see).
+    """
+    for value in (record.refseq_accession, record.genbank_accession):
+        candidate = _valid_raw_accession(value)
+        if candidate:
+            return candidate
+    return ""
 
 
 class DerivationError(ValueError):
@@ -151,6 +226,14 @@ class ReferenceDerivation:
     # the largest included contig from the accepted manifest alone, without
     # re-deriving or re-scanning the reference FASTA.
     contig_lengths: dict[str, int] = field(default_factory=dict)
+    # B3B-1: the exact canonical policy this derivation was run under (see
+    # ``DerivedReferencePolicy``, serialized to plain JSON-safe types), and
+    # structured evidence for every category-eligible row explicitly excluded
+    # as source-namespace-unrepresented -- never a selected missing FASTA
+    # record, and never inferred by scanning for absent FASTA headers.
+    effective_policy: dict = field(default_factory=dict)
+    excluded_records: tuple[dict, ...] = field(default_factory=tuple)
+    exclusion_summary: dict = field(default_factory=dict)
 
 
 def largest_contig(contig_lengths: dict[str, int]) -> str:
@@ -234,39 +317,80 @@ def derive_reference_fasta(
     source_fasta: Path,
     assembly_report: Path,
     output_fasta: Path,
+    policy: DerivedReferencePolicy,
 ) -> ReferenceDerivation:
     """Stream ``source_fasta`` (plain or ``.gz``) once, writing only the
     accessions selected by :func:`contig_category`/:func:`selected_accession`
-    to ``output_fasta`` in source-encounter order (so repeated derivation
-    over unchanged inputs is byte-for-byte reproducible), and verify:
+    (deterministically, from ``policy``) to ``output_fasta`` in
+    source-encounter order (so repeated derivation over unchanged inputs is
+    byte-for-byte reproducible), and verify:
 
     1. every selected accession occurs exactly once in the source;
     2. no unselected accession appears in the derived FASTA;
     3. every derived sequence length equals the assembly-report length.
 
+    A category-eligible row with no accession in ``policy``'s configured
+    source namespace(s) is an explicit ``source_namespace_unrepresented``
+    exclusion (recorded in the returned ``excluded_records``/
+    ``exclusion_summary``), never a selected-but-missing FASTA record and
+    never inferred by scanning for absent FASTA headers — see the module
+    docstring for the full eligible/unrepresented/selected/hard-failure
+    distinction.
+
     Never loads the source FASTA whole: one line is held at a time. Writes to
     an attempt-specific temporary file and only atomically promotes it onto
-    ``output_fasta`` after every verification check passes (B1-R7): a failed
-    derivation (a verification violation, or any exception mid-stream) must
-    never destroy a prior valid ``output_fasta`` left over from an earlier
-    successful derivation.
+    ``output_fasta`` after every verification check passes (B1-R7/B3B-1): a
+    failed derivation (a policy violation, an occurrence/length verification
+    violation, or any exception mid-stream) must never destroy a prior valid
+    ``output_fasta`` left over from an earlier successful derivation.
     """
+    policy_violations = validate_derived_reference_policy(policy)
+    if policy_violations:
+        raise DerivationError(
+            "derived-reference policy validation failed (before any source data access): "
+            + "; ".join(policy_violations)
+        )
+
     records = parse_assembly_report(assembly_report)
     selected: dict[str, AssemblyReportRecord] = {}
     category_of: dict[str, str] = {}
     chrom_name_of: dict[str, str] = {}
+    excluded_records: list[dict] = []
     for record in records:
         category = contig_category(record)
         if category is None:
             continue
-        accession = selected_accession(record)
-        if not accession:
-            raise DerivationError(f"assembly-report record {record.sequence_name!r} has no usable accession")
+        accession = selected_accession(record, policy)
+        if accession is None:
+            excluded_records.append(
+                {
+                    "accession": _raw_identifying_accession(record),
+                    "category": category,
+                    "sequence_name": record.sequence_name,
+                    "length": record.sequence_length,
+                    "reason": EXCLUSION_REASON_SOURCE_NAMESPACE_UNREPRESENTED,
+                }
+            )
+            continue
         if accession in selected:
             raise DerivationError(f"duplicate accession {accession!r} selected from the assembly report")
         selected[accession] = record
         category_of[accession] = category
         chrom_name_of[accession] = record.sequence_name
+
+    # Deterministic ordering independent of assembly-report encounter order.
+    excluded_records.sort(key=lambda r: (r["category"], r["sequence_name"], r["accession"]))
+    exclusion_summary = {
+        "count": len(excluded_records),
+        "total_bases": sum(r["length"] for r in excluded_records),
+        "reason_counts": dict(Counter(r["reason"] for r in excluded_records)),
+        "category_counts": dict(Counter(r["category"] for r in excluded_records)),
+    }
+    effective_policy = {
+        "include_sequence_roles_primary_assembly": list(policy.include_sequence_roles_primary_assembly),
+        "include_non_nuclear_assembled_molecule": policy.include_non_nuclear_assembled_molecule,
+        "accession_preference": list(policy.accession_preference),
+    }
 
     seen_counts: Counter = Counter()
     written_lengths: dict[str, int] = {}
@@ -332,8 +456,15 @@ def derive_reference_fasta(
             assembly_report_lengths={accession: record.sequence_length for accession, record in selected.items()},
             total_emitted_bases=total_emitted_bases,
         )
-        if length_violations:
-            raise DerivationError("derived-reference contig_lengths verification failed: " + "; ".join(length_violations))
+        # B3B-1 fix: the occurrence/unselected/length `violations` built
+        # above were previously never raised (only `length_violations` was),
+        # so a duplicated selected accession in the source FASTA could
+        # silently promote a candidate despite the check existing. Both
+        # violation lists must be aggregated and raised together before any
+        # promotion.
+        all_violations = list(violations) + list(length_violations)
+        if all_violations:
+            raise DerivationError("derived-reference verification failed: " + "; ".join(all_violations))
     except BaseException:
         if tmp_fasta.exists():
             tmp_fasta.unlink()
@@ -354,6 +485,9 @@ def derive_reference_fasta(
         accession_to_assembly_chrom_name={accession: chrom_name_of[accession] for accession in contigs},
         masking={**mask_counts, "status": _masking_status(mask_counts)},
         contig_lengths=contig_lengths,
+        effective_policy=effective_policy,
+        excluded_records=tuple(excluded_records),
+        exclusion_summary=exclusion_summary,
     )
 
 
@@ -379,13 +513,14 @@ def build_reference_manifest(
     the additional Task 001B fields: source compressed size/SHA-256/upstream
     MD5, assembly-report hash/upstream MD5, derivation command and Git
     commit, the complete contig list, ``contig_categories`` keyed by FASTA
-    identifier, an accession-to-assembly-chromosome-name table, and masking
-    base counts/status.
+    identifier, an accession-to-assembly-chromosome-name table, masking
+    base counts/status, and (B3B-1) the effective derived-reference policy
+    plus structured source-namespace-unrepresented exclusion evidence.
     """
     source_fasta_compressed = Path(source_fasta_compressed)
     assembly_report = Path(assembly_report)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "build_id": build_id,
         "assembly_accession": assembly_accession,
         "source_url": source_url,
@@ -398,6 +533,9 @@ def build_reference_manifest(
         "category_counts": dict(derivation.category_counts),
         "accession_to_assembly_chrom_name": dict(derivation.accession_to_assembly_chrom_name),
         "masking": dict(derivation.masking),
+        "effective_policy": dict(derivation.effective_policy),
+        "excluded_records": [dict(r) for r in derivation.excluded_records],
+        "exclusion_summary": dict(derivation.exclusion_summary),
         "source": {
             "fasta_compressed_path": str(source_fasta_compressed),
             "fasta_compressed_byte_size": source_fasta_compressed.stat().st_size
@@ -432,4 +570,5 @@ __all__ = [
     "CATEGORY_MITOCHONDRION",
     "CATEGORY_UNLOCALIZED",
     "CATEGORY_UNPLACED",
+    "EXCLUSION_REASON_SOURCE_NAMESPACE_UNREPRESENTED",
 ]

@@ -114,6 +114,42 @@ def seqkit_locate_command(query_fasta: Path, reference_fasta: Path) -> ToolComma
     return ToolCommand(tool="seqkit", argv=argv, pinned_version="2.13.0")
 
 
+# B3A-F1: fixed placeholder paths for the probe stage's ONE stable
+# command-semantics representation -- never a specific generation's random
+# candidate-workspace paths (see canonical_probe_commands below).
+_CANONICAL_REFERENCE_PATH = Path("REFERENCE")
+_CANONICAL_READS_PATH = Path("READS")
+_CANONICAL_QUERY_PATH = Path("QUERY")
+
+
+def canonical_probe_commands(*, threads: int = 1) -> tuple[str, str, str]:
+    """B3A-F1: the ONE stable command-semantics representation for the
+    probe stage's BWA/minimap2/SeqKit commands -- fixed placeholder paths,
+    so the rendered command string is sensitive only to command FLAGS
+    (which never vary per generation), never to any specific probe
+    generation's random candidate-workspace/index/query paths.
+
+    Used both to compute an accepted probe's own ``probe_fingerprint``
+    (``rbpbench.coordinates.runner.stage_probe``) AND every restart
+    recomputation (``rbpbench.coordinates.runner._current_canonical_probe_fingerprint``)
+    -- the two call sites share this exact helper so they can never
+    structurally diverge again (docs/reviews/001b_b3a_correction_review.md,
+    B3A-F1: an accepted fingerprint built from real executed argv/paths
+    could never equal a restart recomputation built from placeholders, even
+    with every other input unchanged). The exact executed argv/paths for a
+    real attempt are still preserved separately in tool provenance
+    (``command_text`` on each ``ToolProvenance``), never lost -- only the
+    FINGERPRINT input is canonicalized.
+
+    Returns ``(bwa_command, minimap2_command, seqkit_command)``.
+    """
+    return (
+        format_command(bwa_mem_command(_CANONICAL_REFERENCE_PATH, _CANONICAL_READS_PATH, threads=threads).argv),
+        format_command(minimap2_splice_command(_CANONICAL_REFERENCE_PATH, _CANONICAL_READS_PATH, threads=threads).argv),
+        format_command(seqkit_locate_command(_CANONICAL_QUERY_PATH, _CANONICAL_REFERENCE_PATH).argv),
+    )
+
+
 def resolve_version(version_argv) -> str | None:
     """Run a `--version`-style command and return its stripped stdout, or None.
 

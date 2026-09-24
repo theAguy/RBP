@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from rbpbench.coordinates.derive_reference import validate_contig_lengths
 from rbpbench.coordinates.probe import (
     ProbeError,
     build_pattern_fasta,
@@ -23,6 +24,7 @@ from rbpbench.coordinates.probe import (
     extract_contig_streaming,
     load_and_verify_b2_checkpoint,
     probe_fingerprint,
+    scan_reference_contig_lengths,
     select_probe_window,
     total_reference_bases,
     validate_probe_bed_rows,
@@ -298,6 +300,93 @@ class TotalReferenceBasesTests(unittest.TestCase):
             reference = tmp_path / "reference.fna"
             reference.write_bytes(b">chr1\r\nACGT\r\nAC\r\n")
             self.assertEqual(total_reference_bases(reference), 6)
+
+
+class ScanReferenceContigLengthsTests(unittest.TestCase):
+    """B3A-F3: the streaming per-accession accession -> length scan required
+    to equal accepted ``contig_lengths`` EXACTLY -- not merely agree on the
+    grand total -- before Ltotal/the largest contig are ever derived from
+    it. Every case here fails on ``bd1d671``, which only ever computed a
+    total-only scan (``total_reference_bases``) and validated contig_lengths
+    against that total alone.
+    """
+
+    def test_observed_map_matches_declared_per_contig_lengths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference = tmp_path / "reference.fna"
+            reference.write_text(">chr1\nACGT\n>chr2\nACGTACGT\n>chr3\nAC\n")
+            self.assertEqual(scan_reference_contig_lengths(reference), {"chr1": 4, "chr2": 8, "chr3": 2})
+
+    def test_preserved_total_per_contig_redistribution_is_caught(self):
+        """The exact B3A-F3 reproduction: with three or more contigs, bases
+        can be redistributed between two NON-largest contigs while
+        preserving the same keys, positivity, and grand total -- a
+        total-only check (as on bd1d671) cannot catch this, but the
+        observed per-accession map must not equal the declared (falsified)
+        contig_lengths.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference = tmp_path / "reference.fna"
+            # Real per-accession lengths: chr1=80 (largest), chr2=15, chr3=5.
+            reference.write_text(">chr1\n" + "ACGT" * 20 + "\n>chr2\n" + "A" * 15 + "\n>chr3\n" + "C" * 5 + "\n")
+            observed = scan_reference_contig_lengths(reference)
+            self.assertEqual(observed, {"chr1": 80, "chr2": 15, "chr3": 5})
+
+            # A falsified manifest redistributes bases between the two
+            # NON-largest contigs (chr2/chr3): same keys, same total (100),
+            # same largest-contig choice (chr1) -- only the per-accession
+            # values differ.
+            falsified_contig_lengths = {"chr1": 80, "chr2": 5, "chr3": 15}
+            self.assertEqual(set(falsified_contig_lengths), set(observed))
+            self.assertEqual(sum(falsified_contig_lengths.values()), sum(observed.values()))
+            self.assertNotEqual(falsified_contig_lengths, observed)
+
+            # The B3A-A2 total-only validator alone is fooled (this is
+            # exactly what bd1d671 relied on):
+            total_only_violations = validate_contig_lengths(
+                falsified_contig_lengths, contigs=("chr1", "chr2", "chr3"),
+                assembly_report_lengths={}, total_emitted_bases=sum(observed.values()),
+            )
+            self.assertEqual(total_only_violations, ())
+            # ...but the exact per-accession observed-map comparison the
+            # B3A-F3 fix requires is NOT fooled.
+            self.assertNotEqual(observed, falsified_contig_lengths)
+
+    def test_duplicate_header_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference = tmp_path / "reference.fna"
+            reference.write_text(">chr1\nACGT\n>chr1\nTTTT\n")
+            with self.assertRaises(ProbeError) as ctx:
+                scan_reference_contig_lengths(reference)
+            self.assertIn("duplicate", str(ctx.exception).lower())
+
+    def test_empty_header_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference = tmp_path / "reference.fna"
+            reference.write_text(">\nACGT\n")
+            with self.assertRaises(ProbeError) as ctx:
+                scan_reference_contig_lengths(reference)
+            self.assertIn("malformed", str(ctx.exception).lower())
+
+    def test_sequence_before_any_header_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference = tmp_path / "reference.fna"
+            reference.write_text("ACGT\n>chr1\nACGT\n")
+            with self.assertRaises(ProbeError) as ctx:
+                scan_reference_contig_lengths(reference)
+            self.assertIn("before any FASTA header", str(ctx.exception))
+
+    def test_crlf_source_counts_correctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            reference = tmp_path / "reference.fna"
+            reference.write_bytes(b">chr1\r\nACGT\r\nAC\r\n")
+            self.assertEqual(scan_reference_contig_lengths(reference), {"chr1": 6})
 
 
 class LoadAndVerifyB2CheckpointTests(unittest.TestCase):

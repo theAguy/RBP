@@ -32,6 +32,10 @@ in :func:`rbpbench.coordinates.runner.stage_probe`:
 - :func:`total_reference_bases` -- one streaming pass summing every base
   across an entire derived reference FASTA, used to fully validate
   ``contig_lengths`` (B3A-R2) before the largest contig is ever selected.
+- :func:`scan_reference_contig_lengths` -- B3A-F3: a streaming per-accession
+  ``accession -> length`` scan of the entire reference, required to equal
+  accepted ``contig_lengths`` EXACTLY (not merely agree on total base count)
+  before ``Ltotal``/the largest contig are ever derived from it.
 - :func:`compute_probe_projection` -- B3A-R6: the accepted wall-time/output/
   memory projection formulas and fail-closed gates
   (docs/tasks/001b_b3_hg38_preparation.md, "Probe projection and B4-safety
@@ -419,6 +423,43 @@ def total_reference_bases(reference_fasta: Path) -> int:
                 continue
             total += len(line)
     return total
+
+
+def scan_reference_contig_lengths(reference_fasta: Path) -> dict[str, int]:
+    """B3A-F3: one streaming pass (never materializing any contig as one
+    string) building the OBSERVED ``accession -> length`` map across the
+    ENTIRE derived reference FASTA -- proving each accession's OWN declared
+    length individually, unlike :func:`total_reference_bases` (a grand
+    total only: bases can be redistributed between two non-largest contigs
+    without changing the total, the keys, or the largest-contig choice, and
+    a total-only check cannot catch it -- see
+    docs/reviews/001b_b3a_correction_review.md, B3A-F3).
+
+    Fails closed (raises :class:`ProbeError`) on: an empty/malformed header
+    (no accession token after ``>``), a duplicate accession header, or any
+    non-blank sequence line encountered before the first header.
+    """
+    lengths: dict[str, int] = {}
+    current: str | None = None
+    with Path(reference_fasta).open() as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\r\n")
+            if line.startswith(">"):
+                token = line[1:].split()
+                if not token or not token[0]:
+                    raise ProbeError(f"malformed/empty FASTA header in {reference_fasta}: {line!r}")
+                accession = token[0]
+                if accession in lengths:
+                    raise ProbeError(f"duplicate FASTA header {accession!r} in {reference_fasta}")
+                current = accession
+                lengths[current] = 0
+                continue
+            if not line:
+                continue
+            if current is None:
+                raise ProbeError(f"sequence data before any FASTA header in {reference_fasta}: {line!r}")
+            lengths[current] += len(line)
+    return lengths
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +917,7 @@ __all__ = [
     "B2CheckpointEvidence",
     "load_and_verify_b2_checkpoint",
     "total_reference_bases",
+    "scan_reference_contig_lengths",
     "ContigExtraction",
     "extract_contig_streaming",
     "ProbeWindow",

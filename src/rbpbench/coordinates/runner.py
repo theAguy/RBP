@@ -60,6 +60,7 @@ from rbpbench.coordinates.alignment import (
 from rbpbench.coordinates.cleanup import CleanupRefused, execute_index_cleanup, plan_index_cleanup, resolve_git_repo_root
 from rbpbench.coordinates.commands import (
     bwa_mem_command,
+    canonical_probe_commands,
     format_command,
     minimap2_splice_command,
     resolve_version,
@@ -115,8 +116,8 @@ from rbpbench.coordinates.probe import (
     extract_contig_streaming,
     load_and_verify_b2_checkpoint,
     probe_fingerprint,
+    scan_reference_contig_lengths,
     select_probe_window,
-    total_reference_bases,
     validate_probe_bed_rows,
 )
 from rbpbench.coordinates.provenance import (
@@ -1547,24 +1548,44 @@ def stage_probe(
         disk_path=build_output_dir,
     )
 
-    # B3A-R2: fully validate contig_lengths -- exact key equality with
-    # `contigs`, positive integer values, AND agreement with an
-    # independently-streamed total base count of the CURRENT reference file
-    # on disk -- BEFORE the largest contig is ever selected. This is what
-    # actually catches a hand-edited contig_lengths entry inside an
-    # otherwise sha256/byte_size-valid reference_manifest.
-    computed_total_bases = total_reference_bases(reference)
+    # B3A-F3: stream the OBSERVED per-accession accession -> length map from
+    # the CURRENT reference file on disk -- never trust `contig_lengths`
+    # merely because its keys/positivity/grand-total already checked out
+    # against a total-only scan (bases can be redistributed between two
+    # non-largest contigs without moving the total, the keys, or the
+    # largest-contig choice; see docs/reviews/001b_b3a_correction_review.md,
+    # B3A-F3). Malformed/empty/duplicate headers or sequence before a
+    # header fail closed here, before any candidate work begins.
+    try:
+        observed_contig_lengths = scan_reference_contig_lengths(reference)
+    except ProbeError as exc:
+        record["skip_reason"] = f"reference FASTA scan failed for build {build!r}: {exc}"
+        _guarded_write_record(old_record_path, record)
+        return record
+
     contig_length_violations = validate_contig_lengths(
         contig_lengths, contigs=tuple(reference_manifest.get("contigs", ())),
-        assembly_report_lengths={}, total_emitted_bases=computed_total_bases,
+        assembly_report_lengths={}, total_emitted_bases=sum(observed_contig_lengths.values()),
     )
+    if observed_contig_lengths != contig_lengths:
+        contig_length_violations = (
+            *contig_length_violations,
+            f"observed per-accession contig lengths {observed_contig_lengths} do not exactly equal accepted "
+            f"contig_lengths {contig_lengths}",
+        )
     if contig_length_violations:
         record["skip_reason"] = f"contig_lengths validation failed for build {build!r}: {list(contig_length_violations)}"
         _guarded_write_record(old_record_path, record)
         return record
 
-    accession = largest_contig(contig_lengths)
-    contig_length = contig_lengths[accession]
+    # B3A-F3: derive Ltotal and the largest-contig selection from the
+    # independently VERIFIED observed evidence, never merely the caller-
+    # supplied `contig_lengths` dict (which is now proven identical to it,
+    # but the observed map is the actual source of truth this selection is
+    # bound to).
+    computed_total_bases = sum(observed_contig_lengths.values())
+    accession = largest_contig(observed_contig_lengths)
+    contig_length = observed_contig_lengths[accession]
 
     # B3A-R4: an explicitly reviewed non-destructive retention policy -- old
     # accepted probe generations are never deleted in B3A (see the module
@@ -1581,6 +1602,31 @@ def stage_probe(
     probe_output_budget = start_build_output_budget(
         already_accepted_bytes=prior_retained_bytes, total_allowance_gib=PROBE_OUTPUT_ALLOWANCE_GIB
     )
+
+    # B3A-F2: seed every prior RETAINED probe byte (every earlier accepted
+    # generation, never deleted -- see B3A-R4 above) into the SAME shared
+    # build_budget BEFORE the first new writer of this attempt. Unlike
+    # align/exact_match/report (whose new attempt supersedes/replaces the
+    # prior one, so the caller's `_build_budget_excluding` deliberately
+    # excludes their own prior bytes from the seed), probe's own prior
+    # generations remain on disk and must count toward the shared 4-GiB
+    # ceiling alongside this new generation's bytes -- the caller's shared
+    # budget was seeded excluding probe's own prior bytes specifically so
+    # this stage, which alone knows they are retained rather than
+    # superseded, is responsible for adding them back exactly once here.
+    if build_budget is not None:
+        build_budget.accept(prior_retained_bytes)
+
+    def _accept_probe_writer_bytes(num_bytes: int) -> None:
+        # B3A-F2: charge each tool's stdout+stderr to BOTH the probe's own
+        # 1-GiB sub-cap AND the shared build budget IMMEDIATELY after it is
+        # accepted -- never merely once, cumulatively, at the very end --
+        # so the very next writer's `_tool_output_cap()` call below sees
+        # both reduced remainders and three individually sub-limit outputs
+        # can never together silently exceed the shared allowance.
+        probe_output_budget.accept(num_bytes)
+        if build_budget is not None:
+            build_budget.accept(num_bytes)
 
     def _tool_output_cap() -> int:
         # B3A-R5: live-cap each tool by the SMALLER of the probe's own
@@ -1678,14 +1724,14 @@ def stage_probe(
             command_text=format_command(bwa_cmd.argv), binary=bwa_binary, run_fn=_run_tool_to_file,
             run_kwargs={"max_output_bytes": _tool_output_cap()},
         )
-        probe_output_budget.accept(bwa_sam.stat().st_size + bwa_stderr.stat().st_size)
+        _accept_probe_writer_bytes(bwa_sam.stat().st_size + bwa_stderr.stat().st_size)
 
         mm2_provenance = run_tool_with_provenance(
             mm2_cmd.argv, tool="probe_minimap2_splice", output_path=mm2_sam, stderr_path=mm2_stderr,
             command_text=format_command(mm2_cmd.argv), binary=mm2_binary, run_fn=_run_tool_to_file,
             run_kwargs={"max_output_bytes": _tool_output_cap()},
         )
-        probe_output_budget.accept(mm2_sam.stat().st_size + mm2_stderr.stat().st_size)
+        _accept_probe_writer_bytes(mm2_sam.stat().st_size + mm2_stderr.stat().st_size)
 
         smoke_violations: list[str] = []
         smoke_violations.extend(check_minimap2_mapping_stderr(mm2_stderr.read_text()))
@@ -1707,7 +1753,7 @@ def stage_probe(
         )
         host_mem_after = host_memory_snapshot()
         seqkit_bytes_used = seqkit_bed.stat().st_size + seqkit_stderr.stat().st_size
-        probe_output_budget.accept(seqkit_bytes_used)
+        _accept_probe_writer_bytes(seqkit_bytes_used)
 
         # B3A-R6: stream BED validation line-by-line -- never
         # ``read_text().splitlines()``, which materializes a file allowed to
@@ -1779,6 +1825,16 @@ def stage_probe(
     # newest generation's own bytes.
     accepted_bytes = prior_retained_bytes + new_generation_bytes
 
+    # B3A-F1: the fingerprint's command inputs use the SAME ONE canonical
+    # (fixed-placeholder-path) representation a restart recomputation uses
+    # (rbpbench.coordinates.runner._current_canonical_probe_fingerprint via
+    # rbpbench.coordinates.commands.canonical_probe_commands) -- never the
+    # real executed argv/paths (bwa_cmd/mm2_cmd/seqkit_cmd), which are
+    # specific to this random generation/candidate directory and could
+    # never equal a restart's placeholder-based recomputation. The exact
+    # executed commands are still preserved separately below, in
+    # resource_evidence's per-tool provenance (command_text).
+    canonical_bwa_command, canonical_minimap2_command, canonical_seqkit_command = canonical_probe_commands(threads=1)
     fingerprint = probe_fingerprint(
         b2_manifest_sha256=b2_evidence.manifest_sha256,
         b2_sample_sha256=b2_evidence.sample_fasta_sha256,
@@ -1793,9 +1849,9 @@ def stage_probe(
         bwa_binary_version=bwa_binary.version,
         minimap2_binary_version=mm2_binary.version,
         seqkit_binary_version=seqkit_binary.version,
-        bwa_command=format_command(bwa_cmd.argv),
-        minimap2_command=format_command(mm2_cmd.argv),
-        seqkit_command=format_command(seqkit_cmd.argv),
+        bwa_command=canonical_bwa_command,
+        minimap2_command=canonical_minimap2_command,
+        seqkit_command=canonical_seqkit_command,
         git_commit=git_commit_now,
         git_clean=git_clean_now,
     )
@@ -1836,12 +1892,12 @@ def stage_probe(
         fingerprint,
     )
 
-    # B3A-A3 item 10: seed the probe's own CUMULATIVE accepted bytes into the
-    # SAME shared per-build BuildOutputBudget later used by align/
-    # exact_match/report for this build, so probe+B4 accepted build outputs
-    # can never together exceed the combined 4-GiB cap.
-    if build_budget is not None:
-        build_budget.accept(accepted_bytes)
+    # B3A-F2: the shared build_budget was already live-charged above --
+    # `prior_retained_bytes` before the first writer, then each writer's own
+    # bytes immediately after it (see `_accept_probe_writer_bytes`) -- so
+    # `build_budget.accepted_bytes` already equals `accepted_bytes` exactly
+    # here. Charging it again with the full cumulative total would
+    # double-count both the prior-retained seed and every writer's bytes.
 
     try:
         _guarded_write_record(old_record_path, record)
@@ -3875,6 +3931,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         bwa_binary = resolve_binary_provenance("bwa", version=resolve_version(["bwa"]))
         mm2_binary = resolve_binary_provenance("minimap2", version=resolve_version(["minimap2", "--version"]))
         seqkit_binary = resolve_binary_provenance("seqkit", version=resolve_version(["seqkit", "version"]))
+        canonical_bwa_command, canonical_minimap2_command, canonical_seqkit_command = canonical_probe_commands(
+            threads=1
+        )
         return probe_fingerprint(
             b2_manifest_sha256=b2_manifest_raw_hash,
             b2_sample_sha256=_b2_evidence_for_fingerprint.sample_fasta_sha256 if _b2_evidence_for_fingerprint else None,
@@ -3889,9 +3948,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             bwa_binary_version=bwa_binary.version,
             minimap2_binary_version=mm2_binary.version,
             seqkit_binary_version=seqkit_binary.version,
-            bwa_command=format_command(bwa_mem_command(Path("REFERENCE"), Path("READS"), threads=1).argv),
-            minimap2_command=format_command(minimap2_splice_command(Path("REFERENCE"), Path("READS"), threads=1).argv),
-            seqkit_command=format_command(seqkit_locate_command(Path("QUERY"), Path("REFERENCE")).argv),
+            bwa_command=canonical_bwa_command,
+            minimap2_command=canonical_minimap2_command,
+            seqkit_command=canonical_seqkit_command,
             git_commit=_probe_git_commit_now,
             git_clean=_probe_git_clean_now,
         )

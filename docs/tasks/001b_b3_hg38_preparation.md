@@ -1,9 +1,11 @@
 # Task 001B checkpoint B3 — hg38 preparation plan
 
-**Status:** B3A accepted at `768771c`; the first B3B-1 attempt stopped safely
-after the checksum listing exposed a path-identity defect; correction
-`eab0a35` is accepted and B3B-1 may resume only from its bounded recovery
-handoff; B3B-2 remains unauthorized
+**Status:** B3A accepted at `768771c`; the checksum path correction `eab0a35`
+is accepted; the guarded B3B-1 download is accepted locally, but derivation
+stopped safely because the pinned RefSeq FASTA omits three GenBank-only rows
+from the broader assembly report. The accession-policy correction in
+`docs/handoffs/001b_b3b1_derivation_correction_claude_handoff.md` is the only
+authorized next work; B3B-1 has not passed and B3B-2 remains unauthorized
 **Parent:** `docs/tasks/001b_coordinate_feasibility_execution.md`
 **Branch:** `issue-001b-coordinate-execution`
 **Depends on:** B1 accepted at `31c57cd`; B2 accepted at `e62026b`
@@ -65,6 +67,16 @@ The pre-existing `references/derived/hg38/derive.json` and
 their pre-B3 hashes. Do not delete or manually edit them. A successful guarded
 real stage may replace its corresponding non-executed selection record
 atomically; otherwise the old record must survive unchanged.
+
+The pinned genomic FASTA is the RefSeq (`GCF_...`) package. For derivation,
+the source accession namespace therefore controls the representable contig
+universe: category-eligible assembly-report rows must also have a usable
+RefSeq accession. GenBank-only rows in a non-identical paired GenBank
+assembly are excluded explicitly and reported; they are not silently treated
+as missing RefSeq FASTA records and are not supplemented from a second
+assembly. For GRCh38.p14 this excludes exactly `KI270721.1`, `KI270734.1`,
+and `KI270752.1` (293,111 bases total). Any selected RefSeq accession missing
+from the pinned RefSeq FASTA remains a hard failure.
 
 ## B3A — readiness correction on tiny fixtures only
 

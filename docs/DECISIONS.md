@@ -205,3 +205,27 @@
 - This is an operational correctness correction only. No source URL, frozen
   MD5, byte size, assembly, contig policy, sampling rule, scientific
   threshold, or resource ceiling changes.
+
+## 2026-09-24 — B3B-1 RefSeq derivation universe
+
+- The accepted GRCh38.p14 download is valid. Its assembly report explicitly
+  says that the RefSeq and GenBank assemblies are not identical. Three rows
+  that otherwise match the primary-assembly role policy have GenBank
+  accessions but no RefSeq accession: `KI270721.1` (100,316 bases),
+  `KI270734.1` (165,050 bases), and `KI270752.1` (27,745 bases). As expected
+  for the pinned `GCF_...` RefSeq genomic package, none appears in its FASTA.
+- The study will keep the pinned RefSeq source and will not silently switch
+  to the GenBank assembly or construct a hybrid reference. The derived
+  reference universe is the configured category policy intersected with the
+  configured source accession namespace. For the current RefSeq sources,
+  category-eligible rows without a usable RefSeq accession are explicit
+  source-unrepresented exclusions.
+- For GRCh38.p14 this yields 191 derived contigs: 24 chromosomes, one
+  mitochondrion, 40 unlocalized scaffolds, and 126 unplaced scaffolds. The
+  three exclusions total 293,111 bases and must be recorded in the reference
+  manifest and sanitized checkpoint evidence.
+- This is a recorded scientific policy refinement forced by the real primary
+  source, not evidence of a corrupt download. Source URLs, checksums, byte
+  sizes, assembly identity, role/category rules, mapper parameters, sampling,
+  thresholds, and resource ceilings remain unchanged. A selected RefSeq
+  accession missing from the RefSeq FASTA is still a hard stop.

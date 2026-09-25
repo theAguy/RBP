@@ -1,7 +1,7 @@
 # Task 002 — Sequence-grouped train/validation/test partitions
 
-**Status:** second review reconciled; only checkpoint 002A may begin through
-its bounded executor handoff
+**Status:** checkpoint 002A accepted; checkpoint 002B awaits a separate
+planning review and executor handoff
 **Phase:** 2
 **Branch after Task 001 merge:** `issue-002-sequence-partitions`
 

@@ -5,7 +5,7 @@ Task 002, the sequence-grouped 70/15/15 train/validation/test split
 (`docs/tasks/002_sequence_clustered_partitions.md`). It is split across
 three execution steps, each gated on its own planning review.
 
-## Task 002A (this implementation) — bounded correction applied
+## Task 002A (this implementation) — accepted
 
 Implementation and tiny synthetic fixture tests only. Nothing in this
 checkpoint opens the real CSV, generates a real dataset FASTA, or constructs
@@ -70,6 +70,9 @@ correction is applied: `cluster_command`/`audit_search_command` now require
 a `width` argument and always pass `--min-seq-id 0.90`, the width's mapped
 `-c` coverage, `--cov-mode 0`, and `--max-seqs 361180`
 (`tests/test_splits_commands.py`, `tests/test_splits_real_binaries.py`).
+The corrected implementation is accepted in
+`docs/reviews/002a_sequence_partition_acceptance.md`; this acceptance does
+not itself authorize real-data checkpoint 002B.
 
 `mmseqs cluster --help` (18.8cc5c) does not list `--search-type` or
 `--strand` at all — confirmed against the real installed binary, not just

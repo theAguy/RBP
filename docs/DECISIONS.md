@@ -229,3 +229,26 @@
   sizes, assembly identity, role/category rules, mapper parameters, sampling,
   thresholds, and resource ceilings remain unchanged. A selected RefSeq
   accession missing from the RefSeq FASTA is still a hard stop.
+
+## 2026-09-25 — Freeze scope and resume scientific execution
+
+- Correction `5f5308d` is accepted specifically for the checked-in frozen
+  production policy: all three Primary Assembly roles are included, the
+  mitochondrial assembled molecule is included, and the accession namespace
+  is RefSeq-only. Under those exact values, the implementation's fixed
+  category behavior and configured values coincide, and the real hg38 output
+  is expected to contain the decided 191 contigs.
+- General support for changing the role list or mitochondrial flag is
+  deferred. Those fields must not be changed for B3-B7 without reopening the
+  implementation review. The accepted manifest must record the frozen values
+  and the real derivation must satisfy the exact contig/category/exclusion
+  checks; otherwise execution stops.
+- The CLI validates the policy before production data access. Additional
+  validation for direct internal `stage_derive()` calls and a separate derive
+  `generation_digest` are useful engineering improvements but are not needed
+  to answer this project's scientific question; existing reference/manifest
+  hashes, restart fingerprints, and repeat-derivation equality remain the
+  required evidence.
+- The follow-up handoff at `676dcee` is superseded. Work returns to the
+  checkpoint sequence: complete B3B-1 derivation and deterministic repeat,
+  review once, then proceed to B3B-2 indexing/probe if accepted.

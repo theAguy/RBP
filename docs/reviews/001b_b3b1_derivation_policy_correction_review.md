@@ -1,5 +1,10 @@
 # Task 001B B3B-1 derivation-policy correction review
 
+**Status: superseded by the project-scope decision and conditional acceptance
+in `001b_b3b1_derivation_policy_conditional_acceptance.md`. The findings below
+remain valid engineering observations, but they do not block the frozen
+production run.**
+
 ## Verdict
 
 **Changes required. Correction `5f5308d` is not accepted yet.** Its RefSeq

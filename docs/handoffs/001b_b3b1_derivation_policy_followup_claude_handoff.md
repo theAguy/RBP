@@ -1,5 +1,9 @@
 # Executor handoff — B3B-1 derivation-policy follow-up
 
+**Status: SUPERSEDED. Do not execute this handoff.** The project deliberately
+deferred these generalization improvements and replaced this work with
+`001b_b3b1_derive_resume_claude_handoff.md`.
+
 Claude, correct only the blockers in
 `docs/reviews/001b_b3b1_derivation_policy_correction_review.md` on
 `issue-001b-coordinate-execution`.

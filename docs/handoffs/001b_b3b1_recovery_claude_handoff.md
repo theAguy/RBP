@@ -1,5 +1,10 @@
 # Executor handoff — Task 001B checkpoint B3B-1 recovery
 
+**Status: partially executed and superseded. Do not rerun this handoff.** Its
+download step succeeded; its derivation stopped at the now-reviewed RefSeq
+universe issue. Continue only through
+`001b_b3b1_derive_resume_claude_handoff.md`.
+
 Claude, resume **B3B-1 only** from the preserved stopped attempt. The
 checksum-path correction is accepted in
 `docs/reviews/001b_b3b1_checksum_correction_acceptance.md`.

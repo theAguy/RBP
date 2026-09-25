@@ -113,6 +113,14 @@ packaged HLA contigs. Preserve the source accession as the FASTA identifier:
 use the RefSeq accession when present, otherwise the GenBank accession. Do not
 rename records to convenience aliases.
 
+**Superseding production clarification (2026-09-24):** the pinned `GCF_...`
+packages are RefSeq FASTAs and their paired GenBank assemblies are not always
+identical. For these production sources, use the RefSeq namespace only;
+category-eligible GenBank-only rows are explicit source-unrepresented
+exclusions. See `docs/DECISIONS.md` and the B3 hg38 preparation task. The
+original fallback remains relevant only to an explicitly configured GenBank
+source, not to the pinned GCF runs.
+
 The derivation must be streaming and deterministic. It must verify that:
 
 1. every selected accession occurs exactly once in the source FASTA;

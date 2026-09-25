@@ -3,9 +3,12 @@
 **Status:** B3A accepted at `768771c`; the checksum path correction `eab0a35`
 is accepted; the guarded B3B-1 download is accepted locally, but derivation
 stopped safely because the pinned RefSeq FASTA omits three GenBank-only rows
-from the broader assembly report. The accession-policy correction in
-`docs/handoffs/001b_b3b1_derivation_correction_claude_handoff.md` is the only
-authorized next work; B3B-1 has not passed and B3B-2 remains unauthorized
+from the broader assembly report. Correction `5f5308d` implements the RefSeq
+namespace rule but is not yet accepted because the remaining role/
+mitochondrial policy fields are recorded without affecting selection. The
+bounded follow-up in
+`docs/handoffs/001b_b3b1_derivation_policy_followup_claude_handoff.md` is the
+only authorized next work; B3B-1 has not passed and B3B-2 remains unauthorized
 **Parent:** `docs/tasks/001b_coordinate_feasibility_execution.md`
 **Branch:** `issue-001b-coordinate-execution`
 **Depends on:** B1 accepted at `31c57cd`; B2 accepted at `e62026b`

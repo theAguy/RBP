@@ -1,0 +1,395 @@
+{
+  "checkpoint": "001B-B3B-1",
+  "status": "B3B-1 passed",
+  "scope": "Derivation-only resumption executed exactly per docs/handoffs/001b_b3b1_derive_resume_claude_handoff.md under the conditional acceptance in docs/reviews/001b_b3b1_derivation_policy_conditional_acceptance.md. B3B-2 (indexing/probe) was NOT started.",
+  "git": {
+    "branch": "issue-001b-coordinate-execution",
+    "execution_head_commit": "b2eed05ccca7ecd7542081718c501abce58c8061",
+    "origin": "https://github.com/theAguy/RBP.git",
+    "worktree_clean_before_execution": true,
+    "worktree_clean_after_execution_before_manifest_commit": true,
+    "ancestors_verified": [
+      "5f5308d (Fix B3B-1 RefSeq derivation-policy: source-namespace-driven accession selection)",
+      "676dcee (Review B3B-1 derivation policy correction -- superseded follow-up, NOT executed)"
+    ]
+  },
+  "policy_and_review_chain": {
+    "checksum_path_correction": {
+      "commit": "eab0a35",
+      "summary": "Correct Task 001B checkpoint B3B-1 checksum-listing path identity (normalized relative path, not basename)."
+    },
+    "derivation_stop": {
+      "review": "docs/reviews/001b_b3b1_derivation_stop_review.md",
+      "summary": "First real derive:hg38 attempt (04_derive, 2026-09-24) failed closed: contig_lengths['KI270721.1'|'KI270734.1'|'KI270752.1'] = 0, because the pinned RefSeq GCF_... FASTA has no header for these three GenBank-only assembly-report rows (assembly report states 'RefSeq assembly and GenBank assemblies identical: no'). Root cause: implementation hard-coded a RefSeq-then-GenBank fallback instead of using the configured accession_preference namespace.",
+      "no_derived_generation_selected": true
+    },
+    "refseq_derivation_universe_decision": {
+      "decisions_md_entry": "2026-09-24 -- B3B-1 RefSeq derivation universe",
+      "summary": "Project decision: keep pinned RefSeq assembly; make accession_preference authoritative (refseq-only for this source); category-eligible rows lacking a RefSeq accession are explicit source_namespace_unrepresented exclusions, never a silent GenBank substitution."
+    },
+    "correction": {
+      "commit": "5f5308d",
+      "summary": "Fix B3B-1 RefSeq derivation-policy: source-namespace-driven accession selection."
+    },
+    "correction_review": {
+      "commit": "676dcee",
+      "summary": "Review of 5f5308d's broader configurability generalization. Explicitly superseded/deferred -- NOT executed. Only the frozen-config-scoped acceptance below authorizes real execution."
+    },
+    "conditional_acceptance": {
+      "doc": "docs/reviews/001b_b3b1_derivation_policy_conditional_acceptance.md",
+      "summary": "5f5308d accepted specifically for the checked-in frozen production policy (all three Primary Assembly roles, mitochondrial included, accession_preference=['refseq']). Verification already completed: full d9bfcad..5f5308d diff reviewed, git diff --check clean, focused suite 24 passed, independent complete pinned-environment suite 502 passed in 138.71s."
+    },
+    "scope_freeze_decision": {
+      "decisions_md_entry": "2026-09-25 -- Freeze scope and resume scientific execution",
+      "summary": "676dcee follow-up superseded. Role list and mitochondrial flag frozen for B3-B7. Work returns to checkpoint sequence: complete B3B-1 derivation + deterministic repeat, review once, then B3B-2 if separately accepted."
+    }
+  },
+  "preserved_starting_evidence_reverified": {
+    "download_json_sha256": "3cbe7265b777ccc9dc4ad7e26691e1c188846e30b997b85c8ec0af38f14aaeea",
+    "download_json_selected_generation": "download_d6cea8f858a645ce",
+    "source_fasta_compressed": {
+      "byte_size": 972898531,
+      "md5": "c30471567037b2b2389d43c908c653e1",
+      "sha256": "11912a45a545bf01a10b2a7f10eb7a42924436b4d19b476b1899834fb7ba74a3"
+    },
+    "assembly_report": {
+      "byte_size": 80454,
+      "md5": "21f3ac4aa8245a99eb874082051b9dde",
+      "sha256": "64318ddff470b69b261a667d813210044f60d4ce654253a547db80ff73638d38"
+    },
+    "checksum_listing_sha256": "a6ad1c10ef1b48ee83c24742fa3a092a244b01615a174d470012d1ae09241e56",
+    "old_nonexecuted_derive_json_sha256_before_this_run": "0f8f134696a6ecb70f3ca9af27970dd8aa8c7c7bd7e119b21f11e98a08515b86",
+    "unchanged_index_json_sha256": "da375f2259a696bc1a2baadbb4010bd2acd6532816be4cb9423a401500f4f37f",
+    "state_json_sha256_before_this_run": "ca5c2fb113d40498984a74f37acccd7425d8f30d6f1cf4fca0c2a99c35d31969",
+    "state_json_before_this_run_completed_stages": [
+      "sample",
+      "decode",
+      "controls",
+      "preflight",
+      "download:hg38"
+    ],
+    "disk_ledger_before_this_run_gib_new_since_baseline": 0.6635475158691406,
+    "prior_failed_derive_logs_preserved_unmodified": {
+      "04_derive.stderr_log_sha256": "fc73631b38a0d3e86562595b683f422670895cb3af1307efb60e4fc39c0352d5",
+      "04_derive.stdout_log_sha256_empty": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "empty_03_download_retry_stderr_log_disclosed_defect": "Pre-existing executor log-splitting error caused by a GNU-only 'head' option on macOS (disclosed in docs/reviews/001b_b3b1_derivation_stop_review.md); does not invalidate the accepted download evidence. Left unmodified by this checkpoint.",
+    "local_input_hashes_reverified_against_execution_source_spec": {
+      "dataset_csv_sha256_match": true,
+      "dataset_audit_sha256_match": true,
+      "proteins_config_sha256_match": true,
+      "study_config_sha256_match": true
+    },
+    "frozen_derived_reference_policy_reverified": {
+      "include_sequence_roles_primary_assembly": [
+        "assembled-molecule",
+        "unlocalized-scaffold",
+        "unplaced-scaffold"
+      ],
+      "include_non_nuclear_assembled_molecule": true,
+      "accession_preference": [
+        "refseq"
+      ],
+      "matches_accepted_frozen_values": true
+    }
+  },
+  "guarded_derivation": {
+    "command": {
+      "argv": [
+        "python",
+        "-m",
+        "rbpbench.coordinates.runner",
+        "--config",
+        "configs/coordinate_feasibility.toml",
+        "--csv",
+        "dataset_K562_multilabel_with_NEGs.csv",
+        "--output-dir",
+        "artifacts/coordinate_feasibility",
+        "--sources-dir",
+        "references/sources",
+        "--derived-dir",
+        "references/derived",
+        "--indices-dir",
+        "indices",
+        "--repo-root",
+        ".",
+        "--disk-budget-path",
+        ".",
+        "--execution-sources",
+        "configs/coordinate_execution_sources.toml",
+        "--dataset-audit",
+        "manifests/dataset_audit.json",
+        "--proteins-config",
+        "configs/proteins.tsv",
+        "--build",
+        "hg38",
+        "--host-role",
+        "approved_mac",
+        "--allow-mapping",
+        "--threads",
+        "4",
+        "--stage",
+        "derive"
+      ],
+      "conda_env": "rbpbench-coord-001b",
+      "python_version": "3.11.16",
+      "exit_status": 0
+    },
+    "timing": {
+      "start_utc": "2026-09-25T05:35:09Z",
+      "end_utc": "2026-09-25T05:41:39Z",
+      "elapsed_seconds_wall_time_tool_report": 390.27,
+      "elapsed_seconds_user_time": 349.98,
+      "elapsed_seconds_sys_time": 23.3
+    },
+    "resource_usage": {
+      "peak_rss_bytes": 1176821760,
+      "peak_memory_footprint_bytes": 1179999232,
+      "source": "/usr/bin/time -l"
+    },
+    "captured_logs": {
+      "directory": "artifacts/coordinate_feasibility/hg38/b3b1_logs/",
+      "new_nonoverwriting_names": [
+        "05_derive_resume.cmd.log",
+        "05_derive_resume.meta.log",
+        "05_derive_resume.resource.log",
+        "05_derive_resume.stdout.log",
+        "05_derive_resume.stderr.log"
+      ],
+      "prior_01_04_logs_untouched": true,
+      "05_derive_resume_stdout_log_sha256_empty": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "05_derive_resume_stderr_log_sha256_empty": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "disk": {
+      "free_disk_gib_before": 151,
+      "free_disk_gib_after": 147,
+      "min_free_disk_gib_required": 80,
+      "ledger_new_gib_since_baseline_for_derive_entry": 2.712493896484375,
+      "ledger_entries_after": [
+        "download:hg38",
+        "derive:hg38"
+      ],
+      "ledger_within_30_gib_ceiling": true
+    },
+    "state_json_after": {
+      "sha256": "d793744e8b3a8d81e139596011766b135bd4f2ec75cd4df1a74d183e8fa0d8fa",
+      "completed_stages": [
+        "sample",
+        "decode",
+        "controls",
+        "preflight",
+        "download:hg38",
+        "derive:hg38"
+      ],
+      "mapping_executed_hg38": {
+        "download": true,
+        "derive": true
+      },
+      "no_other_stage_added": true
+    }
+  },
+  "selected_derivation_result": {
+    "generation_id": "derive_588ed69489274b01",
+    "derive_json": {
+      "executed": true,
+      "output_fasta": "references/derived/hg38/generations/derive_588ed69489274b01/reference.fna",
+      "output_fasta_sha256": "5e3bf613355c96c2b78fcfdb26dc1fafe7279fbacd0f25b87d899d9186a53676",
+      "reference_manifest_path": "references/derived/hg38/generations/derive_588ed69489274b01/reference_manifest.json",
+      "reference_manifest_sha256": "f27fb2d38b54de99d38afe456314f12c4c3d6d1fa96d90d2def573c35c4ca01e",
+      "reference_manifest_byte_size": 26775
+    },
+    "output_fasta_byte_size": 3138203434,
+    "source_binding": {
+      "build_id": "hg38",
+      "assembly_accession": "GCF_000001405.40",
+      "source_fasta_compressed_sha256": "11912a45a545bf01a10b2a7f10eb7a42924436b4d19b476b1899834fb7ba74a3",
+      "source_assembly_report_sha256": "64318ddff470b69b261a667d813210044f60d4ce654253a547db80ff73638d38",
+      "matches_accepted_download_generation": true
+    },
+    "effective_policy": {
+      "include_sequence_roles_primary_assembly": [
+        "assembled-molecule",
+        "unlocalized-scaffold",
+        "unplaced-scaffold"
+      ],
+      "include_non_nuclear_assembled_molecule": true,
+      "accession_preference": [
+        "refseq"
+      ],
+      "matches_frozen_expected_values": true
+    },
+    "contig_summary": {
+      "total_unique_selected_contigs": 191,
+      "category_counts": {
+        "chromosome": 24,
+        "unlocalized_scaffold": 40,
+        "unplaced_scaffold": 126,
+        "mitochondrion": 1
+      },
+      "matches_expected_exactly": true,
+      "full_contig_list_omitted_by_sanitization_policy": true
+    },
+    "exclusions": {
+      "excluded_records": [
+        {
+          "accession": "KI270721.1",
+          "category": "unlocalized_scaffold",
+          "sequence_name": "HSCHR11_CTG1_UNLOCALIZED",
+          "length": 100316,
+          "reason": "source_namespace_unrepresented"
+        },
+        {
+          "accession": "KI270734.1",
+          "category": "unlocalized_scaffold",
+          "sequence_name": "HSCHR22_UNLOCALIZED_CTG4",
+          "length": 165050,
+          "reason": "source_namespace_unrepresented"
+        },
+        {
+          "accession": "KI270752.1",
+          "category": "unplaced_scaffold",
+          "sequence_name": "HSCHRUN_RANDOM_CTG29",
+          "length": 27745,
+          "reason": "source_namespace_unrepresented"
+        }
+      ],
+      "exclusion_summary": {
+        "count": 3,
+        "total_bases": 293111,
+        "reason_counts": {
+          "source_namespace_unrepresented": 3
+        },
+        "category_counts": {
+          "unlocalized_scaffold": 2,
+          "unplaced_scaffold": 1
+        }
+      },
+      "matches_expected_exactly": true
+    },
+    "frozen_policy_limitation_disclosed": "General configurability of the role list and mitochondrial-inclusion flag remains deferred (docs/reviews/001b_b3b1_derivation_policy_conditional_acceptance.md). This run used exactly the checked-in frozen values; the implementation's fixed category logic and the configured values coincide only because those values are frozen, not because the underlying configurability gap was fixed.",
+    "length_and_base_reconciliation": {
+      "contig_lengths_key_set_equals_contigs_set": true,
+      "all_contig_lengths_positive_integers": true,
+      "every_selected_contig_length_independently_verified_against_raw_assembly_report_text": true,
+      "assembly_report_length_mismatches_found": 0,
+      "every_selected_accession_occurs_exactly_once_in_derived_fasta": true,
+      "no_excluded_accession_header_present_in_derived_fasta": true,
+      "no_genbank_accession_prefix_present_in_derived_fasta_headers": true,
+      "distinct_accession_prefixes_observed": [
+        "NC",
+        "NT"
+      ],
+      "sum_of_contig_lengths_equals_total_emitted_bases": true,
+      "sum_of_contig_lengths": 3099457607,
+      "total_bases_emitted_independently_streamed_count": 3099457607,
+      "verification_method": "Independent pure-Python streaming pass over the full derived FASTA (not reading the manifest's self-reported values alone): per-header occurrence counts, per-record length recomputation, base-alphabet tally, cross-checked against contig_lengths and, independently, against the raw assembly-report Sequence-Length column."
+    },
+    "masking": {
+      "status": "soft",
+      "upper": 1826499226,
+      "lower": 1121835418,
+      "ambiguous": 151122963,
+      "independently_recomputed_and_matches_manifest": true
+    },
+    "no_genbank_fallback_used": true
+  },
+  "independent_deterministic_repeat": {
+    "method": "Direct call to rbpbench.coordinates.derive_reference.derive_reference_fasta() using the exact production policy loaded via rbpbench.coordinates.execution_sources.load_execution_sources('configs/coordinate_execution_sources.toml'), reading the same accepted source FASTA/assembly-report files, bypassing the runner's stage_derive()/state.json/ledger management entirely -- a genuinely independent invocation path, not a second runner stage and not --force.",
+    "loaded_policy_repr": "DerivedReferencePolicy(include_sequence_roles_primary_assembly=('assembled-molecule', 'unlocalized-scaffold', 'unplaced-scaffold'), include_non_nuclear_assembled_molecule=True, accession_preference=('refseq',))",
+    "temporary_location": "<session scratchpad>/derive_repeat/repeat_reference.fna (outside the repository; removed after hashing)",
+    "elapsed_seconds": 358.389,
+    "repeat_fasta_sha256": "5e3bf613355c96c2b78fcfdb26dc1fafe7279fbacd0f25b87d899d9186a53676",
+    "repeat_fasta_byte_size": 3138203434,
+    "n_selected_contigs_repeat": 191,
+    "equals_selected_derived_fasta_sha256": true,
+    "equals_selected_derived_fasta_byte_size": true,
+    "disposable_repeat_candidate_removed": true,
+    "derive_json_altered_during_repeat": false,
+    "log_reference": "artifacts/coordinate_feasibility/hg38/b3b1_logs/06_derive_repeat.meta.log"
+  },
+  "state_provenance_boundary_proof": {
+    "state_json_completed_stages_after": [
+      "sample",
+      "decode",
+      "controls",
+      "preflight",
+      "download:hg38",
+      "derive:hg38"
+    ],
+    "state_json_mapping_executed_hg38": {
+      "download": true,
+      "derive": true
+    },
+    "only_download_and_derive_marked_executed_for_hg38": true,
+    "provenance_json_hg38_build": {
+      "download_executed": true,
+      "derive_executed": true,
+      "index_executed": false,
+      "index_skip_reason": "--dry-run: real index preparation is never executed under --dry-run",
+      "probe_executed": false,
+      "align_executed": false,
+      "exact_match_executed": false
+    },
+    "index_json_unchanged": {
+      "sha256_before": "da375f2259a696bc1a2baadbb4010bd2acd6532816be4cb9423a401500f4f37f",
+      "sha256_after_confirmed_unchanged": true
+    },
+    "no_prohibited_action_occurred": {
+      "network_request_made": false,
+      "reference_redownloaded": false,
+      "genome_index_built": false,
+      "mapper_binary_invoked": false,
+      "bwa_invoked": false,
+      "minimap2_invoked": false,
+      "seqkit_invoked": false,
+      "probe_stage_run": false,
+      "align_stage_run": false,
+      "exact_match_stage_run": false,
+      "report_stage_run": false,
+      "combined_report_stage_run": false,
+      "cleanup_run": false,
+      "hg19_touched": false,
+      "force_flag_used": false,
+      "stage_all_used": false,
+      "code_tests_or_config_changed": false
+    }
+  },
+  "log_accounting": {
+    "directory": "artifacts/coordinate_feasibility/hg38/b3b1_logs/",
+    "files_present_after_this_checkpoint": [
+      "01_preflight.meta.log",
+      "01_preflight.resource.log",
+      "01_preflight.stderr.log",
+      "01_preflight.stdout.log",
+      "02_download.meta.log",
+      "02_download.resource.log",
+      "02_download.stderr.log",
+      "02_download.stdout.log",
+      "03_download_retry.meta.log",
+      "03_download_retry.resource.log",
+      "03_download_retry.stderr.log",
+      "03_download_retry.stdout.log",
+      "04_derive.meta.log",
+      "04_derive.resource.log",
+      "04_derive.stderr.log",
+      "04_derive.stdout.log",
+      "05_derive_resume.cmd.log",
+      "05_derive_resume.meta.log",
+      "05_derive_resume.resource.log",
+      "05_derive_resume.stderr.log",
+      "05_derive_resume.stdout.log",
+      "06_derive_repeat.meta.log"
+    ],
+    "all_prior_01_04_logs_confirmed_byte_identical_to_pre_execution_hashes": true,
+    "no_log_overwritten_or_deleted": true
+  },
+  "staged_file_audit": {
+    "only_file_staged_and_committed_by_this_checkpoint": "manifests/coordinate_preparation_hg38_b3.json",
+    "source_reference_log_state_provenance_ledger_index_artifacts_remain_gitignored_and_uncommitted": true,
+    "git_diff_check_clean": true
+  },
+  "anomalies": [
+    "Same pre-existing operational defect already disclosed in the prior B3B-1 stop review: 03_download_retry.stderr.log is empty due to a GNU-only 'head' option used by an earlier executor log-splitting step on macOS. Not re-triggered by this checkpoint (no download stage ran); disclosed again here for completeness. Does not affect the accepted download evidence."
+  ],
+  "next_action": "Reviewer acceptance of Task 001B checkpoint B3B-1 (real guarded derivation + independent deterministic repeat) is required before a second executor handoff may authorize B3B-2 (indexing and the B3 probe). B3B-2 was not started."
+}

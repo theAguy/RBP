@@ -3,11 +3,12 @@
 **Status:** B3A accepted at `768771c`; the checksum path correction `eab0a35`
 is accepted; the guarded B3B-1 download is accepted locally, but derivation
 stopped safely because the pinned RefSeq FASTA omits three GenBank-only rows
-from the broader assembly report. Correction `5f5308d` is conditionally
-accepted for the frozen production configuration; its unused configurability
-gaps are explicitly deferred. The derivation-only recovery in
-`docs/handoffs/001b_b3b1_derive_resume_claude_handoff.md` is the only
-authorized next work; B3B-1 has not passed and B3B-2 remains unauthorized
+from the broader assembly report. Correction `5f5308d` is accepted under the
+frozen scope. B3B-1 is accepted at `b0409b6`: the real derived reference
+contains exactly the expected 191 contigs and the independent repeat is
+byte-identical. B3B-2 indexing and feasibility probing may proceed only
+through `docs/handoffs/001b_b3b2_claude_executor_handoff.md`; B4 remains
+unauthorized
 **Parent:** `docs/tasks/001b_coordinate_feasibility_execution.md`
 **Branch:** `issue-001b-coordinate-execution`
 **Depends on:** B1 accepted at `31c57cd`; B2 accepted at `e62026b`

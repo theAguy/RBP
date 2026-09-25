@@ -38,11 +38,13 @@ NUCLEOTIDE_DBTYPE = 2
 # "Frozen grouping rule"). Never caller-configurable: a command builder that
 # accepted these as parameters would let a future call silently drift from
 # the reviewed semantics.
+#
+# ``--cov-mode``, ``--min-seq-id``, ``-c``, and ``--max-seqs`` are NOT here:
+# they are supplied by :func:`_width_similarity_flags`, keyed only on the
+# caller's ``width`` argument (see below).
 _CLUSTER_FLAGS: tuple[str, ...] = (
     "--alignment-mode",
     "3",
-    "--cov-mode",
-    "0",
     "-e",
     "1000",
     "--mask",
@@ -62,8 +64,6 @@ _AUDIT_SEARCH_FLAGS: tuple[str, ...] = (
     "2",
     "--alignment-mode",
     "3",
-    "--cov-mode",
-    "0",
     "-e",
     "1000",
     "--mask",
@@ -71,6 +71,40 @@ _AUDIT_SEARCH_FLAGS: tuple[str, ...] = (
     "-s",
     "7.5",
 )
+
+# Frozen per-width similarity rule (docs/tasks/002_sequence_clustered_partitions.md,
+# "Frozen grouping rule"; docs/DECISIONS.md 2026-09-25). Sequence identity is
+# shared across widths; bidirectional coverage is selected only from this
+# mapping. Never caller-configurable -- a command builder that accepted
+# identity/coverage as arbitrary parameters would let a future call silently
+# drift from the reviewed thresholds, which is exactly what commit `6321356`
+# got wrong (docs/reviews/002a_sequence_partition_pipeline_review.md).
+FROZEN_MIN_SEQ_ID = "0.90"
+FROZEN_MAX_SEQS = "361180"  # the complete fixed dataset universe (361,180 rows)
+_WIDTH_COVERAGE: dict[int, str] = {500: "0.80", 251: "0.95", 101: "0.95"}
+
+
+class UnknownWidthError(ValueError):
+    """``width`` is not one of the three frozen protected widths (500, 251,
+    101 nt). Raised during command construction -- before any subprocess is
+    ever started -- so an unknown width can never reach process execution.
+    """
+
+
+def _width_similarity_flags(width: int) -> tuple[str, ...]:
+    """``--min-seq-id``/``-c``/``--cov-mode``/``--max-seqs`` for one of the
+    three frozen protected widths. Raises :class:`UnknownWidthError` for any
+    other width, and the coverage value is selected ONLY from the frozen
+    table -- there is no way for a caller to pass an arbitrary identity or
+    coverage value through this module.
+    """
+    try:
+        coverage = _WIDTH_COVERAGE[width]
+    except KeyError:
+        raise UnknownWidthError(
+            f"width {width!r} is not one of the frozen protected widths {sorted(_WIDTH_COVERAGE)}"
+        ) from None
+    return ("--min-seq-id", FROZEN_MIN_SEQ_ID, "-c", coverage, "--cov-mode", "0", "--max-seqs", FROZEN_MAX_SEQS)
 
 
 def createdb_command(input_fasta: Path, db_path: Path, *, mmseqs_bin: str = "mmseqs") -> ToolCommand:
@@ -83,13 +117,25 @@ def createdb_command(input_fasta: Path, db_path: Path, *, mmseqs_bin: str = "mms
     return ToolCommand(tool="mmseqs_createdb", argv=argv, pinned_version=PINNED_VERSION)
 
 
-def cluster_command(db_path: Path, cluster_prefix: Path, tmp_dir: Path, *, mmseqs_bin: str = "mmseqs") -> ToolCommand:
-    """``mmseqs cluster DB CLUSTER_PREFIX TMP <frozen cluster flags>``.
+def cluster_command(
+    db_path: Path, cluster_prefix: Path, tmp_dir: Path, *, width: int, mmseqs_bin: str = "mmseqs"
+) -> ToolCommand:
+    """``mmseqs cluster DB CLUSTER_PREFIX TMP --min-seq-id 0.90 -c <width
+    coverage> --cov-mode 0 --max-seqs 361180 <frozen cluster flags>``.
 
-    Does NOT include ``--search-type``/``--strand``: MMseqs2 18.8cc5c's own
-    ``cluster --help`` does not list them (see module docstring).
+    ``width`` selects the frozen per-width coverage value (500/251/101 nt
+    only -- see :func:`_width_similarity_flags`) and is REQUIRED: there is no
+    default, so a caller can never silently construct a cluster command with
+    an unreviewed similarity rule. Does NOT include ``--search-type``/
+    ``--strand``: MMseqs2 18.8cc5c's own ``cluster --help`` does not list
+    them (see module docstring).
     """
-    argv = (mmseqs_bin, "cluster", str(db_path), str(cluster_prefix), str(tmp_dir)) + _CLUSTER_FLAGS
+    similarity_flags = _width_similarity_flags(width)
+    argv = (
+        (mmseqs_bin, "cluster", str(db_path), str(cluster_prefix), str(tmp_dir))
+        + similarity_flags
+        + _CLUSTER_FLAGS
+    )
     return ToolCommand(tool="mmseqs_cluster", argv=argv, pinned_version=PINNED_VERSION)
 
 
@@ -105,14 +151,25 @@ def createtsv_command(
 
 
 def audit_search_command(
-    query_db: Path, target_db: Path, result_prefix: Path, tmp_dir: Path, *, mmseqs_bin: str = "mmseqs"
+    query_db: Path, target_db: Path, result_prefix: Path, tmp_dir: Path, *, width: int, mmseqs_bin: str = "mmseqs"
 ) -> ToolCommand:
-    """``mmseqs search QUERY TARGET RESULT TMP <frozen audit-search
-    flags>``: the ONE command in this module that pins ``--search-type``/
-    ``--strand`` (both exposed by ``search``, unlike ``cluster`` -- see
+    """``mmseqs search QUERY TARGET RESULT TMP --min-seq-id 0.90 -c <width
+    coverage> --cov-mode 0 --max-seqs 361180 <frozen audit-search flags>``:
+    the ONE command in this module that pins ``--search-type``/``--strand``
+    (both exposed by ``search``, unlike ``cluster`` -- see
     :func:`cluster_command`).
+
+    ``width`` selects the frozen per-width coverage value (500/251/101 nt
+    only) exactly like :func:`cluster_command`, and is likewise REQUIRED --
+    the audit search must apply the identical width-specific rule as the
+    clustering it is auditing.
     """
-    argv = (mmseqs_bin, "search", str(query_db), str(target_db), str(result_prefix), str(tmp_dir)) + _AUDIT_SEARCH_FLAGS
+    similarity_flags = _width_similarity_flags(width)
+    argv = (
+        (mmseqs_bin, "search", str(query_db), str(target_db), str(result_prefix), str(tmp_dir))
+        + similarity_flags
+        + _AUDIT_SEARCH_FLAGS
+    )
     return ToolCommand(tool="mmseqs_search", argv=argv, pinned_version=PINNED_VERSION)
 
 
@@ -194,10 +251,17 @@ def run_mmseqs_command(
     step (see :func:`new_generation_dir`) is then never reached, so a failed
     invocation can never be mistaken for -- or overwrite -- a prior accepted
     generation.
+
+    Every invocation's stdout/stderr paths carry a unique per-call suffix,
+    so two calls for the SAME tool sharing one ``log_dir`` (e.g. the two
+    ``createdb`` calls building a query and a target database) never
+    collide: each invocation's own returned/hashed path stays valid and
+    unoverwritten for the life of the generation.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
-    stdout_path = log_dir / f"{command.tool}.stdout.log"
-    stderr_path = log_dir / f"{command.tool}.stderr.log"
+    invocation_id = uuid.uuid4().hex[:16]
+    stdout_path = log_dir / f"{command.tool}.{invocation_id}.stdout.log"
+    stderr_path = log_dir / f"{command.tool}.{invocation_id}.stderr.log"
     if binary is None:
         binary = resolve_mmseqs_binary_provenance(command.argv[0])
 
@@ -266,6 +330,9 @@ __all__ = [
     "PINNED_VERSION",
     "PINNED_BUILD",
     "NUCLEOTIDE_DBTYPE",
+    "FROZEN_MIN_SEQ_ID",
+    "FROZEN_MAX_SEQS",
+    "UnknownWidthError",
     "createdb_command",
     "cluster_command",
     "createtsv_command",

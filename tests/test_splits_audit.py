@@ -2,6 +2,7 @@ import unittest
 
 from rbpbench.splits.assignment import TARGET_FRACTIONS
 from rbpbench.splits.audit import (
+    ForeignAuditEndpointError,
     balance_report,
     cross_partition_violations,
     giant_component_gate,
@@ -132,10 +133,33 @@ class CrossPartitionViolationsTests(unittest.TestCase):
         self.assertEqual(violations[0]["partition_a"], "train")
         self.assertEqual(violations[0]["partition_b"], "test")
 
-    def test_endpoint_outside_the_assignment_universe_is_skipped_not_raised(self):
+    def test_foreign_endpoint_in_the_second_position_raises_not_skips(self):
         assignment = {"row_0": "train"}
-        violations = cross_partition_violations(assignment, [("row_0", "row_unknown")])
-        self.assertEqual(violations, [])
+        with self.assertRaises(ForeignAuditEndpointError) as ctx:
+            cross_partition_violations(assignment, [("row_0", "row_unknown")])
+        self.assertIn("row_unknown", str(ctx.exception))
+
+    def test_foreign_endpoint_in_the_first_position_raises_not_skips(self):
+        assignment = {"row_1": "train"}
+        with self.assertRaises(ForeignAuditEndpointError) as ctx:
+            cross_partition_violations(assignment, [("row_unknown", "row_1")])
+        self.assertIn("row_unknown", str(ctx.exception))
+
+    def test_both_endpoints_foreign_raises_naming_both(self):
+        assignment = {"row_0": "train"}
+        with self.assertRaises(ForeignAuditEndpointError) as ctx:
+            cross_partition_violations(assignment, [("row_unknown_a", "row_unknown_b")])
+        message = str(ctx.exception)
+        self.assertIn("row_unknown_a", message)
+        self.assertIn("row_unknown_b", message)
+
+    def test_a_foreign_edge_is_raised_before_later_clean_edges_are_reached(self):
+        # Fail-closed: one corrupted edge must not be silently skipped while
+        # ordinary same-/cross-partition edges elsewhere in the same audit
+        # continue to be processed as if nothing were wrong.
+        assignment = {"row_0": "train", "row_1": "train"}
+        with self.assertRaises(ForeignAuditEndpointError):
+            cross_partition_violations(assignment, [("row_unknown", "row_0"), ("row_0", "row_1")])
 
     def test_multiple_widths_worth_of_duplicate_edges_all_checked(self):
         assignment = {"row_0": "train", "row_1": "validation", "row_2": "train"}

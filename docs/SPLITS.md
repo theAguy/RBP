@@ -5,7 +5,7 @@ Task 002, the sequence-grouped 70/15/15 train/validation/test split
 (`docs/tasks/002_sequence_clustered_partitions.md`). It is split across
 three execution steps, each gated on its own planning review.
 
-## Task 002A (this implementation) — correction in progress
+## Task 002A (this implementation) — bounded correction applied
 
 Implementation and tiny synthetic fixture tests only. Nothing in this
 checkpoint opens the real CSV, generates a real dataset FASTA, or constructs
@@ -21,10 +21,16 @@ a real component/partition.
   tool.
 - `rbpbench.splits.commands` — shell-free MMseqs2 `argv` construction
   (`createdb`/`cluster`/`createtsv`/`search`), guarded execution with
-  separately captured/hashed stdout and stderr, a timeout, binary identity
-  (resolved path + SHA-256 + version), and a transactional
-  `new_generation_dir` promotion pattern (mirrors
-  `rbpbench.coordinates.runner._new_generation_dir`).
+  separately captured/hashed stdout and stderr (unique per-invocation log
+  paths, so two same-tool calls sharing one log directory never overwrite
+  each other's evidence), a timeout, binary identity (resolved path +
+  SHA-256 + version), and a transactional `new_generation_dir` promotion
+  pattern (mirrors `rbpbench.coordinates.runner._new_generation_dir`).
+  `cluster_command`/`audit_search_command` require a `width` argument
+  (500/251/101 only -- any other value raises `UnknownWidthError` before any
+  subprocess starts) and always pass `--min-seq-id 0.90`, the width's mapped
+  `-c` coverage, `--cov-mode 0`, and `--max-seqs 361180`; identity/coverage
+  are never caller-configurable.
 - `rbpbench.splits.membership` — `mmseqs createtsv` cluster-membership
   parsing with complete/unique ID reconciliation (missing, duplicate, and
   foreign IDs are all hard failures).
@@ -37,7 +43,9 @@ a real component/partition.
   frozen components (never splits one).
 - `rbpbench.splits.audit` — 5%/20% giant-component gates, balance/deviation
   reporting, the 30/30 evaluation-floor check, and cross-partition violation
-  detection.
+  detection. The closed-universe audit (`cross_partition_violations`) fails
+  closed: an edge endpoint absent from the assignment mapping raises
+  `ForeignAuditEndpointError` rather than being silently skipped.
 - `rbpbench.splits.output` — deterministic `mtime=0` gzip membership output
   and sanitized manifest/report generation (hashes, counts, and IDs only —
   never a sequence or label value).
@@ -56,20 +64,27 @@ audit search:  --search-type 3 --strand 2 --min-seq-id 0.90
 
 Coverage is `0.80` at 500 nt and `0.95` at 251/101 nt. Commit `6321356`
 omitted the identity, width-specific coverage, and result-ceiling arguments;
-`docs/reviews/002a_sequence_partition_pipeline_review.md` therefore requires a
-bounded correction before 002A can be accepted or 002B can begin.
+`docs/reviews/002a_sequence_partition_pipeline_review.md` required a bounded
+correction before 002A could be accepted or 002B could begin. That
+correction is applied: `cluster_command`/`audit_search_command` now require
+a `width` argument and always pass `--min-seq-id 0.90`, the width's mapped
+`-c` coverage, `--cov-mode 0`, and `--max-seqs 361180`
+(`tests/test_splits_commands.py`, `tests/test_splits_real_binaries.py`).
 
 `mmseqs cluster --help` (18.8cc5c) does not list `--search-type` or
 `--strand` at all — confirmed against the real installed binary, not just
 assumed (`tests/test_splits_real_binaries.py::ClusterWorkflowFlagExposureTests`).
 Nucleotide clustering is therefore bound by the explicit type-2 database,
 and both-orientation behavior is proven by a real-binary,
-non-palindromic reverse-complement fixture at all three widths
-(`RealClusteringReverseComplementFixtureTests`), never by passing an
+non-palindromic reverse-complement fixture at all three widths, alongside
+the frozen identity/coverage rule's discriminating pairs
+(`WidthSpecificClusteringDiscriminationTests`), never by passing an
 unsupported flag to `cluster`. `mmseqs search` (the separate audit-search
 workflow) does expose both flags and pins them explicitly
 (`RealAuditSearchStrandTests` proves `--strand 2` finds a reverse-complement
-hit that `--strand 1` misses on the identical query/target pair).
+hit that `--strand 1` misses on the identical query/target pair;
+`AuditSearchDiscriminationTests` proves the same width-specific
+identity/coverage rule applies to audit search as to clustering).
 
 ## Environment
 

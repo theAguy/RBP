@@ -130,23 +130,41 @@ def minimum_count_check(
     return {"floor": floor, "passed": len(violations) == 0, "violations": violations, "near_floor_flagged": near_floor}
 
 
+class ForeignAuditEndpointError(ValueError):
+    """A closed-universe cross-partition audit edge named a sample ID absent
+    from the assignment mapping. The final audit universe is the complete,
+    fixed 361,180-row dataset, so an unrecognized endpoint is evidence
+    corruption (a decode/ID bug, a stale assignment, or a corrupted audit
+    input) -- never a legitimately wider sample universe to silently skip
+    past (docs/reviews/002a_sequence_partition_pipeline_review.md).
+    """
+
+
 def cross_partition_violations(
     sample_to_partition: Mapping[str, str], edges: Iterable[tuple[str, str]]
 ) -> list[dict]:
     """Any edge (an exact/reverse-complement canonical-hash duplicate, or a
     fresh independent audit-search hit) whose two endpoints landed in
     different partitions is a hard failure. Returns the qualifying
-    violations (empty when none); an endpoint absent from
-    ``sample_to_partition`` is skipped rather than raising, since a fresh
-    audit search may legitimately be run over a sample universe wider than
-    one caller's assignment.
+    violations (empty when none).
+
+    The audit universe is CLOSED: an edge endpoint absent from
+    ``sample_to_partition`` raises :class:`ForeignAuditEndpointError`
+    (naming both the edge and which endpoint(s) are foreign) rather than
+    being silently skipped -- for the final closed 361,180-row audit, an
+    endpoint outside the assignment mapping can only mean corrupted
+    evidence, not a wider legitimate universe.
     """
     violations = []
     for a, b in edges:
         partition_a = sample_to_partition.get(a)
         partition_b = sample_to_partition.get(b)
-        if partition_a is None or partition_b is None:
-            continue
+        foreign = [sample_id for sample_id, partition in ((a, partition_a), (b, partition_b)) if partition is None]
+        if foreign:
+            raise ForeignAuditEndpointError(
+                f"audit edge ({a!r}, {b!r}) references sample ID(s) absent from the assignment "
+                f"mapping (foreign endpoint(s): {foreign})"
+            )
         if partition_a != partition_b:
             violations.append({"sample_a": a, "sample_b": b, "partition_a": partition_a, "partition_b": partition_b})
     return violations
@@ -161,5 +179,6 @@ __all__ = [
     "balance_report",
     "per_protein_balance_report",
     "minimum_count_check",
+    "ForeignAuditEndpointError",
     "cross_partition_violations",
 ]

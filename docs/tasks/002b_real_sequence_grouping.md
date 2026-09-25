@@ -1,6 +1,7 @@
 # Task 002B — Real sequence grouping and component report
 
-**Status:** planning review requested; no 002B execution authorized yet
+**Status:** second review reconciled; only synthetic checkpoint 002B-1 may
+begin through its bounded executor handoff
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 
@@ -79,8 +80,22 @@ Implement the real-run orchestration without opening the real CSV:
 Use only tiny synthetic fixtures in 002B-1. Test changed-input invalidation,
 foreign/missing/duplicate IDs, a killed or failed MMseqs2 process, disk-limit
 failure, selection-record write failure, and restart from a prior accepted
-stage. Do not modify coordinate behavior to make the repository-wide suite
-green.
+stage. Before retaining the new operational `--split-memory-limit 8G` flag,
+also prove with the real pinned binary that:
+
+1. the production 8-GiB command and the otherwise-identical unconstrained
+   command yield identical normalized biological components on a discriminating
+   synthetic fixture; and
+2. a separate deliberately small limit actually triggers MMseqs2 splitting on
+   a bounded synthetic fixture yet yields the same normalized components as an
+   unconstrained run.
+
+Compare canonical component member sets rather than tool-chosen representative
+IDs or raw database bytes. Capture the binary's effective setting and evidence
+that the forced-split fixture really split. If this equivalence cannot be
+demonstrated, remove the 8-GiB flag from the production plan and rely on the
+probe/stop boundary; do not carry an unvalidated flag into real execution.
+Do not modify coordinate behavior to make the repository-wide suite green.
 
 ### 002B-2 — Real decode and exact-duplicate evidence
 

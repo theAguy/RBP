@@ -271,3 +271,19 @@
 - The prespecified leakage-control fallback is now active: group highly
   similar sequences before assigning train/validation/test partitions. Model
   predictions and test performance may not influence grouping or assignment.
+
+## 2026-09-25 — Task 002 split design
+
+- Build label-blind similarity components from the union of full 500-nt and
+  centered 251/101-nt representations, matching every planned model width.
+- Freeze 90% true sequence identity with 80% bidirectional coverage for 500 nt
+  and 95% for 251/101 nt. Exact and reverse-complement duplicates at every
+  width are always unioned independently of the external clustering output.
+- Use MMseqs2 18.8cc5c with an explicit nucleotide database, true identity,
+  masking disabled, sensitivity 7.5, single-step connected components, and
+  explicit nucleotide/both-strand settings for the later audit search.
+- Assign whole components once to locked 70/15/15 train/validation/test
+  partitions. Labels may balance already-frozen components but cannot define or
+  split them; model results cannot influence either grouping or assignment.
+- Execute as three reviewed checkpoints: fixture-only implementation, real
+  grouping/component review, then partition assignment and audit.

@@ -1,6 +1,7 @@
 # Task 002 — Sequence-grouped train/validation/test partitions
 
-**Status:** proposed; awaiting one second-review pass before implementation
+**Status:** second review reconciled; only checkpoint 002A may begin through
+its bounded executor handoff
 **Phase:** 2
 **Branch after Task 001 merge:** `issue-002-sequence-partitions`
 
@@ -27,11 +28,27 @@ sequence windows.
 - One second-review round resolves scientific blockers. Optional engineering
   refinements are deferred so this task does not repeat Task 001's review loop.
 
-## Proposed grouping rule for review
+## Frozen grouping rule
 
-Use a pinned MMseqs2 release in nucleotide-versus-nucleotide mode with true
-alignment identity (`--alignment-mode 3`), forward and reverse strands, and
-connected-component clustering (`--cluster-mode 1`). MMseqs2 documents
+Use Bioconda MMseqs2 `18.8cc5c` (osx-64 build `h8b377d6_0`) in explicit
+nucleotide-versus-nucleotide mode with true alignment identity, forward and
+reverse strands, disabled low-complexity masking, and connected-component
+clustering. The scientific flags are frozen as:
+
+```text
+createdb: --dbtype 2
+cluster:   --alignment-mode 3 --cov-mode 0 -e 1000 --mask 0 -s 7.5
+           --cluster-mode 1 --single-step-clustering 1
+audit search: --search-type 3 --strand 2 --alignment-mode 3
+              --cov-mode 0 -e 1000 --mask 0 -s 7.5
+```
+
+The executor must confirm on tiny fixtures that the installed binary accepts
+and honors every applicable flag before any real-data execution. MMseqs2 does
+not expose `--search-type` or `--strand` on the clustering workflow: nucleotide
+clustering is therefore bound by the type-2 database, and both-orientation
+behavior must be demonstrated by a reverse-complement fixture. The audit search
+does pin search type and strand explicitly. MMseqs2 documents
 bidirectional coverage as aligned residues divided by the longer sequence and
 connected components as all sequences reachable through accepted similarity
 edges:
@@ -47,13 +64,27 @@ Build the final row component as the union of three label-blind clusterings:
 | centered 251 nt | 0.90 | 0.95 | protect the planned 251-nt evaluation input |
 | centered 101 nt | 0.90 | 0.95 | protect the shortest planned model input |
 
-Exact full-window duplicates and reverse-complement duplicates must always be
-in the same component even if the external tool omits an edge. Component IDs
-are deterministic hashes of the sorted canonical row IDs, not tool-generated
-serial numbers.
+Exact duplicates and reverse-complement duplicates at each of the 500-, 251-,
+and 101-nt representations must always be in the same component even if the
+external tool omits an edge. Component IDs are deterministic hashes of the
+sorted canonical row IDs, not tool-generated serial numbers.
 
-These thresholds are a proposal to be accepted or replaced by the second
-reviewer before implementation. They may not be tuned using downstream AUROC.
+These thresholds and command semantics were accepted in second review. They
+may not be tuned using downstream AUROC.
+
+## Checkpoints
+
+- **002A — implementation and tiny fixtures:** create the isolated pinned
+  environment, implement the reusable pipeline, and verify the scientific
+  semantics using only synthetic fixtures. Do not open the real CSV.
+- **002B — real sequence grouping:** decode the full dataset, run the three
+  clustering jobs, union components, and return the component-size/gate report.
+  Do not assign train/validation/test yet.
+- **002C — partition assignment and audit:** only after 002B acceptance, assign
+  whole components, run cross-partition audits, and freeze the membership.
+
+Each checkpoint requires its own executor handoff and review. A checkpoint may
+not silently continue into the next one.
 
 ## Implementation and fixture checks
 
@@ -69,19 +100,21 @@ Implement reusable code under `src/rbpbench/splits/` for:
 Tiny fixtures must prove:
 
 - invalid one-hot rows fail closed;
-- exact duplicates, reverse complements, shifted 500-nt matches, and nearly
-  identical 251/101 centers group as intended;
+- exact duplicates and reverse complements at all three widths, shifted 500-nt
+  matches, and nearly identical 251/101 centers group as intended;
 - transitive A-B-C similarity never splits A and C;
 - unrelated rows remain separable;
 - a component can never be broken to improve label balance;
 - reruns and shuffled input order reproduce the same component IDs and split;
 - external-tool failure cannot promote a partial result; and
 - the installed binary truly uses nucleotide alignments, both strands, exact
-  identity, and the reviewed coverage semantics.
+  identity, disabled masking, the explicit E-value ceiling, and the reviewed
+  coverage semantics.
 
-## Full-data execution
+## Full-data execution in later checkpoints
 
-After fixture tests pass:
+After 002A fixture tests are accepted, execute the following only through the
+separate 002B and 002C handoffs:
 
 1. Revalidate the frozen CSV, audit, and protein-index hashes.
 2. Decode all 361,180 rows once, preserving canonical `row_<index>` IDs.
@@ -101,9 +134,14 @@ After fixture tests pass:
 8. Reproduce the submitted row-level 80/20 split as a diagnostic and compare
    its cross-boundary similarity violations with the new grouped split. The
    old split is never used for model selection.
-9. Run an independent cross-partition search at the same thresholds and an
-   exact duplicate/reverse-complement audit. Any qualifying train-validation,
-   train-test, or validation-test match is a hard failure.
+9. Run fresh cross-partition MMseqs2 searches in new temporary/output
+   generations with all frozen flags, never reusing clustering results or
+   temporary databases. Also run a tool-independent canonical-sequence hash
+   audit for exact and reverse-complement duplicates at all three widths. Any
+   qualifying train-validation, train-test, or validation-test match is a hard
+   failure. The manifest must state honestly that the near-similarity audit is
+   an independent execution of the same pinned aligner, while the exact audit
+   is independent code.
 
 ## Outputs
 
@@ -119,6 +157,11 @@ The compressed membership file may enter ordinary Git only if it is at most
 10 MiB and contains no sequence or label values. Otherwise commit its hash and
 deterministic regeneration instructions, and exchange it as a project
 artifact.
+
+The manifest must also note that only the planned 500/251/101 widths are
+explicitly protected, report likely low-complexity/repeat drivers if a giant-
+component gate trips, and flag proteins near the 30/30 evaluation floor for
+confidence-interval treatment in Phase 3.
 
 ## Acceptance gate
 

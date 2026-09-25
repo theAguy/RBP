@@ -1,7 +1,7 @@
 # Task 002 — Sequence-grouped train/validation/test partitions
 
-**Status:** checkpoint 002A accepted; checkpoint 002B awaits a separate
-planning review and executor handoff
+**Status:** checkpoint 002A accepted; checkpoint 002B planning is under second
+review and no real-data execution is authorized
 **Phase:** 2
 **Branch after Task 001 merge:** `issue-002-sequence-partitions`
 
@@ -94,6 +94,10 @@ may not be tuned using downstream AUROC.
 
 Each checkpoint requires its own executor handoff and review. A checkpoint may
 not silently continue into the next one.
+
+Task 002B is further divided into restart-safe execution subcheckpoints in
+`docs/tasks/002b_real_sequence_grouping.md`; its current review request is
+`docs/reviews/002b_real_sequence_grouping_review_request.md`.
 
 ## Implementation and fixture checks
 

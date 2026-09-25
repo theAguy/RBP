@@ -1,7 +1,8 @@
 # Task 001B — Coordinate-feasibility execution
 
-**Status:** second review reconciled; B1 readiness work may begin only from its
-bounded executor handoff
+**Status:** closed at B3B-2 after the required single-part minimap2 hg38 index
+exceeded the available host memory; B4-B7 are cancelled and the
+sequence-clustering fallback is active
 **Parent:** `001_coordinate_recovery_feasibility.md`
 **Depends on:** accepted Task 001A, merged as `ad36864`
 **Branch:** `issue-001b-coordinate-execution`

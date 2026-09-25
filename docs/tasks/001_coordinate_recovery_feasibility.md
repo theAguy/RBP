@@ -1,6 +1,6 @@
 # Task 001 — Coordinate-recovery feasibility
 
-**Status:** approved; execute through the 001A/001B checkpoints below
+**Status:** closed after the B3B-2 resource stop; sequence-clustering fallback selected
 **Phase:** 1
 **Suggested branch:** `issue-001-coordinate-feasibility`
 

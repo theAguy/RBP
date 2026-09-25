@@ -58,15 +58,17 @@ Coordinates are not inputs to the submitted predictor. They are benchmark
 metadata used to prevent overlapping genomic loci from appearing in training
 and testing, and to add optional genomic-context analyses.
 
-Coordinates will be recovered from the 500-nt sequences by testing likely human
-reference builds and splice-aware/transcript mappings. The mapping report must
-include unique, ambiguous, and unmapped rates; retention by protein and class;
-GC/repeat differences in quarantined rows; and handling of splice junctions.
+Coordinate recovery was attempted as optional benchmark metadata. The required
+single-part splice-aware hg38 index exceeded the available 12.7-to-16-GiB hosts,
+so coordinate execution is deferred and no mapping-derived biological claim is
+made.
 
-Mapped rows are grouped by overlapping aligned genomic blocks. A group is never
-split across train, validation, and test. Sequence-overlap auditing independently
-verifies that coordinate grouping removed leakage. If coordinate recovery is
-not adequate, sequence clustering is the documented fallback.
+The active leakage-control method is sequence-similarity grouping. A similarity
+component is never split across train, validation, and test. Grouping and split
+assignment are frozen before model results are inspected. The accepted hg38
+source and derived reference are retained for optional future analysis on an
+adequate high-memory host, but coordinates are not a gate for the core model
+comparison.
 
 ## Phases and gates
 
@@ -84,16 +86,18 @@ not adequate, sequence clustering is the documented fallback.
 - Test genomic, transcript, and splice-aware alignment where necessary.
 - Report mapping quality and estimate full-run resources.
 
-**Gate:** agree on reference build, mapper, quality thresholds, and fallback.
+**Outcome:** stopped safely at hg38 index construction because the frozen
+splice-aware index exceeded available memory. Sequence clustering selected.
 
-### Phase 2 — full mapping and leakage-safe folds
+### Phase 2 — sequence-grouped leakage-safe partitions
 
-- Map all sequences and produce the retention report.
-- Build locus components from aligned genomic blocks.
+- Cluster the 500-nt sequences and evaluated center windows using a reviewed,
+  label-independent similarity rule.
+- Build connected components from similarity evidence.
 - Balance separate positive and known-negative counts across folds.
 - Freeze train/validation/test membership before model results are inspected.
 
-**Gate:** no cross-fold locus overlap; sequence audit passes; fold balance and
+**Gate:** no cross-partition similarity-group overlap; sequence audit passes; fold balance and
 eligible-protein counts are accepted.
 
 ### Phase 3 — trivial baselines

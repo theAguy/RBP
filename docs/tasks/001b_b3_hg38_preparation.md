@@ -1,14 +1,10 @@
 # Task 001B checkpoint B3 — hg38 preparation plan
 
-**Status:** B3A accepted at `768771c`; the checksum path correction `eab0a35`
-is accepted; the guarded B3B-1 download is accepted locally, but derivation
-stopped safely because the pinned RefSeq FASTA omits three GenBank-only rows
-from the broader assembly report. Correction `5f5308d` is accepted under the
-frozen scope. B3B-1 is accepted at `b0409b6`: the real derived reference
-contains exactly the expected 191 contigs and the independent repeat is
-byte-identical. B3B-2 indexing and feasibility probing may proceed only
-through `docs/handoffs/001b_b3b2_claude_executor_handoff.md`; B4 remains
-unauthorized
+**Status:** closed after the B3B-2 resource stop. B3B-1 remains accepted at
+`b0409b6`; the BWA index completed in an unaccepted transaction, but minimap2
+was killed for low memory before producing the required single-part index.
+The probe and B4 never ran. See
+`docs/reviews/001b_b3b2_resource_stop_and_coordinate_deferral.md`
 **Parent:** `docs/tasks/001b_coordinate_feasibility_execution.md`
 **Branch:** `issue-001b-coordinate-execution`
 **Depends on:** B1 accepted at `31c57cd`; B2 accepted at `e62026b`

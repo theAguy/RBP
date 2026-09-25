@@ -252,3 +252,22 @@
 - The follow-up handoff at `676dcee` is superseded. Work returns to the
   checkpoint sequence: complete B3B-1 derivation and deterministic repeat,
   review once, then proceed to B3B-2 indexing/probe if accepted.
+
+## 2026-09-25 — Defer coordinates and activate sequence clustering
+
+- The guarded B3B-2 hg38 attempt completed the BWA index, but the operating
+  system killed minimap2 during minimizer collection for the required
+  single-part `splice:sr` index on the 16-GiB host. The accepted index record
+  remained unchanged and no probe or mapping ran.
+- A standard Google Colab runtime supplied only 12.7 GiB RAM. A 24-GiB Mac is
+  not considered sufficient margin to justify another multi-hour attempt.
+- The project will not tune mapper parameters, implement multipart indexing,
+  purchase cloud memory, or let this optional metadata analysis delay the
+  central model comparison. Task 001B is closed as resource-infeasible on the
+  available hosts; this is not a biological mapping result.
+- The accepted hg38 source and deterministic derived reference remain valid.
+  The unaccepted 5,424,083,332-byte index candidate may be deleted only after
+  its file hashes and sizes are committed in the stop manifest.
+- The prespecified leakage-control fallback is now active: group highly
+  similar sequences before assigning train/validation/test partitions. Model
+  predictions and test performance may not influence grouping or assignment.

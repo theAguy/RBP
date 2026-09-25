@@ -1,0 +1,130 @@
+{
+  "checkpoint": "001B-B3B-2",
+  "status": "stopped_resource_infeasible",
+  "decision": "defer_coordinate_execution_and_use_sequence_clustering_fallback",
+  "recorded_date": "2026-09-25",
+  "scope": "The guarded hg38 index attempt stopped after BWA completed and the operating system killed minimap2 while constructing the required single-part splice:sr index. No probe, mapping, hg19 work, or scientific coordinate report ran.",
+  "accepted_upstream_evidence": {
+    "b3b1_manifest": "manifests/coordinate_preparation_hg38_b3.json",
+    "b3b1_commit": "b0409b6",
+    "derived_reference_generation": "derive_588ed69489274b01",
+    "derived_reference_sha256": "5e3bf613355c96c2b78fcfdb26dc1fafe7279fbacd0f25b87d899d9186a53676",
+    "derived_reference_byte_size": 3138203434,
+    "reference_manifest_sha256": "f27fb2d38b54de99d38afe456314f12c4c3d6d1fa96d90d2def573c35c4ca01e"
+  },
+  "index_attempt": {
+    "execution_head_commit": "fce6eb8",
+    "host_physical_memory_bytes": 17179869184,
+    "threads": 4,
+    "bwa": {
+      "version": "0.7.19-r1273",
+      "command": "bwa index -p indices/hg38/generations/index_bfeb7be42185425f/hg38 references/derived/hg38/generations/derive_588ed69489274b01/reference.fna",
+      "completed": true,
+      "real_time_seconds": 4600.957,
+      "cpu_time_seconds": 4458.0
+    },
+    "minimap2": {
+      "version": "2.31-r1302",
+      "required_settings": "-x splice:sr -I 8G, k=15, w=5, non-HPC, single part",
+      "completed": false,
+      "last_persisted_stderr": "[M::mm_idx_gen::240.682*0.92] collected minimizers",
+      "termination": "operating-system low-memory kill",
+      "peak_rss_bytes": null
+    },
+    "candidate_generation": "indices/hg38/generations/index_bfeb7be42185425f",
+    "candidate_accepted": false,
+    "candidate_total_bytes": 5424083332,
+    "accepted_index_record_sha256_after_failure": "da375f2259a696bc1a2baadbb4010bd2acd6532816be4cb9423a401500f4f37f",
+    "accepted_index_record_unchanged": true,
+    "probe_started": false
+  },
+  "candidate_files_before_cleanup": [
+    {
+      "name": "hg38.amb",
+      "byte_size": 18430,
+      "sha256": "07553aba9ccf2ae096e4b86501f399eaab7662029a839fffed0b5c9195045e1c"
+    },
+    {
+      "name": "hg38.ann",
+      "byte_size": 7713,
+      "sha256": "22560d8690f8f433da087d53f62fd866b8c3ab988b43947f2adbed4898ee97f3"
+    },
+    {
+      "name": "hg38.bwt",
+      "byte_size": 3099457708,
+      "sha256": "1d1dba0722c19fdd8c2e20ffe55ec922ba1b3f673006582401f14fce77d4eff3"
+    },
+    {
+      "name": "hg38.index_stderr.log",
+      "byte_size": 6171,
+      "sha256": "fe5f5fa92c5d1eeb9316ababd0c5b0a225838d6aa22b636dbe7ac4c7cc58fb77"
+    },
+    {
+      "name": "hg38.index_stdout.log",
+      "byte_size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "hg38.mmi",
+      "byte_size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "hg38.mmi.index_stderr.log",
+      "byte_size": 51,
+      "sha256": "d95e1fd1692c1cbd3dc436ac4c0e43d3fa16eb98809865b88f64220091ad82b8"
+    },
+    {
+      "name": "hg38.mmi.index_stdout.log",
+      "byte_size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "hg38.pac",
+      "byte_size": 774864403,
+      "sha256": "fe613825919165b1c801c441f5b6b321e9512843db72f9ced74045b6d97e7251"
+    },
+    {
+      "name": "hg38.sa",
+      "byte_size": 1549728856,
+      "sha256": "c5180bdd17c1f8f8ac61d2e0a05032ff359b6326c67e8ffc3e6550c8121473ec"
+    }
+  ],
+  "persistent_attempt_logs": {
+    "directory": "artifacts/coordinate_feasibility/hg38/b3b2_logs",
+    "command_log_sha256": "bb2b8b6e690cebb22dbee2fd2fdc734442a90c5731aa426394687b80cb842bc6",
+    "command_log_byte_size": 756,
+    "wrapper_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "wrapper_stdout_byte_size": 0,
+    "wrapper_combined_stderr_resource_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "wrapper_combined_stderr_resource_byte_size": 0,
+    "note": "The detailed BWA and minimap2 stderr logs are inside the unaccepted candidate generation and are therefore represented above by hashes before cleanup. Their relevant terminal lines are summarized in this manifest."
+  },
+  "additional_available_host_check": {
+    "platform": "Google Colab standard CPU runtime",
+    "memory_gib": 12.7,
+    "cpu_count": 2,
+    "free_disk_gib": 87.4,
+    "decision": "not used because it provides less memory than the failed 16-GiB host"
+  },
+  "scientific_interpretation": {
+    "coordinate_mapping_evaluated": false,
+    "biological_conclusion_allowed": false,
+    "infrastructure_conclusion": "The frozen single-part minimap2 splice-aware hg38 index is not feasible on the available 12.7-to-16-GiB hosts.",
+    "upstream_derivation_remains_valid": true,
+    "fallback": "sequence-similarity grouping for leakage-safe train/validation/test partitions"
+  },
+  "cleanup": {
+    "authorized_target": "indices/hg38/generations/index_bfeb7be42185425f",
+    "authorized": true,
+    "completed": false,
+    "receipt_commit": null,
+    "preserve": [
+      "indices/hg38/index.json",
+      "references/sources/GRCh38.p14",
+      "references/derived/hg38",
+      "artifacts/coordinate_feasibility/hg38/b3b1_logs",
+      "artifacts/coordinate_feasibility/hg38/b3b2_logs"
+    ]
+  }
+}

@@ -17,13 +17,12 @@ provenance but are not authoritative specifications.
 
 ## Current stage
 
-Repository bootstrap and data auditing are complete. The next proposed work is
-the bounded coordinate-recovery feasibility study in
-[`docs/tasks/001_coordinate_recovery_feasibility.md`](docs/tasks/001_coordinate_recovery_feasibility.md).
-Its conditional second review is complete and reconciled; execution now awaits
-project-owner resource approval. Full model training must wait until coordinate
-recovery, locus-grouped folds, trivial baselines, and the development pilot pass
-their review gates.
+Repository bootstrap and data auditing are complete. Coordinate recovery was
+stopped safely when the required splice-aware human-genome index exceeded the
+available host memory. It is deferred rather than required for the model
+comparison. The next work is the reviewed sequence-clustering fallback for
+leakage-safe train/validation/test partitions, followed by trivial baselines
+and the development pilot.
 
 ## Quick start
 

@@ -5,7 +5,7 @@ Task 002, the sequence-grouped 70/15/15 train/validation/test split
 (`docs/tasks/002_sequence_clustered_partitions.md`). It is split across
 three execution steps, each gated on its own planning review.
 
-## Task 002A (this implementation) — done here
+## Task 002A (this implementation) — correction in progress
 
 Implementation and tiny synthetic fixture tests only. Nothing in this
 checkpoint opens the real CSV, generates a real dataset FASTA, or constructs
@@ -46,11 +46,18 @@ a real component/partition.
 
 ```text
 createdb:      --dbtype 2
-cluster:       --alignment-mode 3 --cov-mode 0 -e 1000 --mask 0 -s 7.5
+cluster:       --min-seq-id 0.90 -c <0.80 or 0.95> --alignment-mode 3
+               --cov-mode 0 --max-seqs 361180 -e 1000 --mask 0 -s 7.5
                --cluster-mode 1 --single-step-clustering 1
-audit search:  --search-type 3 --strand 2 --alignment-mode 3
-               --cov-mode 0 -e 1000 --mask 0 -s 7.5
+audit search:  --search-type 3 --strand 2 --min-seq-id 0.90
+               -c <0.80 or 0.95> --alignment-mode 3 --cov-mode 0
+               --max-seqs 361180 -e 1000 --mask 0 -s 7.5
 ```
+
+Coverage is `0.80` at 500 nt and `0.95` at 251/101 nt. Commit `6321356`
+omitted the identity, width-specific coverage, and result-ceiling arguments;
+`docs/reviews/002a_sequence_partition_pipeline_review.md` therefore requires a
+bounded correction before 002A can be accepted or 002B can begin.
 
 `mmseqs cluster --help` (18.8cc5c) does not list `--search-type` or
 `--strand` at all — confirmed against the real installed binary, not just

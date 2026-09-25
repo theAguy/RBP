@@ -281,7 +281,12 @@
   width are always unioned independently of the external clustering output.
 - Use MMseqs2 18.8cc5c with an explicit nucleotide database, true identity,
   masking disabled, sensitivity 7.5, single-step connected components, and
-  explicit nucleotide/both-strand settings for the later audit search.
+  explicit nucleotide/both-strand settings for the later audit search. Pass
+  `--min-seq-id 0.90` and the width-specific `-c 0.80`/`0.95` to both
+  clustering and audit search. Pin `--max-seqs 361180`, equal to the entire
+  dataset universe, so a smaller MMseqs2 workflow default cannot silently
+  remove qualifying similarity edges; stop rather than lowering it if the
+  real execution is unsafe.
 - Assign whole components once to locked 70/15/15 train/validation/test
   partitions. Labels may balance already-frozen components but cannot define or
   split them; model results cannot influence either grouping or assignment.

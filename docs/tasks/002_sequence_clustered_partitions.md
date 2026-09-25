@@ -37,11 +37,20 @@ clustering. The scientific flags are frozen as:
 
 ```text
 createdb: --dbtype 2
-cluster:   --alignment-mode 3 --cov-mode 0 -e 1000 --mask 0 -s 7.5
+cluster:   --min-seq-id 0.90 -c <0.80 or 0.95> --alignment-mode 3
+           --cov-mode 0 --max-seqs 361180 -e 1000 --mask 0 -s 7.5
            --cluster-mode 1 --single-step-clustering 1
-audit search: --search-type 3 --strand 2 --alignment-mode 3
-              --cov-mode 0 -e 1000 --mask 0 -s 7.5
+audit search: --search-type 3 --strand 2 --min-seq-id 0.90
+              -c <0.80 or 0.95> --alignment-mode 3 --cov-mode 0
+              --max-seqs 361180 -e 1000 --mask 0 -s 7.5
 ```
+
+The coverage value is selected only from the width table below: `0.80` for
+500 nt and `0.95` for 251/101 nt. The explicit result ceiling equals the
+entire fixed dataset universe, so MMseqs2 cannot silently discard a qualifying
+edge merely because a query has more hits than its much smaller workflow
+default. If this setting makes the real run unsafe, stop for review rather
+than reducing it silently.
 
 The executor must confirm on tiny fixtures that the installed binary accepts
 and honors every applicable flag before any real-data execution. MMseqs2 does

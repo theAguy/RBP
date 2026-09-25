@@ -21,7 +21,10 @@ is authorized by this reconciliation.
    pin nucleotide search type 3 and strand 2. MMseqs2 does not expose those two
    options on `cluster`, so reverse-complement fixture behavior is required
    instead of specifying unsupported flags. Version `18.8cc5c`, osx-64 build
-   `h8b377d6_0`, is pinned.
+   `h8b377d6_0`, is pinned. The 0.90 identity threshold and width-specific
+   0.80/0.95 coverage threshold must be present on both clustering and audit
+   search commands. `--max-seqs 361180` prevents the workflow default from
+   silently truncating a query's qualifying edge set.
 4. Connected components and the 5% single-component / 20% top-20 gates are
    accepted. A gate failure will include diagnostic composition rather than a
    bare stop.

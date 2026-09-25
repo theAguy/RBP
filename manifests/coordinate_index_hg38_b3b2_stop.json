@@ -117,7 +117,17 @@
   "cleanup": {
     "authorized_target": "indices/hg38/generations/index_bfeb7be42185425f",
     "authorized": true,
-    "completed": false,
+    "completed": true,
+    "completed_at_utc": "2026-09-25T10:47:10Z",
+    "executor_starting_commit": "a25d86bc2e37cdf43636a90eeac0837b51f046f2",
+    "resolved_deleted_path": "indices/hg38/generations/index_bfeb7be42185425f",
+    "reclaimed_candidate_bytes": 5424083332,
+    "post_cleanup_index_json_sha256": "da375f2259a696bc1a2baadbb4010bd2acd6532816be4cb9423a401500f4f37f",
+    "post_cleanup_index_json_unchanged": true,
+    "target_absent_after_cleanup": true,
+    "preserve_paths_present_after_cleanup": true,
+    "free_disk_bytes_before": 151299588096,
+    "free_disk_bytes_after": 156728180736,
     "receipt_commit": null,
     "preserve": [
       "indices/hg38/index.json",

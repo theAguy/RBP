@@ -11,6 +11,12 @@ PYTHONPATH=src python3 -m rbpbench.data.audit \
   --output manifests/dataset_audit.json
 ```
 
+`sequence_partition_environment_002a.{yml,explicit.txt,json}` record the
+isolated `rbpbench-splits-002` conda environment (pinned Bioconda MMseqs2
+`18.8cc5c`, build `h8b377d6_0`) used for Task 002A's real-binary tiny-fixture
+gate — see `docs/SPLITS.md`. No real dataset row or sequence was ever decoded
+under this environment; only synthetic fixtures.
+
 Future files include coordinate mappings, eligibility summaries, and frozen fold
 assignments.
 

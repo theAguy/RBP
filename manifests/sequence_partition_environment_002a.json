@@ -1,0 +1,66 @@
+{
+  "checkpoint": "002A",
+  "conda_environment": {
+    "name": "rbpbench-splits-002",
+    "prefix": "/opt/miniconda3/envs/rbpbench-splits-002",
+    "channels": ["conda-forge", "bioconda"],
+    "solver": "libmamba (succeeded without the classic-solver fallback needed for 001b)",
+    "spec_files": [
+      "manifests/sequence_partition_environment_002a.yml",
+      "manifests/sequence_partition_environment_002a.explicit.txt"
+    ],
+    "created_with": "conda create -n rbpbench-splits-002 -c conda-forge -c bioconda 'mmseqs2=18.8cc5c=h8b377d6_0' python pip -y",
+    "note": "python resolved to the newest solver-compatible build (3.14.7) rather than 3.11, since no python version was pinned; the project's own requires-python is >=3.10 (pyproject.toml), and rbpbench==0.1.0 installs and imports cleanly under 3.14.7 (pip install -e . --no-deps)."
+  },
+  "mmseqs2": {
+    "requested_version": "18.8cc5c",
+    "requested_build": "h8b377d6_0",
+    "resolved_version": "18.8cc5c",
+    "resolved_build": "h8b377d6_0",
+    "channel": "bioconda",
+    "resolved_path": "/opt/miniconda3/envs/rbpbench-splits-002/bin/mmseqs",
+    "binary_sha256": "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed635",
+    "conda_meta_record": "/opt/miniconda3/envs/rbpbench-splits-002/conda-meta/mmseqs2-18.8cc5c-h8b377d6_0.json",
+    "bioconda_search_confirmation": "conda search -c bioconda -c conda-forge 'mmseqs2=18.8cc5c' --platform osx-64 returned exactly one match: mmseqs2 18.8cc5c h8b377d6_0 bioconda"
+  },
+  "command_distinction_confirmed_against_real_help_text": {
+    "createdb_help_lists_dbtype": true,
+    "cluster_help_lists_search_type_or_strand": false,
+    "search_help_lists_search_type_or_strand": true,
+    "note": "`mmseqs cluster --help` (18.8cc5c) does not list --search-type or --strand at all; `mmseqs search --help` lists both. This is why the frozen grouping rule binds nucleotide clustering through the explicit --dbtype 2 database instead of an unsupported cluster flag, and reserves --search-type 3 / --strand 2 for the separate audit-search workflow (see docs/tasks/002_sequence_clustered_partitions.md and src/rbpbench/splits/commands.py)."
+  },
+  "real_binary_tiny_fixture_gate_results": {
+    "cluster_reverse_complement_fixture": {
+      "widths_tested_nt": [500, 251, 101],
+      "fixture": "row_0 (random), row_1_rc_of_row0 (true, non-palindromic reverse complement of row_0), row_2_unrelated (unrelated random sequence), row_3_identical_to_row0 (exact duplicate of row_0)",
+      "command_sequence": "createdb --dbtype 2; cluster --alignment-mode 3 --cov-mode 0 -e 1000 --mask 0 -s 7.5 --cluster-mode 1 --single-step-clustering 1; createtsv",
+      "result": "row_0, row_1_rc_of_row0, and row_3_identical_to_row0 clustered together at every width; row_2_unrelated remained a singleton cluster at every width",
+      "verified_by": "tests/test_splits_real_binaries.py::RealClusteringReverseComplementFixtureTests (real binary, all three widths, all passing)"
+    },
+    "audit_search_strand_fixture": {
+      "command_sequence": "createdb --dbtype 2 (query and target); search --search-type 3 --strand 2 --alignment-mode 3 --cov-mode 0 -e 1000 --mask 0 -s 7.5; createtsv",
+      "result_strand_2_both": "1 hit: q_forward vs t_rc (the target's non-palindromic reverse complement), 100% identity, 100% coverage",
+      "result_strand_1_forward_only": "0 hits (same query/target pair, --strand 1 substituted for --strand 2)",
+      "verified_by": "tests/test_splits_real_binaries.py::RealAuditSearchStrandTests (real binary, both strand settings, both passing)"
+    }
+  },
+  "host": {
+    "os_name": "Darwin",
+    "os_version": "14.4.1",
+    "kernel_version": "23.4.0",
+    "architecture": "x86_64",
+    "cpu_count_physical": 4,
+    "cpu_count_logical": 8,
+    "physical_ram_bytes": 17179869184,
+    "physical_ram_gib": 16.0
+  },
+  "disk": {
+    "path_measured": "/Users/guyassa/Desktop/Technion_courses/winter_2026/bioinformatics",
+    "mount_point": "/",
+    "total_gib": 932,
+    "used_gib": 13,
+    "free_gib": 143
+  },
+  "generated_at_utc": "2026-09-25T12:20:16Z",
+  "scope_note": "Checkpoint 002A only: this environment/binary evidence and the real-binary fixture tests above are the entire extent of 'real execution' authorized in 002A. No real CSV row, real dataset FASTA, or real component/partition was decoded, clustered, or produced under this environment."
+}

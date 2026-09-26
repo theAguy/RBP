@@ -1,7 +1,7 @@
 # Task 002B — Real sequence grouping and component report
 
-**Status:** checkpoint 002B-1 accepted; checkpoint 002B-2 real decode is
-authorized by its reviewed executor handoff
+**Status:** checkpoints 002B-1 and 002B-2 accepted; checkpoint 002B-3
+deterministic resource probes are authorized by their reviewed handoff
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 

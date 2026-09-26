@@ -1,7 +1,7 @@
 # Task 002 — Sequence-grouped train/validation/test partitions
 
-**Status:** checkpoints 002A and 002B-1 accepted; checkpoint 002B-2 real
-decode is next
+**Status:** checkpoints 002A, 002B-1, and 002B-2 accepted; checkpoint 002B-3
+resource probes are next
 **Phase:** 2
 **Branch after Task 001 merge:** `issue-002-sequence-partitions`
 

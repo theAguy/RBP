@@ -176,9 +176,9 @@ the real binary in `tests/test_splits_real_binaries.py`).
   002B-3 resource-probe stop boundary (10-GiB probe peak / 10-GiB available
   memory) remains the sole real-run memory safeguard.
 
-## Task 002B-2 onward / 002C — not started here
+## Task 002B-2 accepted; Task 002B-3 onward / 002C pending
 
-- **002B-2 through 002B-7** -- real decode, resource probes, the three real
+- **002B-3 through 002B-7** -- resource probes, the three real
   full-width clustering runs, and the final union/gate report, each its own
   separately reviewed checkpoint (`docs/tasks/002b_real_sequence_grouping.md`).
 - **002C** — after 002B acceptance, assign whole components, run the fresh
@@ -186,4 +186,4 @@ the real binary in `tests/test_splits_real_binaries.py`).
   manifest.
 
 Each checkpoint requires its own executor handoff and review; this
-implementation does not silently continue past 002B-1.
+implementation does not silently continue into a later checkpoint.

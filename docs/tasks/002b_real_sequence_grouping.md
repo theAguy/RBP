@@ -1,7 +1,7 @@
 # Task 002B — Real sequence grouping and component report
 
-**Status:** second review reconciled; only synthetic checkpoint 002B-1 may
-begin through its bounded executor handoff
+**Status:** synthetic checkpoint 002B-1 implemented; bounded orchestration
+correction required before acceptance or real decode
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 

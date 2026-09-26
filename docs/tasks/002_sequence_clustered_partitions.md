@@ -1,8 +1,7 @@
 # Task 002 — Sequence-grouped train/validation/test partitions
 
-**Status:** checkpoint 002A accepted; checkpoint 002B planning review is
-reconciled and only synthetic subcheckpoint 002B-1 may begin through its
-bounded executor handoff
+**Status:** checkpoint 002A accepted; checkpoint 002B-1 orchestration is under
+bounded correction and no real-data execution is authorized
 **Phase:** 2
 **Branch after Task 001 merge:** `issue-002-sequence-partitions`
 

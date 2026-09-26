@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import random
 import stat
 import tempfile
@@ -175,12 +176,19 @@ def _preflight(config, dataset_csv, output_dir, *, mmseqs_bin="mmseqs", dry_run=
     )
 
 
-def _preflight_and_decode(tmp_path: Path, sequences: list[str], **fixture_kwargs):
+def _preflight_and_decode(tmp_path: Path, sequences: list[str], *, mmseqs_bin_path: Path | None = None, **fixture_kwargs):
     """Common setup: a fake mmseqs binary, a matching config, a real accepted
     preflight, and a real accepted decode. Returns
     (config, output_dir, decode_record, fake_bin_path).
+
+    ``mmseqs_bin_path`` lets a caller supply its own binary (accepted at
+    preflight time, so ``config.binary.mmseqs_sha256`` matches it) instead of
+    the default fast fake -- needed by any test that later calls a stage
+    function with a binary other than "mmseqs" on PATH, since probe/cluster
+    now independently reject a binary that does not match the accepted
+    config (FC1).
     """
-    fake_bin = _write_fake_mmseqs(tmp_path)
+    fake_bin = mmseqs_bin_path if mmseqs_bin_path is not None else _write_fake_mmseqs(tmp_path)
     csv_path, config_path = _build_fixture(tmp_path, sequences, mmseqs_bin_path=fake_bin, **fixture_kwargs)
     config = load_config(config_path)
     output_dir = tmp_path / "out"
@@ -495,50 +503,101 @@ class ClusterStageTests(unittest.TestCase):
     def test_cluster_rejects_a_timeout_and_kills_the_process(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            # Hangs on createdb only when RBPBENCH_TEST_HANG is set, so this
+            # SAME binary (accepted at preflight time, satisfying the FC1
+            # binary-identity check) behaves like a normal fast fake for
+            # preflight/decode/probe acceptance, and only hangs for the
+            # cluster call under test.
             hang_bin = tmp_path / "hang_mmseqs"
-            hang_bin.write_text("#!/bin/sh\nif [ \"$1\" = \"createdb\" ]; then sleep 30; fi\nexit 0\n")
-            hang_bin.chmod(hang_bin.stat().st_mode | stat.S_IEXEC)
-            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)], timeout_seconds=1)
-            _accept_all_probes(config, output_dir, decode_record, fake_bin)
-            with self.assertRaises((MmseqsExecutionError, runner.ResourceTerminatedError)):
-                runner.stage_cluster(
-                    width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(hang_bin)
+            hang_bin.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env python3
+                    import os, sys, pathlib, time
+                    args = sys.argv[1:]
+                    cmd = args[0]
+                    if cmd == "version":
+                        print({PINNED_VERSION!r})
+                    elif cmd == "createdb":
+                        if os.environ.get("RBPBENCH_TEST_HANG"):
+                            time.sleep(30)
+                        input_fasta, db = args[1], args[2]
+                        ids = [line[1:].strip() for line in open(input_fasta) if line.startswith(">")]
+                        pathlib.Path(db).write_text("fakedb")
+                        pathlib.Path(db + ".dbtype").write_bytes(bytes([2, 0, 0, 0]))
+                        pathlib.Path(db + ".fake_ids").write_text("\\n".join(ids))
+                    elif cmd == "cluster":
+                        pathlib.Path(args[2]).write_text("fakecluster")
+                    elif cmd == "createtsv":
+                        query_db, output = args[1], args[4]
+                        ids = pathlib.Path(query_db + ".fake_ids").read_text().splitlines()
+                        with open(output, "w") as fh:
+                            for sample_id in ids:
+                                fh.write(f"{{sample_id}}\\t{{sample_id}}\\n")
+                    sys.exit(0)
+                    """
                 )
+            )
+            hang_bin.chmod(hang_bin.stat().st_mode | stat.S_IEXEC)
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(
+                tmp_path, [_marker_sequence(1)], mmseqs_bin_path=hang_bin, timeout_seconds=1
+            )
+            _accept_all_probes(config, output_dir, decode_record, fake_bin)
+            with mock.patch.dict(os.environ, {"RBPBENCH_TEST_HANG": "1"}):
+                with self.assertRaises((MmseqsExecutionError, runner.ResourceTerminatedError)):
+                    runner.stage_cluster(
+                        width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(hang_bin)
+                    )
 
     def test_membership_reconciliation_rejects_a_foreign_member(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            # Only reports a foreign ID when RBPBENCH_TEST_FOREIGN is set, so
+            # this SAME binary (accepted at preflight time, satisfying the
+            # FC1 binary-identity check) reconciles normally for probe
+            # acceptance and only misbehaves for the cluster call under test.
             bad_bin = tmp_path / "bad_mmseqs"
             bad_bin.write_text(
                 textwrap.dedent(
                     """\
                     #!/usr/bin/env python3
-                    import sys, pathlib
+                    import os, sys, pathlib
                     args = sys.argv[1:]
                     cmd = args[0]
                     if cmd == "version":
                         print("18.8cc5c")
                     elif cmd == "createdb":
-                        db = args[2]
+                        input_fasta, db = args[1], args[2]
+                        ids = [line[1:].strip() for line in open(input_fasta) if line.startswith(">")]
                         pathlib.Path(db).write_text("fakedb")
                         pathlib.Path(db + ".dbtype").write_bytes(bytes([2, 0, 0, 0]))
+                        pathlib.Path(db + ".fake_ids").write_text("\\n".join(ids))
                     elif cmd == "cluster":
                         pathlib.Path(args[2]).write_text("fakecluster")
                     elif cmd == "createtsv":
-                        output = args[4]
-                        with open(output, "w") as fh:
-                            fh.write("row_0\\tforeign_id_not_in_input\\n")
+                        query_db, output = args[1], args[4]
+                        if os.environ.get("RBPBENCH_TEST_FOREIGN"):
+                            with open(output, "w") as fh:
+                                fh.write("row_0\\tforeign_id_not_in_input\\n")
+                        else:
+                            ids = pathlib.Path(query_db + ".fake_ids").read_text().splitlines()
+                            with open(output, "w") as fh:
+                                for sample_id in ids:
+                                    fh.write(f"{sample_id}\\t{sample_id}\\n")
                     sys.exit(0)
                     """
                 )
             )
             bad_bin.chmod(bad_bin.stat().st_mode | stat.S_IEXEC)
-            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)])
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(
+                tmp_path, [_marker_sequence(1)], mmseqs_bin_path=bad_bin
+            )
             _accept_all_probes(config, output_dir, decode_record, fake_bin)
-            with self.assertRaises(MembershipReconciliationError):
-                runner.stage_cluster(
-                    width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(bad_bin)
-                )
+            with mock.patch.dict(os.environ, {"RBPBENCH_TEST_FOREIGN": "1"}):
+                with self.assertRaises(MembershipReconciliationError):
+                    runner.stage_cluster(
+                        width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(bad_bin)
+                    )
 
 
 class ProbeStageTests(unittest.TestCase):

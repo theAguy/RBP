@@ -395,7 +395,24 @@ def run_guarded_mmseqs(
         raise splits_commands.MmseqsExecutionError(
             f"{command.tool} exited {returncode}: {format_command(command.argv)}; see {stderr_path}"
         )
+    # FC2: an UNCONDITIONAL final ceiling/floor re-measurement, taken right
+    # after this child exits -- never skipped merely because it exited
+    # before the first polling interval (a process that never enters the
+    # live-polling branch above still must not slip through). A prior live
+    # poll only checks WHILE the tool runs; this is the one check that
+    # always runs once, exactly once, after every exit.
+    total_gib_at_finish = _directory_size_bytes(output_dir) / GIB
+    if total_gib_at_finish > max_new_disk_gib:
+        raise ResourceGateExceededError(
+            f"{command.tool} final combined output directory reached {total_gib_at_finish:.2f} GiB, over the "
+            f"{max_new_disk_gib:.2f} GiB ceiling immediately after exit: {format_command(command.argv)}"
+        )
     finish_disk = snapshot(_nearest_existing_ancestor(output_dir))
+    if finish_disk.free_gib < min_free_disk_gib:
+        raise ResourceGateExceededError(
+            f"{command.tool} final free disk is {finish_disk.free_gib:.2f} GiB, below the required "
+            f"{min_free_disk_gib:.2f} GiB floor immediately after exit: {format_command(command.argv)}"
+        )
     return {
         "tool": command.tool,
         "command_text": format_command(command.argv),
@@ -405,7 +422,7 @@ def run_guarded_mmseqs(
         "stderr_path": str(stderr_path),
         "stderr_sha256": sha256_file(stderr_path),
         "binary": binary.to_dict(),
-        "output_dir_gib_at_finish": _directory_size_bytes(output_dir) / GIB,
+        "output_dir_gib_at_finish": total_gib_at_finish,
         "free_disk_gib_at_finish": finish_disk.free_gib,
     }
 
@@ -517,10 +534,109 @@ def stage_preflight(
         "host_memory": host_memory_snapshot(),
         "installed_ram_gib": installed_ram_gib,
         "disk_snapshot": disk_snapshot,
+        # FC1: the exact declared paths/binary this acceptance validated,
+        # so a later currency recheck (_verify_preflight_currency) can
+        # recompute preflight_fingerprint fresh from LIVE content at these
+        # same paths -- never from this record's own (potentially stale)
+        # cached hashes/snapshot -- without every downstream caller having
+        # to re-supply them.
+        "dataset_csv": str(dataset_csv),
+        "audit_json": str(audit_json),
+        "proteins_tsv": str(proteins_tsv),
+        "mmseqs_bin": mmseqs_bin,
         "artifacts": [],
     }
     _atomic_write_json(_selected_record_path(output_dir, "preflight"), record)
     return record
+
+
+# --------------------------------------------------------------------------
+# FC1: shared fail-closed helpers that recompute CURRENT evidence -- never
+# merely load an intact selected record and trust its own cached snapshot.
+# --------------------------------------------------------------------------
+
+
+def _recheck_installed_ram_and_disk_now(*, config: SplitsConfig, output_dir: Path) -> None:
+    """Re-measures installed RAM and free disk against the LIVE host right
+    now, rather than trusting an old preflight record's own host snapshot as
+    still current. Called before every real stage, including a preflight
+    invocation that is about to be skipped because its fingerprint still
+    matches.
+    """
+    installed_ram_gib = detect_physical_ram_gib()
+    if installed_ram_gib is None or installed_ram_gib < config.resources.min_installed_ram_gib:
+        raise PreflightError(
+            f"installed RAM {installed_ram_gib!r} GiB is below the required "
+            f"{config.resources.min_installed_ram_gib:.2f} GiB minimum (None is a hard failure); rerun preflight"
+        )
+    _check_free_disk_or_fail(disk_path=output_dir, min_free_disk_gib=config.resources.min_free_disk_gib, label="preflight")
+
+
+def _preflight_record_current_fingerprint(record: dict, config: SplitsConfig) -> str:
+    """Recomputes ``preflight_fingerprint`` fresh against the LIVE content at
+    the exact dataset CSV/audit JSON/proteins TSV/MMseqs2 binary paths the
+    given accepted preflight record itself declares it validated.
+    """
+    return preflight_fingerprint(
+        config=config,
+        dataset_csv=Path(record["dataset_csv"]),
+        audit_json=Path(record["audit_json"]),
+        proteins_tsv=Path(record["proteins_tsv"]),
+        mmseqs_bin=record["mmseqs_bin"],
+    )
+
+
+def _verify_preflight_currency(*, record: dict, config: SplitsConfig, output_dir: Path) -> None:
+    """Fail-closed: an intact, ``executed`` preflight record is not, by
+    itself, evidence that it is still CURRENT. Rechecks the installed-RAM
+    minimum and free-disk floor against the live host now, then recomputes
+    ``preflight_fingerprint`` fresh and refuses a record whose live
+    config/CSV/audit JSON/proteins TSV/MMseqs2 binary state no longer
+    reproduces it -- catching a mutated audit JSON or proteins TSV, or a
+    swapped-but-same-version binary, not only a changed CSV.
+    """
+    _recheck_installed_ram_and_disk_now(config=config, output_dir=output_dir)
+    current_fp = _preflight_record_current_fingerprint(record, config)
+    if record.get("stage_fingerprint") != current_fp:
+        raise PriorStageNotAcceptedError(
+            "the accepted preflight selection is no longer CURRENT for the live config/dataset CSV/audit JSON/"
+            "proteins TSV/MMseqs2 binary state; rerun and accept preflight first"
+        )
+
+
+def _require_current_preflight(*, output_dir: Path, config: SplitsConfig) -> dict:
+    """Loads the accepted, currently-intact preflight record and proves it
+    is also still CURRENT (:func:`_verify_preflight_currency`) before any
+    downstream stage may trust it.
+    """
+    record = _require_accepted(output_dir, "preflight")
+    _verify_preflight_currency(record=record, config=config, output_dir=output_dir)
+    return record
+
+
+def _require_current_decode(*, output_dir: Path, config: SplitsConfig) -> dict:
+    """The shared "current decode" helper (FC1): requires a CURRENT
+    preflight (transitively rechecking RAM/disk and the full upstream
+    fingerprint chain), then requires an accepted, intact decode record
+    whose OWN fingerprint still reproduces against that current preflight
+    plus the live dataset CSV. Every probe/cluster/component-report CLI path
+    must use this instead of a bare ``_require_accepted(output_dir,
+    "decode")``, which only proves the decode record is intact, never that
+    it -- or the preflight it descends from -- is still current.
+    """
+    preflight_record = _require_current_preflight(output_dir=output_dir, config=config)
+    decode_record = _require_accepted(output_dir, "decode")
+    current_fp = decode_fingerprint(
+        config=config,
+        dataset_csv=Path(preflight_record["dataset_csv"]),
+        preflight_stage_fingerprint=preflight_record["stage_fingerprint"],
+    )
+    if decode_record.get("stage_fingerprint") != current_fp:
+        raise PriorStageNotAcceptedError(
+            "the accepted decode selection is no longer CURRENT for the live preflight/CSV/config state; rerun "
+            "and accept decode first"
+        )
+    return decode_record
 
 
 # --------------------------------------------------------------------------
@@ -558,6 +674,13 @@ def stage_decode(
             f"dataset_csv at {dataset_csv} now hashes to {current_csv_sha}, but the accepted preflight record "
             f"validated {accepted_csv_sha!r}; rerun and accept preflight against the current CSV first"
         )
+
+    # FC1: independently (defense in depth, regardless of how this function
+    # was reached) require the given preflight_record to still be CURRENT --
+    # catches a mutated audit JSON or proteins TSV, a swapped-but-same-
+    # version binary, or a config change, none of which the CSV-only check
+    # above observes -- before any generation is created.
+    _verify_preflight_currency(record=preflight_record, config=config, output_dir=output_dir)
 
     base_dir = output_dir / "decode"
     generation_dir = splits_commands.new_generation_dir(base_dir, prefix="decode")
@@ -748,6 +871,26 @@ def _cluster_or_probe(
             "reload it via _require_accepted(output_dir, 'decode') first"
         )
 
+    # FC1: independently reject an MMseqs2 binary whose CURRENT version/hash
+    # does not match the production config, before launching any subprocess
+    # -- regardless of caller (main()'s own preflight recheck is a separate,
+    # earlier layer; this holds even for a direct stage_probe/stage_cluster
+    # call that bypasses main() entirely). A correct version string alone is
+    # not sufficient identity evidence for a same-version, swapped binary.
+    live_binary = splits_commands.resolve_mmseqs_binary_provenance(mmseqs_bin)
+    if live_binary.resolved_path is None:
+        raise PreflightError(f"mmseqs binary {mmseqs_bin!r} not found on PATH")
+    if live_binary.version != splits_commands.PINNED_VERSION:
+        raise PreflightError(
+            f"mmseqs version {live_binary.version!r} != pinned {splits_commands.PINNED_VERSION!r} for stage {stage_name!r}"
+        )
+    if live_binary.sha256 != config.binary.mmseqs_sha256:
+        raise PreflightError(
+            f"mmseqs binary SHA-256 {live_binary.sha256!r} != accepted {config.binary.mmseqs_sha256!r} for stage "
+            f"{stage_name!r} (correct version string alone is not sufficient identity evidence); rerun and accept "
+            "preflight against the current binary first"
+        )
+
     if stage_name == "cluster":
         # C1: every width's full clustering requires ALL THREE probe widths
         # accepted and CURRENT first -- never just the matching width.
@@ -904,6 +1047,20 @@ def component_report_fingerprint(*, config: SplitsConfig, upstream_digests: dict
     return content_fingerprint("component_report", config.content_hash, *sorted(upstream_digests.items()))
 
 
+def _component_report_upstream_artifact_manifests(
+    *, config: SplitsConfig, decode_record: dict, cluster_records: dict[int, dict]
+) -> dict:
+    """FC4: an immutable snapshot of the selected artifact inventory (path/
+    size/SHA-256 for every retained file) for decode and all three cluster
+    generations, bound alongside the fingerprints/digests already recorded
+    -- evidence completeness, not a new computation.
+    """
+    manifests = {"decode": list(decode_record.get("artifacts", []))}
+    for width in config.protected_widths:
+        manifests[f"cluster_{width}"] = list(cluster_records[width].get("artifacts", []))
+    return manifests
+
+
 def stage_component_report(
     *, config: SplitsConfig, output_dir: Path, decode_record: dict, cluster_records: dict[int, dict], dry_run: bool = False
 ) -> dict:
@@ -964,6 +1121,9 @@ def stage_component_report(
         repeat_check_path.unlink()
 
         upstream_digests = _component_report_upstream_digests(config=config, decode_record=decode_record, cluster_records=cluster_records)
+        upstream_artifact_manifests = _component_report_upstream_artifact_manifests(
+            config=config, decode_record=decode_record, cluster_records=cluster_records
+        )
         input_hashes = {entry["path"]: entry["sha256"] for entry in decode_record.get("artifacts", [])}
         report = splits_output.build_component_report(
             total_rows=total_rows,
@@ -1002,6 +1162,7 @@ def stage_component_report(
             "component_count": len(component_sizes),
             "giant_component_gate": gate,
             "upstream": upstream_digests,
+            "upstream_artifact_manifests": upstream_artifact_manifests,
             "artifacts": artifacts,
         }
         _atomic_write_json(_selected_record_path(output_dir, "component_report"), record)
@@ -1068,6 +1229,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             prior = None if args.force else _load_accepted(output_dir, "preflight")
             if prior is not None and prior.get("stage_fingerprint") == current_fp:
+                # FC1: a skip still rechecks installed RAM and free disk
+                # against the LIVE host right now -- never trusts the
+                # record's own (potentially stale) host snapshot as still
+                # current.
+                _recheck_installed_ram_and_disk_now(config=config, output_dir=output_dir)
                 result = prior
             else:
                 result = stage_preflight(
@@ -1079,7 +1245,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.dry_run:
             result = stage_decode(config=config, dataset_csv=dataset_csv, output_dir=output_dir, preflight_record={}, dry_run=True)
         else:
-            preflight_record = _require_accepted(output_dir, "preflight")
+            # FC1: not merely intact -- CURRENT (rechecks RAM/disk now and
+            # the full preflight fingerprint chain) before decode may trust
+            # it, whether decode is about to actually run or merely skip.
+            preflight_record = _require_current_preflight(output_dir=output_dir, config=config)
             current_fp = decode_fingerprint(
                 config=config, dataset_csv=dataset_csv, preflight_stage_fingerprint=preflight_record["stage_fingerprint"]
             )
@@ -1097,7 +1266,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                 mmseqs_bin=args.mmseqs_bin, dry_run=True,
             )
         else:
-            decode_record = _require_accepted(output_dir, "decode")
+            # FC1: the CURRENT decode helper, not a bare _require_accepted
+            # (which only proves intactness, never that decode -- or the
+            # preflight it descends from -- is still current).
+            decode_record = _require_current_decode(output_dir=output_dir, config=config)
             key = f"{args.stage}_{args.width}"
             current_fp = width_stage_fingerprint(
                 stage_name=args.stage, width=args.width, config=config,
@@ -1118,7 +1290,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.dry_run:
             result = stage_component_report(config=config, output_dir=output_dir, decode_record={}, cluster_records={}, dry_run=True)
         else:
-            decode_record = _require_accepted(output_dir, "decode")
+            # FC1: the CURRENT decode helper here too (component-report is
+            # explicitly one of the CLI paths this correction covers).
+            decode_record = _require_current_decode(output_dir=output_dir, config=config)
             cluster_records = {
                 width: _require_current_width_stage(
                     output_dir=output_dir, stage_name="cluster", width=width, config=config, decode_record=decode_record

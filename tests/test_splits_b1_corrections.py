@@ -168,8 +168,15 @@ def _preflight(config, dataset_csv, output_dir, *, mmseqs_bin, audit_json=None, 
     )
 
 
-def _preflight_and_decode(tmp_path: Path, sequences: list[str], **fixture_kwargs):
-    fake_bin = _write_fake_mmseqs(tmp_path)
+def _preflight_and_decode(tmp_path: Path, sequences: list[str], *, mmseqs_bin_path: Path | None = None, **fixture_kwargs):
+    """``mmseqs_bin_path`` lets a caller supply its own binary (accepted at
+    preflight time, so ``config.binary.mmseqs_sha256`` matches it) instead of
+    the default fast fake -- needed by any test that later calls a stage
+    function with a binary other than the default, since probe/cluster now
+    independently reject a binary that does not match the accepted config
+    (FC1).
+    """
+    fake_bin = mmseqs_bin_path if mmseqs_bin_path is not None else _write_fake_mmseqs(tmp_path)
     csv_path, config_path = _build_fixture(tmp_path, sequences, mmseqs_bin_path=fake_bin, **fixture_kwargs)
     config = load_config(config_path)
     output_dir = tmp_path / "out"
@@ -188,7 +195,23 @@ def _generation_dirs(output_dir: Path, *parts: str) -> set:
     return set(root.iterdir()) if root.is_dir() else set()
 
 
-class R1SameRowCountCsvMutationTests(unittest.TestCase):
+class _RamMockedTestCase(unittest.TestCase):
+    """FC3: mocks a sufficient numeric installed-RAM value for the whole
+    test body. None of these fixtures test installed-RAM DETECTION itself,
+    so a restricted host where ``sysctl``/``/proc/meminfo`` is unavailable
+    (installed RAM detects as ``None``) must not fail them at an incidental
+    preflight/current-preflight RAM gate -- only the dedicated
+    ``FC3InstalledRamFailClosedTests`` below exercises that detection path,
+    and does not inherit this mock.
+    """
+
+    def setUp(self):
+        patcher = mock.patch("rbpbench.splits.runner.detect_physical_ram_gib", return_value=64.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class R1SameRowCountCsvMutationTests(_RamMockedTestCase):
     """Regression 1: same-row-count CSV mutation after accepted preflight
     makes decode refuse before creating a generation.
     """
@@ -218,7 +241,7 @@ class R1SameRowCountCsvMutationTests(unittest.TestCase):
             self.assertEqual(before, after, "decode must not create a generation before the stale-CSV check")
 
 
-class R2ForceRebuildInvalidatesClusterTests(unittest.TestCase):
+class R2ForceRebuildInvalidatesClusterTests(_RamMockedTestCase):
     """Regression 2: force-replacing decode invalidates an old cluster even
     when source bytes are unchanged.
     """
@@ -238,7 +261,7 @@ class R2ForceRebuildInvalidatesClusterTests(unittest.TestCase):
                 runner._require_current_width_stage(output_dir=output_dir, stage_name="cluster", width=500, config=config, decode_record=new_decode_record)
 
 
-class R3ClusterRequiresCurrentProbesTests(unittest.TestCase):
+class R3ClusterRequiresCurrentProbesTests(_RamMockedTestCase):
     """Regression 3: cluster refuses before all three current probes and
     launches no subprocess.
     """
@@ -257,7 +280,7 @@ class R3ClusterRequiresCurrentProbesTests(unittest.TestCase):
             self.assertFalse((output_dir / "cluster").exists())
 
 
-class R4StaleTamperedUpstreamBlocksDownstreamTests(unittest.TestCase):
+class R4StaleTamperedUpstreamBlocksDownstreamTests(_RamMockedTestCase):
     """Regression 4: stale/tampered probe or cluster upstream evidence
     blocks downstream work.
     """
@@ -288,7 +311,7 @@ class R4StaleTamperedUpstreamBlocksDownstreamTests(unittest.TestCase):
                 runner.stage_cluster(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin))
 
 
-class R5WrongBinarySha256Tests(unittest.TestCase):
+class R5WrongBinarySha256Tests(_RamMockedTestCase):
     """Regression 5: binary with correct version but wrong SHA fails
     preflight.
     """
@@ -309,7 +332,7 @@ class R5WrongBinarySha256Tests(unittest.TestCase):
             self.assertIn("SHA-256", str(ctx.exception))
 
 
-class R6AvailableMemoryLaunchGateTests(unittest.TestCase):
+class R6AvailableMemoryLaunchGateTests(_RamMockedTestCase):
     """Regression 6: missing/unknown/low available-memory evidence prevents
     MMseqs2 launch.
     """
@@ -341,28 +364,51 @@ class R6AvailableMemoryLaunchGateTests(unittest.TestCase):
                 mocked.assert_not_called()
 
 
-def _write_growing_file_mmseqs(directory: Path, *, chunk_bytes: int = 300_000, iterations: int = 400, sleep_seconds: float = 0.05) -> Path:
+def _write_growing_file_mmseqs(
+    directory: Path,
+    *,
+    chunk_bytes: int = 300_000,
+    iterations: int = 400,
+    sleep_seconds: float = 0.05,
+    activate_env_var: str = "RBPBENCH_TEST_GROW",
+) -> Path:
+    """Only grows disk on ``cluster`` when ``activate_env_var`` is set in the
+    environment, and otherwise behaves like a normal fast fake mmseqs (full
+    createdb/cluster/createtsv support) -- so this SAME binary can be the one
+    accepted at preflight time (satisfying the FC1 binary-identity check for
+    every stage, including probe acceptance) and only grows disk for the
+    specific cluster invocation under test.
+    """
     path = directory / "growing_mmseqs"
     path.write_text(
         textwrap.dedent(
             f"""\
             #!/usr/bin/env python3
-            import sys, pathlib, time
+            import os, sys, pathlib, time
             args = sys.argv[1:]
             cmd = args[0]
             if cmd == "version":
                 print({PINNED_VERSION!r})
             elif cmd == "createdb":
-                db = args[2]
+                input_fasta, db = args[1], args[2]
+                ids = [line[1:].strip() for line in open(input_fasta) if line.startswith(">")]
                 pathlib.Path(db).write_text("fakedb")
                 pathlib.Path(db + ".dbtype").write_bytes(bytes([2, 0, 0, 0]))
+                pathlib.Path(db + ".fake_ids").write_text("\\n".join(ids))
             elif cmd == "cluster":
-                growth_file = pathlib.Path(args[2]).parent / "growing.bin"
-                for _ in range({iterations}):
-                    with open(growth_file, "ab") as f:
-                        f.write(b"x" * {chunk_bytes})
-                    time.sleep({sleep_seconds})
+                if os.environ.get({activate_env_var!r}):
+                    growth_file = pathlib.Path(args[2]).parent / "growing.bin"
+                    for _ in range({iterations}):
+                        with open(growth_file, "ab") as f:
+                            f.write(b"x" * {chunk_bytes})
+                        time.sleep({sleep_seconds})
                 pathlib.Path(args[2]).write_text("done")
+            elif cmd == "createtsv":
+                query_db, output = args[1], args[4]
+                ids = pathlib.Path(query_db + ".fake_ids").read_text().splitlines()
+                with open(output, "w") as fh:
+                    for sample_id in ids:
+                        fh.write(f"{{sample_id}}\\t{{sample_id}}\\n")
             sys.exit(0)
             """
         )
@@ -371,31 +417,48 @@ def _write_growing_file_mmseqs(directory: Path, *, chunk_bytes: int = 300_000, i
     return path
 
 
-def _write_grandchild_spawning_mmseqs(directory: Path) -> Path:
+def _write_grandchild_spawning_mmseqs(directory: Path, *, activate_env_var: str = "RBPBENCH_TEST_GRANDCHILD") -> Path:
+    """Only spawns the grandchild writer on ``cluster`` when
+    ``activate_env_var`` is set, and otherwise behaves like a normal fast
+    fake mmseqs (full createdb/cluster/createtsv support) -- see
+    :func:`_write_growing_file_mmseqs` for why this same-binary pattern is
+    needed under the FC1 binary-identity check.
+    """
     path = directory / "grandchild_mmseqs"
     path.write_text(
         textwrap.dedent(
             f"""\
             #!/usr/bin/env python3
-            import sys, pathlib, subprocess, time
+            import os, sys, pathlib, subprocess, time
             args = sys.argv[1:]
             cmd = args[0]
             if cmd == "version":
                 print({PINNED_VERSION!r})
             elif cmd == "createdb":
-                db = args[2]
+                input_fasta, db = args[1], args[2]
+                ids = [line[1:].strip() for line in open(input_fasta) if line.startswith(">")]
                 pathlib.Path(db).write_text("fakedb")
                 pathlib.Path(db + ".dbtype").write_bytes(bytes([2, 0, 0, 0]))
+                pathlib.Path(db + ".fake_ids").write_text("\\n".join(ids))
             elif cmd == "cluster":
-                marker = pathlib.Path(args[2]).parent / "grandchild_heartbeat.txt"
-                subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve()), "grandchild", str(marker)])
-                time.sleep(30)
+                if os.environ.get({activate_env_var!r}):
+                    marker = pathlib.Path(args[2]).parent / "grandchild_heartbeat.txt"
+                    subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve()), "grandchild", str(marker)])
+                    time.sleep(30)
+                else:
+                    pathlib.Path(args[2]).write_text("fakecluster")
             elif cmd == "grandchild":
                 marker = pathlib.Path(args[1])
                 for i in range(600):
                     with open(marker, "a") as f:
                         f.write(str(i) + "\\n")
                     time.sleep(0.05)
+            elif cmd == "createtsv":
+                query_db, output = args[1], args[4]
+                ids = pathlib.Path(query_db + ".fake_ids").read_text().splitlines()
+                with open(output, "w") as fh:
+                    for sample_id in ids:
+                        fh.write(f"{{sample_id}}\\t{{sample_id}}\\n")
             sys.exit(0)
             """
         )
@@ -404,7 +467,7 @@ def _write_grandchild_spawning_mmseqs(directory: Path) -> Path:
     return path
 
 
-class R7LiveResourceGuardTests(unittest.TestCase):
+class R7LiveResourceGuardTests(_RamMockedTestCase):
     """Regression 7: live disk growth and a grandchild writer are stopped,
     with prior evidence untouched.
     """
@@ -412,18 +475,22 @@ class R7LiveResourceGuardTests(unittest.TestCase):
     def test_live_disk_growth_is_terminated_before_natural_completion(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            growing_bin = _write_growing_file_mmseqs(tmp_path, activate_env_var="RBPBENCH_TEST_GROW_R7A")
             config, output_dir, decode_record, fake_bin = _preflight_and_decode(
                 tmp_path, [_marker_sequence(1)],
+                mmseqs_bin_path=growing_bin,
                 max_new_disk_gib=0.00005,  # ~53 KB: well above tiny decode/probe overhead, well below one growth chunk
                 resource_poll_interval_seconds=0.02,
                 timeout_seconds=100,
             )
+            # Env var unset here -- probe acceptance uses the same binary but
+            # completes fast, with no disk growth.
             _accept_all_probes(config, output_dir, decode_record, fake_bin)
-            growing_bin = _write_growing_file_mmseqs(tmp_path)
 
             start = time.monotonic()
-            with self.assertRaises(runner.ResourceTerminatedError):
-                runner.stage_cluster(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(growing_bin))
+            with mock.patch.dict(os.environ, {"RBPBENCH_TEST_GROW_R7A": "1"}):
+                with self.assertRaises(runner.ResourceTerminatedError):
+                    runner.stage_cluster(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(growing_bin))
             elapsed = time.monotonic() - start
             # Natural completion would take 400 * 0.05s = 20s; a live guard
             # must catch it in well under a second.
@@ -437,13 +504,16 @@ class R7LiveResourceGuardTests(unittest.TestCase):
     def test_grandchild_writer_is_terminated_with_the_whole_process_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            grandchild_bin = _write_grandchild_spawning_mmseqs(tmp_path, activate_env_var="RBPBENCH_TEST_GRANDCHILD_R7B")
             config, output_dir, decode_record, fake_bin = _preflight_and_decode(
                 tmp_path, [_marker_sequence(1)],
+                mmseqs_bin_path=grandchild_bin,
                 timeout_seconds=1.2,
                 resource_poll_interval_seconds=0.02,
             )
+            # Env var unset here -- probe acceptance uses the same binary but
+            # completes fast, with no grandchild spawned.
             _accept_all_probes(config, output_dir, decode_record, fake_bin)
-            grandchild_bin = _write_grandchild_spawning_mmseqs(tmp_path)
 
             # The candidate generation (including the heartbeat marker
             # inside it) is normally discarded on failure -- proven
@@ -452,8 +522,9 @@ class R7LiveResourceGuardTests(unittest.TestCase):
             # AFTER termination, so keep the candidate directory around for
             # this one assertion instead of letting it be swept away first.
             with mock.patch("rbpbench.splits.runner.shutil.rmtree"):
-                with self.assertRaises(runner.ResourceTerminatedError):
-                    runner.stage_cluster(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(grandchild_bin))
+                with mock.patch.dict(os.environ, {"RBPBENCH_TEST_GRANDCHILD_R7B": "1"}):
+                    with self.assertRaises(runner.ResourceTerminatedError):
+                        runner.stage_cluster(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(grandchild_bin))
 
             marker_candidates = list(tmp_path.rglob("grandchild_heartbeat.txt"))
             self.assertEqual(len(marker_candidates), 1)
@@ -464,7 +535,7 @@ class R7LiveResourceGuardTests(unittest.TestCase):
             self.assertEqual(count_at_kill, count_after_wait, "grandchild kept writing after the process group should have been killed")
 
 
-class R8ThreadCapTests(unittest.TestCase):
+class R8ThreadCapTests(_RamMockedTestCase):
     """Regression 8: all three MMseqs2 commands use no more than four
     threads.
     """
@@ -529,7 +600,7 @@ class R8ThreadCapTests(unittest.TestCase):
                 self.assertEqual(argv[argv.index("--threads") + 1], "4", f"{tool} did not receive the configured thread cap: {argv}")
 
 
-class R9SelectionRecordWriteFailureTests(unittest.TestCase):
+class R9SelectionRecordWriteFailureTests(_RamMockedTestCase):
     """Regression 9: selection-record write failures for decode,
     probe/cluster, and report remove the new candidate and preserve a prior
     acceptance.
@@ -575,7 +646,7 @@ class R9SelectionRecordWriteFailureTests(unittest.TestCase):
             self.assertTrue(Path(accepted["generation_dir"]).is_dir())
 
 
-class R10ComponentReportInterruptionTests(unittest.TestCase):
+class R10ComponentReportInterruptionTests(_RamMockedTestCase):
     """Regression 10: component-report interruption cannot overwrite
     accepted report artifacts.
     """
@@ -601,7 +672,7 @@ class R10ComponentReportInterruptionTests(unittest.TestCase):
             self.assertEqual(Path(accepted["membership_path"]).read_bytes(), accepted_membership_bytes)
 
 
-class R11GenerationTamperingInvalidatesRevalidationTests(unittest.TestCase):
+class R11GenerationTamperingInvalidatesRevalidationTests(_RamMockedTestCase):
     """Regression 11: added, deleted, or changed generation files invalidate
     revalidation.
     """
@@ -629,7 +700,7 @@ class R11GenerationTamperingInvalidatesRevalidationTests(unittest.TestCase):
             self.assertIsNone(runner._load_accepted(output_dir, "decode"))
 
 
-class R12RepoRootIndependentOfCwdTests(unittest.TestCase):
+class R12RepoRootIndependentOfCwdTests(_RamMockedTestCase):
     """Regression 12: running from outside the repository resolves the
     declared frozen inputs deterministically.
     """
@@ -667,6 +738,227 @@ class R12RepoRootIndependentOfCwdTests(unittest.TestCase):
 
             record = json.loads((output_dir / "selected" / "preflight.json").read_text())
             self.assertTrue(record["executed"])
+
+
+class FC1CurrentPrerequisiteChainTests(_RamMockedTestCase):
+    """Task 002B-1 final bounded correction
+    (docs/handoffs/002b1_orchestration_final_correction_claude_handoff.md,
+    docs/reviews/002b1_orchestration_correction_review.md), FC1: a current
+    preflight/decode chain is required before every downstream action, not
+    merely an intact selected record.
+    """
+
+    def test_audit_json_mutation_after_accepted_preflight_blocks_decode_before_any_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
+            config = load_config(config_path)
+            output_dir = tmp_path / "out"
+            preflight_record = _preflight(config, csv_path, output_dir, mmseqs_bin=str(fake_bin))
+
+            Path(config.dataset.audit_json_path).write_text('{"mutated": true}')
+
+            before = _generation_dirs(output_dir, "decode")
+            with self.assertRaises(runner.PriorStageNotAcceptedError):
+                runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record=preflight_record)
+            after = _generation_dirs(output_dir, "decode")
+            self.assertEqual(before, after, "decode must not create a generation before the stale-preflight check")
+
+    def test_proteins_tsv_mutation_after_accepted_preflight_blocks_decode_before_any_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
+            config = load_config(config_path)
+            output_dir = tmp_path / "out"
+            preflight_record = _preflight(config, csv_path, output_dir, mmseqs_bin=str(fake_bin))
+
+            Path(config.dataset.proteins_tsv_path).write_text("mutated\n")
+
+            before = _generation_dirs(output_dir, "decode")
+            with self.assertRaises(runner.PriorStageNotAcceptedError):
+                runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record=preflight_record)
+            after = _generation_dirs(output_dir, "decode")
+            self.assertEqual(before, after, "decode must not create a generation before the stale-preflight check")
+
+    def test_tampered_binary_bytes_after_accepted_preflight_blocks_probe_before_any_subprocess(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)])
+
+            # Same path, same reported version, different bytes -- exactly
+            # the F1 second reproduction (docs/reviews/
+            # 002b1_orchestration_correction_review.md).
+            fake_bin.write_text(fake_bin.read_text() + "\n# tampered after acceptance\n")
+            fake_bin.chmod(fake_bin.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            self.assertEqual(runner.splits_commands.resolve_mmseqs_binary_provenance(str(fake_bin)).version, PINNED_VERSION)
+
+            with mock.patch("rbpbench.splits.runner.run_guarded_mmseqs") as mocked:
+                with self.assertRaises(runner.PreflightError) as ctx:
+                    runner.stage_probe(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin))
+                mocked.assert_not_called()
+            self.assertIn("SHA-256", str(ctx.exception))
+
+    def test_stale_preflight_cannot_be_used_to_skip_an_accepted_decode_via_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
+            output_dir = tmp_path / "out"
+            common_args = [
+                "--config", str(config_path), "--output-dir", str(output_dir),
+                "--dataset-csv", str(csv_path), "--mmseqs-bin", str(fake_bin),
+            ]
+            runner.main(["--stage", "preflight", *common_args])
+            runner.main(["--stage", "decode", *common_args])
+
+            config = load_config(config_path)
+            Path(config.dataset.proteins_tsv_path).write_text("mutated\n")
+
+            before = _generation_dirs(output_dir, "decode")
+            with self.assertRaises(runner.PriorStageNotAcceptedError):
+                runner.main(["--stage", "decode", *common_args])
+            after = _generation_dirs(output_dir, "decode")
+            self.assertEqual(before, after, "a stale preflight must not be used to skip decode")
+
+
+class FC2FinalResourceSnapshotTests(_RamMockedTestCase):
+    """FC2: every MMseqs2 child gets one unconditional final ceiling/floor
+    re-measurement right after it exits, even one that completes before the
+    first polling interval.
+    """
+
+    def test_fast_process_with_a_low_final_free_disk_reading_still_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            # A generous poll interval so this instant fake mmseqs reliably
+            # exits before the first poll -- exactly the "completes before
+            # the first polling interval" scenario this final check must
+            # still catch.
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(
+                tmp_path, [_marker_sequence(1)], resource_poll_interval_seconds=5.0
+            )
+            _accept_all_probes(config, output_dir, decode_record, fake_bin)
+
+            real_snapshot = runner.snapshot
+            calls = {"n": 0}
+
+            def fake_snapshot(path):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    # The pre-launch free-disk check sees the real, plentiful
+                    # reading -- only the post-exit final check is faked low.
+                    return real_snapshot(path)
+                from rbpbench.coordinates.diskbudget import DiskSnapshot
+
+                return DiskSnapshot(path=str(path), free_gib=0.0, total_gib=100.0, used_gib=100.0)
+
+            before = _generation_dirs(output_dir, "cluster", "500")
+            with mock.patch("rbpbench.splits.runner.snapshot", side_effect=fake_snapshot):
+                with self.assertRaises(runner.ResourceGateExceededError):
+                    runner.stage_cluster(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin))
+            after = _generation_dirs(output_dir, "cluster", "500")
+            self.assertEqual(before, after, "the candidate generation must be discarded, not promoted")
+
+            # Prior accepted evidence is untouched.
+            runner._require_accepted(output_dir, "decode")
+            for width in config.protected_widths:
+                runner._require_accepted(output_dir, f"probe_{width}")
+
+
+class FC3InstalledRamFailClosedTests(unittest.TestCase):
+    """FC3: dedicated, host-DEPENDENT tests exercising the RAM detection
+    fail-closed path itself (deliberately not inheriting
+    ``_RamMockedTestCase``, unlike every synthetic fixture above).
+    """
+
+    def test_none_installed_ram_is_a_hard_failure_at_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
+            config = load_config(config_path)
+            with mock.patch("rbpbench.splits.runner.detect_physical_ram_gib", return_value=None):
+                with self.assertRaises(runner.PreflightError) as ctx:
+                    _preflight(config, csv_path, tmp_path / "out", mmseqs_bin=str(fake_bin))
+            self.assertIn("installed RAM", str(ctx.exception))
+
+    def test_low_installed_ram_below_configured_minimum_is_a_hard_failure_at_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(
+                tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin, min_installed_ram_gib=1000.0
+            )
+            config = load_config(config_path)
+            with mock.patch("rbpbench.splits.runner.detect_physical_ram_gib", return_value=1.0):
+                with self.assertRaises(runner.PreflightError) as ctx:
+                    _preflight(config, csv_path, tmp_path / "out", mmseqs_bin=str(fake_bin))
+            self.assertIn("installed RAM", str(ctx.exception))
+
+    def test_preflight_cli_skip_path_still_rechecks_ram_now(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
+            output_dir = tmp_path / "out"
+            common_args = [
+                "--config", str(config_path), "--output-dir", str(output_dir),
+                "--dataset-csv", str(csv_path), "--mmseqs-bin", str(fake_bin),
+            ]
+            with mock.patch("rbpbench.splits.runner.detect_physical_ram_gib", return_value=64.0):
+                runner.main(["--stage", "preflight", *common_args])
+
+            # Same fingerprint as before -- would normally SKIP straight to
+            # the prior accepted record. RAM is now undetectable.
+            with mock.patch("rbpbench.splits.runner.detect_physical_ram_gib", return_value=None):
+                with self.assertRaises(runner.PreflightError):
+                    runner.main(["--stage", "preflight", *common_args])
+
+    def test_current_decode_helper_rechecks_ram_now(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with mock.patch("rbpbench.splits.runner.detect_physical_ram_gib", return_value=64.0):
+                config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)])
+            with mock.patch("rbpbench.splits.runner.detect_physical_ram_gib", return_value=None):
+                with self.assertRaises(runner.PreflightError):
+                    runner._require_current_decode(output_dir=output_dir, config=config)
+
+
+class FC4ComponentReportArtifactManifestTests(_RamMockedTestCase):
+    """FC4: the accepted component-report record binds immutable artifact
+    inventories (not only fingerprints/digests) for decode and all three
+    cluster generations.
+    """
+
+    def test_component_report_binds_decode_and_all_three_cluster_artifact_manifests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(
+                tmp_path, [_marker_sequence(1), _marker_sequence(2)]
+            )
+            _accept_all_probes(config, output_dir, decode_record, fake_bin)
+            cluster_records = {
+                width: runner.stage_cluster(width=width, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin))
+                for width in config.protected_widths
+            }
+            record = runner.stage_component_report(config=config, output_dir=output_dir, decode_record=decode_record, cluster_records=cluster_records)
+
+            manifests = record["upstream_artifact_manifests"]
+            self.assertEqual(manifests["decode"], decode_record["artifacts"])
+            self.assertGreater(len(manifests["decode"]), 0)
+            for width in config.protected_widths:
+                key = f"cluster_{width}"
+                self.assertEqual(manifests[key], cluster_records[width]["artifacts"])
+                self.assertGreater(len(manifests[key]), 0)
+                for entry in manifests[key]:
+                    self.assertIn("path", entry)
+                    self.assertIn("size", entry)
+                    self.assertIn("sha256", entry)
+
+            on_disk = json.loads((output_dir / "selected" / "component_report.json").read_text())
+            self.assertEqual(on_disk["upstream_artifact_manifests"], manifests)
 
 
 if __name__ == "__main__":

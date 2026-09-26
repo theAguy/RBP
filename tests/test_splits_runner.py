@@ -1,5 +1,6 @@
 """Checkpoint 002B-1 orchestration tests
-(docs/handoffs/002b1_orchestration_claude_handoff.md).
+(docs/handoffs/002b1_orchestration_claude_handoff.md,
+docs/handoffs/002b1_orchestration_corrections_claude_handoff.md).
 
 Every test here uses only tiny synthetic CSV/FASTA data built in-process; the
 real dataset, real Task 002 artifacts, and the real MMseqs2 binary's
@@ -8,12 +9,16 @@ tests/test_splits_split_memory_gate.py) are never touched. Most tests use a
 small fake ``mmseqs`` script (below) so the ordinary suite never depends on
 the isolated ``rbpbench-splits-002`` environment for orchestration coverage;
 scientific clustering correctness is a 002A concern, not this checkpoint's.
+
+C1-C5 regressions specifically required by the correction handoff live in
+``tests/test_splits_b1_corrections.py``.
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import random
 import stat
 import tempfile
 import textwrap
@@ -22,22 +27,28 @@ from pathlib import Path
 from unittest import mock
 
 from rbpbench.coordinates.decode import encode_sequence
+from rbpbench.coordinates.hashing import label_blind_rank
 from rbpbench.data.audit import sha256_file
 from rbpbench.splits import runner
-from rbpbench.splits.commands import PINNED_VERSION
+from rbpbench.splits.commands import MmseqsExecutionError, PINNED_VERSION
 from rbpbench.splits.config import load_config
 from rbpbench.splits.membership import MembershipReconciliationError
 from rbpbench.splits.output import read_component_membership_gzip
 
 
-def _write_fake_mmseqs(directory: Path, *, version: str = PINNED_VERSION) -> Path:
+def _marker_sequence(seed: int, width: int = 500) -> str:
+    rng = random.Random(seed)
+    return "".join(rng.choice("ACGT") for _ in range(width))
+
+
+def _write_fake_mmseqs(directory: Path, *, version: str = PINNED_VERSION, name: str = "fake_mmseqs") -> Path:
     """A tiny Python stand-in for ``mmseqs`` sufficient for orchestration
     tests: ``version`` prints a fixed string, ``createdb`` records the input
     FASTA's IDs in a sidecar file, ``cluster`` is a no-op, and ``createtsv``
     reports every ID as its own singleton cluster (real cluster/coverage
     semantics are a 002A concern, already proven against the real binary).
     """
-    path = directory / "fake_mmseqs"
+    path = directory / name
     path.write_text(
         textwrap.dedent(
             f"""\
@@ -85,12 +96,16 @@ def _build_fixture(
     tmp_path: Path,
     sequences: list[str],
     *,
+    mmseqs_bin_path: Path,
     sample_size: int = 4,
     max_new_disk_gib: float = 1000.0,
     min_free_disk_gib: float = 0.0000001,
     timeout_seconds: int = 60,
     max_peak_memory_gib: float = 1000.0,
     min_available_memory_gib: float = 0.0000001,
+    min_available_memory_gib_before_launch: float = 0.0000001,
+    min_installed_ram_gib: float = 0.0,
+    resource_poll_interval_seconds: float = 0.02,
 ) -> tuple[Path, Path]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     csv_path = tmp_path / "dataset.csv"
@@ -120,11 +135,17 @@ def _build_fixture(
         proteins_tsv_path = "{proteins_path}"
         proteins_tsv_sha256 = "{sha256_file(proteins_path)}"
 
+        [binary]
+        mmseqs_sha256 = "{sha256_file(mmseqs_bin_path)}"
+
         [resources]
         max_threads = 2
         timeout_seconds = {timeout_seconds}
         max_new_disk_gib = {max_new_disk_gib}
         min_free_disk_gib = {min_free_disk_gib}
+        min_installed_ram_gib = {min_installed_ram_gib}
+        min_available_memory_gib_before_launch = {min_available_memory_gib_before_launch}
+        resource_poll_interval_seconds = {resource_poll_interval_seconds}
 
         [probe]
         sample_size = {sample_size}
@@ -141,11 +162,36 @@ def _build_fixture(
     return csv_path, config_path
 
 
-def _marker_sequence(seed: int, width: int = 500) -> str:
-    import random
+def _preflight(config, dataset_csv, output_dir, *, mmseqs_bin="mmseqs", dry_run=False,
+               audit_json: Path | None = None, proteins_tsv: Path | None = None):
+    return runner.stage_preflight(
+        config=config,
+        dataset_csv=dataset_csv,
+        audit_json=audit_json if audit_json is not None else Path(config.dataset.audit_json_path),
+        proteins_tsv=proteins_tsv if proteins_tsv is not None else Path(config.dataset.proteins_tsv_path),
+        output_dir=output_dir,
+        mmseqs_bin=mmseqs_bin,
+        dry_run=dry_run,
+    )
 
-    rng = random.Random(seed)
-    return "".join(rng.choice("ACGT") for _ in range(width))
+
+def _preflight_and_decode(tmp_path: Path, sequences: list[str], **fixture_kwargs):
+    """Common setup: a fake mmseqs binary, a matching config, a real accepted
+    preflight, and a real accepted decode. Returns
+    (config, output_dir, decode_record, fake_bin_path).
+    """
+    fake_bin = _write_fake_mmseqs(tmp_path)
+    csv_path, config_path = _build_fixture(tmp_path, sequences, mmseqs_bin_path=fake_bin, **fixture_kwargs)
+    config = load_config(config_path)
+    output_dir = tmp_path / "out"
+    preflight_record = _preflight(config, csv_path, output_dir, mmseqs_bin=str(fake_bin))
+    decode_record = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record=preflight_record)
+    return config, output_dir, decode_record, fake_bin
+
+
+def _accept_all_probes(config, output_dir, decode_record, mmseqs_bin):
+    for width in config.protected_widths:
+        runner.stage_probe(width=width, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(mmseqs_bin))
 
 
 class CliValidationTests(unittest.TestCase):
@@ -202,36 +248,31 @@ class DryRunTests(unittest.TestCase):
     def test_dry_run_preflight_never_reads_declared_real_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
-            # Point the CSV expectation at a file that does not exist; a
-            # dry run must not fail trying to read/hash it.
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
             result = runner.stage_preflight(
-                config=config, dataset_csv=tmp_path / "does-not-exist.csv", output_dir=tmp_path / "out", dry_run=True
+                config=config,
+                dataset_csv=tmp_path / "does-not-exist.csv",
+                audit_json=tmp_path / "does-not-exist-audit.json",
+                proteins_tsv=tmp_path / "does-not-exist-proteins.tsv",
+                output_dir=tmp_path / "out",
+                dry_run=True,
             )
             self.assertTrue(result["dry_run"])
 
     def test_dry_run_cluster_never_invokes_a_subprocess(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
-            with mock.patch("rbpbench.splits.runner.splits_commands.run_mmseqs_command") as mocked:
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
+            with mock.patch("rbpbench.splits.runner.run_guarded_mmseqs") as mocked:
                 mocked.side_effect = AssertionError("must not be called in dry-run")
-                # Points at a dataset CSV that does not exist: a dry run must
-                # never try to open it.
                 runner.main(
                     [
-                        "--stage",
-                        "cluster",
-                        "--width",
-                        "500",
-                        "--dry-run",
-                        "--output-dir",
-                        str(tmp_path / "out"),
-                        "--config",
-                        str(config_path),
-                        "--dataset-csv",
-                        str(tmp_path / "does-not-exist.csv"),
+                        "--stage", "cluster", "--width", "500", "--dry-run",
+                        "--output-dir", str(tmp_path / "out"), "--config", str(config_path),
+                        "--dataset-csv", str(tmp_path / "does-not-exist.csv"),
                     ]
                 )
                 mocked.assert_not_called()
@@ -239,21 +280,14 @@ class DryRunTests(unittest.TestCase):
     def test_dry_run_probe_does_not_require_authorization(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
-            with mock.patch("rbpbench.splits.runner.splits_commands.run_mmseqs_command") as mocked:
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
+            with mock.patch("rbpbench.splits.runner.run_guarded_mmseqs") as mocked:
                 runner.main(
                     [
-                        "--stage",
-                        "probe",
-                        "--width",
-                        "500",
-                        "--dry-run",
-                        "--output-dir",
-                        str(tmp_path / "out"),
-                        "--config",
-                        str(config_path),
-                        "--dataset-csv",
-                        str(tmp_path / "does-not-exist.csv"),
+                        "--stage", "probe", "--width", "500", "--dry-run",
+                        "--output-dir", str(tmp_path / "out"), "--config", str(config_path),
+                        "--dataset-csv", str(tmp_path / "does-not-exist.csv"),
                     ]
                 )
                 mocked.assert_not_called()
@@ -266,18 +300,19 @@ class StageOrderingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "out"
             with self.assertRaises(runner.PriorStageNotAcceptedError):
-                runner._require_prior_stage(output_dir, "preflight")
+                runner._require_accepted(output_dir, "preflight")
 
     def test_probe_requires_accepted_decode(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "out"
             with self.assertRaises(runner.PriorStageNotAcceptedError):
-                runner._require_prior_stage(output_dir, "decode")
+                runner._require_accepted(output_dir, "decode")
 
     def test_component_report_requires_all_widths(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             with self.assertRaises(runner.PriorStageNotAcceptedError):
                 runner.main(
                     ["--stage", "component_report", "--output-dir", str(tmp_path / "out"), "--config", str(config_path)]
@@ -289,61 +324,60 @@ class PreflightStageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_bin = _write_fake_mmseqs(tmp_path)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1), _marker_sequence(2)])
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1), _marker_sequence(2)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
             output_dir = tmp_path / "out"
-            record = runner.stage_preflight(config=config, dataset_csv=csv_path, output_dir=output_dir, mmseqs_bin=str(fake_bin))
+            record = _preflight(config, csv_path, output_dir, mmseqs_bin=str(fake_bin))
             self.assertTrue(record["executed"])
+            self.assertIn("stage_fingerprint", record)
             self.assertTrue((output_dir / "selected" / "preflight.json").is_file())
 
     def test_rejects_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_bin = _write_fake_mmseqs(tmp_path)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
             csv_path.write_text(csv_path.read_text() + "\n")  # corrupt after hash was recorded
             with self.assertRaises(runner.PreflightError):
-                runner.stage_preflight(config=config, dataset_csv=csv_path, output_dir=tmp_path / "out", mmseqs_bin=str(fake_bin))
+                _preflight(config, csv_path, tmp_path / "out", mmseqs_bin=str(fake_bin))
 
     def test_rejects_missing_dataset_csv(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_bin = _write_fake_mmseqs(tmp_path)
-            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            _, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
             with self.assertRaises(runner.PreflightError):
-                runner.stage_preflight(
-                    config=config, dataset_csv=tmp_path / "missing.csv", output_dir=tmp_path / "out", mmseqs_bin=str(fake_bin)
-                )
+                _preflight(config, tmp_path / "missing.csv", tmp_path / "out", mmseqs_bin=str(fake_bin))
 
     def test_rejects_missing_mmseqs_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
             with self.assertRaises(runner.PreflightError):
-                runner.stage_preflight(
-                    config=config, dataset_csv=csv_path, output_dir=tmp_path / "out", mmseqs_bin="definitely-not-a-real-binary-xyz"
-                )
+                _preflight(config, csv_path, tmp_path / "out", mmseqs_bin="definitely-not-a-real-binary-xyz")
 
     def test_rejects_wrong_pinned_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            fake_bin = _write_fake_mmseqs(tmp_path, version="99.0.0")
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            wrong_version_bin = _write_fake_mmseqs(tmp_path, version="99.0.0", name="wrong_version_mmseqs")
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
             with self.assertRaises(runner.PreflightError):
-                runner.stage_preflight(config=config, dataset_csv=csv_path, output_dir=tmp_path / "out", mmseqs_bin=str(fake_bin))
+                _preflight(config, csv_path, tmp_path / "out", mmseqs_bin=str(wrong_version_bin))
 
     def test_rejects_low_free_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_bin = _write_fake_mmseqs(tmp_path)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], min_free_disk_gib=1e9)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin, min_free_disk_gib=1e9)
             config = load_config(config_path)
             with self.assertRaises(runner.ResourceGateExceededError):
-                runner.stage_preflight(config=config, dataset_csv=csv_path, output_dir=tmp_path / "out", mmseqs_bin=str(fake_bin))
+                _preflight(config, csv_path, tmp_path / "out", mmseqs_bin=str(fake_bin))
 
 
 class DecodeStageTests(unittest.TestCase):
@@ -351,77 +385,98 @@ class DecodeStageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             seqs = [_marker_sequence(1), _marker_sequence(1), _marker_sequence(2)]  # rows 0,1 exact duplicates
-            csv_path, config_path = _build_fixture(tmp_path, seqs)
-            config = load_config(config_path)
-            output_dir = tmp_path / "out"
+            config, output_dir, decode_record, _fake_bin = _preflight_and_decode(tmp_path, seqs)
 
-            record = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
-
-            self.assertEqual(record["total_rows"], 3)
-            self.assertEqual(set(record["sample_ids"]), {"row_0", "row_1", "row_2"})
+            self.assertEqual(decode_record["total_rows"], 3)
+            self.assertEqual(set(decode_record["sample_ids"]), {"row_0", "row_1", "row_2"})
             for width in (500, 251, 101):
-                self.assertTrue(Path(record["fasta_paths"][str(width)]).is_file())
-                summary = record["duplicate_edge_summary"][str(width)]
-                self.assertEqual(summary["duplicate_group_count"], 1)  # row_0/row_1 exact duplicates
+                self.assertTrue(Path(decode_record["fasta_paths"][str(width)]).is_file())
+                summary = decode_record["duplicate_edge_summary"][str(width)]
+                self.assertEqual(summary["duplicate_group_count"], 1)
                 self.assertEqual(summary["max_duplicate_group_size"], 2)
-            self.assertIn("generations", record["generation_dir"])
+            self.assertIn("generations", decode_record["generation_dir"])
+            self.assertIsInstance(decode_record["artifacts"], list)
+            self.assertGreater(len(decode_record["artifacts"]), 0)
 
     def test_row_count_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
-            # Add an extra row after the config recorded expected_row_count=1.
+            output_dir = tmp_path / "out"
+            preflight_record = _preflight(config, csv_path, output_dir, mmseqs_bin=str(fake_bin))
+            # Add an extra row -- same accepted CSV hash check still passes
+            # here because we mutate AFTER preflight accepted the original
+            # bytes, so decode's own row-count reconciliation is what fires.
+            accepted_bytes = csv_path.read_bytes()
             with csv_path.open("a", newline="") as handle:
                 writer = csv.writer(handle)
                 writer.writerow([encode_sequence(_marker_sequence(2)), ""])
+            # Since the CSV changed, decode's stale-acceptance guard fires
+            # first; assert on that explicitly, then restore accepted bytes
+            # and prove the underlying row-count guard separately.
+            with self.assertRaises(runner.StaleAcceptanceError):
+                runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record=preflight_record)
+            csv_path.write_bytes(accepted_bytes)
+
+            # Now simulate a config that expects a row count the CSV doesn't
+            # have, without touching the CSV after preflight accepted it.
+            csv_path2, config_path2 = _build_fixture(tmp_path / "v2", [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
+            config2_text = config_path2.read_text().replace("expected_row_count = 1", "expected_row_count = 5")
+            config_path2.write_text(config2_text)
+            config2 = load_config(config_path2)
+            preflight_record2 = _preflight(config2, csv_path2, output_dir, mmseqs_bin=str(fake_bin))
             with self.assertRaises(runner.PreflightError):
-                runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=tmp_path / "out", preflight_record={})
+                runner.stage_decode(config=config2, dataset_csv=csv_path2, output_dir=output_dir, preflight_record=preflight_record2)
 
     def test_a_second_decode_gets_its_own_generation_never_overwriting_the_first(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            fake_bin = _write_fake_mmseqs(tmp_path)
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
             output_dir = tmp_path / "out"
-            first = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
-            second = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
+            preflight_record = _preflight(config, csv_path, output_dir, mmseqs_bin=str(fake_bin))
+            first = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record=preflight_record)
+            second = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record=preflight_record)
             self.assertNotEqual(first["generation_dir"], second["generation_dir"])
             self.assertTrue(Path(first["fasta_paths"]["500"]).is_file())
             self.assertTrue(Path(second["fasta_paths"]["500"]).is_file())
 
 
 class ClusterStageTests(unittest.TestCase):
-    def _decode(self, tmp_path: Path, seqs: list[str], **fixture_kwargs):
-        csv_path, config_path = _build_fixture(tmp_path, seqs, **fixture_kwargs)
-        config = load_config(config_path)
-        output_dir = tmp_path / "out"
-        decode_record = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
-        return config, output_dir, decode_record
-
     def test_cluster_requires_authorization(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            config, output_dir, decode_record = self._decode(tmp_path, [_marker_sequence(1)])
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)])
+            _accept_all_probes(config, output_dir, decode_record, fake_bin)
             with self.assertRaises(runner.AuthorizationError):
                 runner.stage_cluster(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=False)
+
+    def test_cluster_refuses_before_all_three_probes_are_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)])
+            with self.assertRaises(runner.PriorStageNotAcceptedError):
+                runner.stage_cluster(width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin))
+            self.assertFalse((output_dir / "cluster").exists())
 
     def test_cluster_writes_accepted_record_and_reconciles_membership(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            fake_bin = _write_fake_mmseqs(tmp_path)
-            config, output_dir, decode_record = self._decode(tmp_path, [_marker_sequence(1), _marker_sequence(2)])
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1), _marker_sequence(2)])
+            _accept_all_probes(config, output_dir, decode_record, fake_bin)
             record = runner.stage_cluster(
                 width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin)
             )
             self.assertTrue(record["executed"])
             self.assertEqual(record["sample_count"], 2)
             self.assertTrue((output_dir / "selected" / "cluster_500.json").is_file())
-            # Three distinct tool invocations (createdb/cluster/createtsv),
-            # each with its own unique stdout/stderr log paths.
             stdout_paths = {entry["stdout_path"] for entry in record["tool_provenance"]}
             self.assertEqual(len(stdout_paths), 3)
             self.assertIsNone(record["split_memory_limit"])
+            self.assertIsInstance(record["artifacts"], list)
 
     def test_cluster_rejects_a_nonzero_exit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -429,7 +484,8 @@ class ClusterStageTests(unittest.TestCase):
             broken_bin = tmp_path / "broken_mmseqs"
             broken_bin.write_text("#!/bin/sh\necho boom 1>&2\nexit 1\n")
             broken_bin.chmod(broken_bin.stat().st_mode | stat.S_IEXEC)
-            config, output_dir, decode_record = self._decode(tmp_path, [_marker_sequence(1)])
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)])
+            _accept_all_probes(config, output_dir, decode_record, fake_bin)
             with self.assertRaises(Exception):
                 runner.stage_cluster(
                     width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(broken_bin)
@@ -442,57 +498,16 @@ class ClusterStageTests(unittest.TestCase):
             hang_bin = tmp_path / "hang_mmseqs"
             hang_bin.write_text("#!/bin/sh\nif [ \"$1\" = \"createdb\" ]; then sleep 30; fi\nexit 0\n")
             hang_bin.chmod(hang_bin.stat().st_mode | stat.S_IEXEC)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], timeout_seconds=1)
-            config = load_config(config_path)
-            output_dir = tmp_path / "out"
-            decode_record = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
-            from rbpbench.splits.commands import MmseqsExecutionError
-
-            with self.assertRaises(MmseqsExecutionError):
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)], timeout_seconds=1)
+            _accept_all_probes(config, output_dir, decode_record, fake_bin)
+            with self.assertRaises((MmseqsExecutionError, runner.ResourceTerminatedError)):
                 runner.stage_cluster(
                     width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(hang_bin)
                 )
 
-    def test_output_growth_past_the_disk_allowance_discards_the_candidate_and_keeps_prior_evidence(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            fake_bin = _write_fake_mmseqs(tmp_path)
-            config, output_dir, decode_record = self._decode(tmp_path, [_marker_sequence(1), _marker_sequence(2)])
-            accepted = runner.stage_cluster(
-                width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin)
-            )
-            accepted_dir = Path(accepted["generation_dir"])
-            self.assertTrue(accepted_dir.is_dir())
-
-            # Reload with a near-zero combined ceiling: any further output at
-            # all must trip the gate.
-            original_config_text = (tmp_path / "config.toml").read_text()
-            tiny_ceiling_config_path = tmp_path / "tiny_ceiling.toml"
-            tiny_ceiling_config_path.write_text(
-                original_config_text.replace(
-                    f"max_new_disk_gib = {config.resources.max_new_disk_gib}", "max_new_disk_gib = 0.0000001"
-                )
-            )
-            tiny_config = load_config(tiny_ceiling_config_path)
-
-            before_generations = set((output_dir / "cluster" / "500" / "generations").iterdir())
-            with self.assertRaises(runner.ResourceGateExceededError):
-                runner.stage_cluster(
-                    width=500, config=tiny_config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin)
-                )
-            after_generations = set((output_dir / "cluster" / "500" / "generations").iterdir())
-
-            # The prior accepted generation is untouched...
-            self.assertTrue(accepted_dir.is_dir())
-            self.assertEqual((output_dir / "selected" / "cluster_500.json").is_file(), True)
-            self.assertEqual(json.loads((output_dir / "selected" / "cluster_500.json").read_text())["generation_dir"], accepted["generation_dir"])
-            # ...and the failed candidate's own new directory was removed.
-            self.assertEqual(after_generations - before_generations, set())
-
     def test_membership_reconciliation_rejects_a_foreign_member(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            # A fake binary that reports an ID never present in the input.
             bad_bin = tmp_path / "bad_mmseqs"
             bad_bin.write_text(
                 textwrap.dedent(
@@ -518,7 +533,8 @@ class ClusterStageTests(unittest.TestCase):
                 )
             )
             bad_bin.chmod(bad_bin.stat().st_mode | stat.S_IEXEC)
-            config, output_dir, decode_record = self._decode(tmp_path, [_marker_sequence(1)])
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)])
+            _accept_all_probes(config, output_dir, decode_record, fake_bin)
             with self.assertRaises(MembershipReconciliationError):
                 runner.stage_cluster(
                     width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(bad_bin)
@@ -529,12 +545,8 @@ class ProbeStageTests(unittest.TestCase):
     def test_probe_selects_only_the_configured_sample_size_label_blind(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            fake_bin = _write_fake_mmseqs(tmp_path)
             seqs = [_marker_sequence(i) for i in range(10)]
-            csv_path, config_path = _build_fixture(tmp_path, seqs, sample_size=3)
-            config = load_config(config_path)
-            output_dir = tmp_path / "out"
-            decode_record = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, seqs, sample_size=3)
             record = runner.stage_probe(
                 width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin)
             )
@@ -543,20 +555,11 @@ class ProbeStageTests(unittest.TestCase):
     def test_probe_is_deterministic_across_repeated_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            fake_bin = _write_fake_mmseqs(tmp_path)
             seqs = [_marker_sequence(i) for i in range(10)]
-            csv_path, config_path = _build_fixture(tmp_path, seqs, sample_size=3)
-            config = load_config(config_path)
-            output_dir = tmp_path / "out"
-            decode_record = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, seqs, sample_size=3)
             first = runner.stage_probe(
                 width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin)
             )
-            # Re-derive the selected subset the same way probe does, and
-            # confirm the actual selection matches (label-blind, seed-only,
-            # independent of row order).
-            from rbpbench.coordinates.hashing import label_blind_rank
-
             all_ids = decode_record["sample_ids"]
             ranked = sorted(all_ids, key=lambda sid: (label_blind_rank(config.seed, sid), sid))
             expected_subset = set(ranked[:3])
@@ -567,11 +570,7 @@ class ProbeStageTests(unittest.TestCase):
     def test_probe_peak_memory_gate_rejects_and_discards_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            fake_bin = _write_fake_mmseqs(tmp_path)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], max_peak_memory_gib=0.0)
-            config = load_config(config_path)
-            output_dir = tmp_path / "out"
-            decode_record = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
+            config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, [_marker_sequence(1)], max_peak_memory_gib=0.0)
             with self.assertRaises(runner.ResourceGateExceededError):
                 runner.stage_probe(
                     width=500, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin)
@@ -584,7 +583,7 @@ class RestartFingerprintTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_bin = _write_fake_mmseqs(tmp_path)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             output_dir = tmp_path / "out"
             argv = ["--stage", "preflight", "--config", str(config_path), "--dataset-csv", str(csv_path), "--output-dir", str(output_dir), "--mmseqs-bin", str(fake_bin)]
             runner.main(argv)
@@ -592,87 +591,28 @@ class RestartFingerprintTests(unittest.TestCase):
                 runner.main(argv)
                 wrapped.assert_not_called()
 
-    def test_changed_dataset_csv_invalidates_the_decode_skip(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            fake_bin = _write_fake_mmseqs(tmp_path)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
-            output_dir = tmp_path / "out"
-            common = ["--config", str(config_path), "--dataset-csv", str(csv_path), "--output-dir", str(output_dir), "--mmseqs-bin", str(fake_bin)]
-            runner.main(["--stage", "preflight", *common])
-            runner.main(["--stage", "decode", *common])
-            first_record = json.loads((output_dir / "selected" / "decode.json").read_text())
-
-            # An unchanged re-run must skip (no re-decode).
-            with mock.patch("rbpbench.splits.runner.stage_decode", wraps=runner.stage_decode) as wrapped:
-                runner.main(["--stage", "decode", *common])
-                wrapped.assert_not_called()
-
-            # A fresh config/CSV pair naming a second row -- distinct content,
-            # so both the preflight and decode fingerprints must invalidate.
-            csv_path2, config_path2 = _build_fixture(tmp_path / "v2", [_marker_sequence(1), _marker_sequence(2)])
-            common2 = ["--config", str(config_path2), "--dataset-csv", str(csv_path2), "--output-dir", str(output_dir), "--mmseqs-bin", str(fake_bin)]
-            runner.main(["--stage", "preflight", *common2])
-            with mock.patch("rbpbench.splits.runner.stage_decode", wraps=runner.stage_decode) as wrapped:
-                runner.main(["--stage", "decode", *common2])
-                wrapped.assert_called_once()
-            second_record = json.loads((output_dir / "selected" / "decode.json").read_text())
-            self.assertNotEqual(first_record["generation_dir"], second_record["generation_dir"])
-            self.assertEqual(second_record["total_rows"], 2)
-
-    def test_changed_mmseqs_binary_invalidates_a_cluster_skip(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            dir_a = tmp_path / "a"
-            dir_a.mkdir()
-            fake_bin_a = _write_fake_mmseqs(dir_a)
-            # A second binary with different content (hence a different
-            # resolved SHA-256) despite reporting the identical pinned
-            # version string.
-            fake_bin_a.write_text(fake_bin_a.read_text() + "\n# variant A\n")
-            dir_b = tmp_path / "b"
-            dir_b.mkdir()
-            fake_bin_b = _write_fake_mmseqs(dir_b)
-
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
-            output_dir = tmp_path / "out"
-            common = ["--config", str(config_path), "--dataset-csv", str(csv_path), "--output-dir", str(output_dir)]
-            runner.main(["--stage", "preflight", *common, "--mmseqs-bin", str(fake_bin_a)])
-            runner.main(["--stage", "decode", *common, "--mmseqs-bin", str(fake_bin_a)])
-            runner.main(["--stage", "cluster", "--width", "500", "--authorize-mmseqs", *common, "--mmseqs-bin", str(fake_bin_a)])
-            first_record = json.loads((output_dir / "selected" / "cluster_500.json").read_text())
-
-            with mock.patch("rbpbench.splits.runner.stage_cluster", wraps=runner.stage_cluster) as wrapped:
-                runner.main(["--stage", "cluster", "--width", "500", "--authorize-mmseqs", *common, "--mmseqs-bin", str(fake_bin_b)])
-                wrapped.assert_called_once()
-            second_record = json.loads((output_dir / "selected" / "cluster_500.json").read_text())
-            self.assertNotEqual(first_record["generation_dir"], second_record["generation_dir"])
-
     def test_record_write_failure_preserves_the_prior_accepted_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_bin = _write_fake_mmseqs(tmp_path)
-            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)])
+            csv_path, config_path = _build_fixture(tmp_path, [_marker_sequence(1)], mmseqs_bin_path=fake_bin)
             config = load_config(config_path)
             output_dir = tmp_path / "out"
-            first = runner.stage_preflight(config=config, dataset_csv=csv_path, output_dir=output_dir, mmseqs_bin=str(fake_bin))
+            _preflight(config, csv_path, output_dir, mmseqs_bin=str(fake_bin))
             record_path = output_dir / "selected" / "preflight.json"
             before_bytes = record_path.read_bytes()
 
             with mock.patch("rbpbench.splits.runner.os.replace", side_effect=OSError("simulated disk failure")):
                 with self.assertRaises(OSError):
-                    runner.stage_preflight(config=config, dataset_csv=csv_path, output_dir=output_dir, mmseqs_bin=str(fake_bin))
+                    _preflight(config, csv_path, output_dir, mmseqs_bin=str(fake_bin))
 
             self.assertEqual(record_path.read_bytes(), before_bytes)
 
 
 class ComponentReportStageTests(unittest.TestCase):
     def _full_pipeline(self, tmp_path: Path, seqs: list[str], **fixture_kwargs):
-        fake_bin = _write_fake_mmseqs(tmp_path)
-        csv_path, config_path = _build_fixture(tmp_path, seqs, **fixture_kwargs)
-        config = load_config(config_path)
-        output_dir = tmp_path / "out"
-        decode_record = runner.stage_decode(config=config, dataset_csv=csv_path, output_dir=output_dir, preflight_record={})
+        config, output_dir, decode_record, fake_bin = _preflight_and_decode(tmp_path, seqs, **fixture_kwargs)
+        _accept_all_probes(config, output_dir, decode_record, fake_bin)
         cluster_records = {
             width: runner.stage_cluster(
                 width=width, config=config, output_dir=output_dir, decode_record=decode_record, authorize=True, mmseqs_bin=str(fake_bin)
@@ -689,15 +629,16 @@ class ComponentReportStageTests(unittest.TestCase):
             record = runner.stage_component_report(config=config, output_dir=output_dir, decode_record=decode_record, cluster_records=cluster_records)
 
             rows = dict(read_component_membership_gzip(Path(record["membership_path"])))
-            self.assertEqual(rows["row_0"], rows["row_1"])  # exact duplicates unioned
+            self.assertEqual(rows["row_0"], rows["row_1"])
             self.assertNotEqual(rows["row_0"], rows["row_2"])
             self.assertEqual(record["component_count"], 3)
+            self.assertIn("generations", record["generation_dir"])
 
     def test_giant_component_gate_trips_when_duplicates_dominate(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             dominant = _marker_sequence(1)
-            seqs = [dominant] * 8 + [_marker_sequence(i) for i in range(2, 6)]  # 8/12 = 67% one component
+            seqs = [dominant] * 8 + [_marker_sequence(i) for i in range(2, 6)]
             config, output_dir, decode_record, cluster_records = self._full_pipeline(tmp_path, seqs)
             record = runner.stage_component_report(config=config, output_dir=output_dir, decode_record=decode_record, cluster_records=cluster_records)
             self.assertTrue(record["giant_component_gate"]["single_component_gate_tripped"])
@@ -712,6 +653,7 @@ class ComponentReportStageTests(unittest.TestCase):
             second = runner.stage_component_report(config=config, output_dir=output_dir, decode_record=decode_record, cluster_records=cluster_records)
             second_bytes = Path(second["membership_path"]).read_bytes()
             self.assertEqual(first_bytes, second_bytes)
+            self.assertNotEqual(first["generation_dir"], second["generation_dir"])
 
     def test_report_never_contains_a_sequence_or_label_value(self):
         with tempfile.TemporaryDirectory() as tmp:

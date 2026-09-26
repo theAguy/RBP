@@ -25,12 +25,23 @@ audit_json_sha256 = "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be8
 proteins_tsv_path = "configs/proteins.tsv"
 proteins_tsv_sha256 = "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
 
+[binary]
+# The exact pinned rbpbench-splits-002 MMseqs2 binary, confirmed against the
+# real installed binary and manifests/sequence_partition_environment_002a.json
+# ("binary_sha256"). Preflight fails closed if the resolved --mmseqs-bin does
+# not hash to this exact value, even when it reports the correct version
+# string. Tiny-fixture tests pin their own fake binary's own hash separately.
+mmseqs_sha256 = "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed635"
+
 [resources]
 # Task 002B-1 handoff / reconciliation (docs/reviews/002b_real_sequence_grouping_reconciliation.md).
 max_threads = 4
 timeout_seconds = 43200          # 12 hours, per full clustering invocation
 max_new_disk_gib = 50.0          # combined new-artifact ceiling
 min_free_disk_gib = 80.0         # free-disk floor before any real stage
+min_installed_ram_gib = 16.0     # the approved local host's minimum installed RAM
+min_available_memory_gib_before_launch = 10.0  # fail-closed pre-launch gate for probe/cluster
+resource_poll_interval_seconds = 5.0  # live disk/timeout polling cadence during a real MMseqs2 run
 #
 # `mmseqs_split_memory_limit` is intentionally ABSENT: the 002B-1 real-binary
 # split-memory-limit gate (tests/test_splits_split_memory_gate.py) proved that

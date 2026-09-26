@@ -19,11 +19,17 @@ audit_json_sha256 = "beadfeed"
 proteins_tsv_path = "proteins.tsv"
 proteins_tsv_sha256 = "cafef00d"
 
+[binary]
+mmseqs_sha256 = "abc123"
+
 [resources]
 max_threads = 4
 timeout_seconds = 60
 max_new_disk_gib = 1.0
 min_free_disk_gib = 0.001
+min_installed_ram_gib = 0.0
+min_available_memory_gib_before_launch = 0.001
+resource_poll_interval_seconds = 0.05
 
 [probe]
 sample_size = 2

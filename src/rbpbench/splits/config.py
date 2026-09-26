@@ -42,6 +42,9 @@ class ResourceLimits:
     timeout_seconds: int
     max_new_disk_gib: float
     min_free_disk_gib: float
+    min_installed_ram_gib: float
+    min_available_memory_gib_before_launch: float
+    resource_poll_interval_seconds: float
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,11 @@ class GateConfig:
 
 
 @dataclass(frozen=True)
+class BinaryExpectations:
+    mmseqs_sha256: str
+
+
+@dataclass(frozen=True)
 class SplitsConfig:
     seed: int
     protected_widths: tuple[int, ...]
@@ -65,6 +73,7 @@ class SplitsConfig:
     resources: ResourceLimits
     probe: ProbeConfig
     gate: GateConfig
+    binary: BinaryExpectations
     source_path: str
     content_hash: str
 
@@ -79,6 +88,7 @@ def load_config(path: Path) -> SplitsConfig:
     resources_raw = raw["resources"]
     probe_raw = raw["probe"]
     gate_raw = raw["gate"]
+    binary_raw = raw["binary"]
 
     return SplitsConfig(
         seed=raw["seed"],
@@ -98,6 +108,9 @@ def load_config(path: Path) -> SplitsConfig:
             timeout_seconds=resources_raw["timeout_seconds"],
             max_new_disk_gib=resources_raw["max_new_disk_gib"],
             min_free_disk_gib=resources_raw["min_free_disk_gib"],
+            min_installed_ram_gib=resources_raw["min_installed_ram_gib"],
+            min_available_memory_gib_before_launch=resources_raw["min_available_memory_gib_before_launch"],
+            resource_poll_interval_seconds=resources_raw["resource_poll_interval_seconds"],
         ),
         probe=ProbeConfig(
             sample_size=probe_raw["sample_size"],
@@ -108,6 +121,7 @@ def load_config(path: Path) -> SplitsConfig:
             giant_single_component_fraction=gate_raw["giant_single_component_fraction"],
             giant_top20_fraction=gate_raw["giant_top20_fraction"],
         ),
+        binary=BinaryExpectations(mmseqs_sha256=binary_raw["mmseqs_sha256"]),
         source_path=str(path),
         content_hash=content_fingerprint("splits_config_v1", raw_text),
     )
@@ -118,6 +132,7 @@ __all__ = [
     "ResourceLimits",
     "ProbeConfig",
     "GateConfig",
+    "BinaryExpectations",
     "SplitsConfig",
     "load_config",
 ]

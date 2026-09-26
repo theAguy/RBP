@@ -1,7 +1,7 @@
 # Task 002B — Real sequence grouping and component report
 
-**Status:** synthetic checkpoint 002B-1 implemented; bounded orchestration
-correction required before acceptance or real decode
+**Status:** checkpoint 002B-1 accepted; checkpoint 002B-2 real decode is
+authorized by its reviewed executor handoff
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 
@@ -68,8 +68,10 @@ Implement the real-run orchestration without opening the real CSV:
   elapsed time, disk delta, and available peak-memory evidence;
 - a combined 50-GiB new-artifact ceiling and 80-GiB free-disk floor, enforced
   while a candidate generation grows;
-- four MMseqs2 threads, an 8-GiB MMseqs2 split-memory limit, sequential width
-  execution, and no simultaneous cluster jobs;
+- four MMseqs2 threads, sequential width execution, and no simultaneous
+  cluster jobs; the proposed 8-GiB split-memory flag was removed after the
+  accepted real-binary gate showed that safe forced splitting could not be
+  demonstrated on the approved 16-GiB host;
 - a bounded 12-hour timeout per full MMseqs2 clustering invocation;
 - complete/unique member and representative reconciliation against the exact
   expected sample-ID universe;

@@ -1,7 +1,7 @@
 # Task 002 — Sequence-grouped train/validation/test partitions
 
-**Status:** checkpoint 002A accepted; checkpoint 002B-1 orchestration is under
-bounded correction and no real-data execution is authorized
+**Status:** checkpoints 002A and 002B-1 accepted; checkpoint 002B-2 real
+decode is next
 **Phase:** 2
 **Branch after Task 001 merge:** `issue-002-sequence-partitions`
 

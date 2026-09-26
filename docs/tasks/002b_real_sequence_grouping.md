@@ -1,7 +1,8 @@
 # Task 002B — Real sequence grouping and component report
 
-**Status:** checkpoints 002B-1 and 002B-2 accepted; checkpoint 002B-3
-deterministic resource probes are authorized by their reviewed handoff
+**Status:** checkpoints 002B-1 and 002B-2 accepted; checkpoint 002B-3 is
+moving to the 24-GiB M4 under its reviewed migration/probe handoff after the
+16-GiB host failed the frozen launch-memory gate without executing a probe
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 

@@ -1,0 +1,184 @@
+{
+  "checkpoint": "002B-2",
+  "status": "accepted_preflight_and_decode",
+  "branch": "issue-002-sequence-partitions",
+  "execution_start_git_commit": "c329ee80f8f0ee249d7875f1a73e1fd9e9de153e",
+  "stages_run": ["preflight", "decode"],
+  "commands": [
+    {
+      "stage": "preflight",
+      "argv": [
+        "conda", "run", "--no-capture-output", "-n", "rbpbench-splits-002",
+        "python", "-m", "rbpbench.splits.runner",
+        "--stage", "preflight",
+        "--config", "configs/splits/sequence_partitions_v1.toml",
+        "--repo-root", ".",
+        "--dataset-csv", "dataset_K562_multilabel_with_NEGs.csv",
+        "--output-dir", "artifacts/splits/sequence_partitions_v1",
+        "--mmseqs-bin", "mmseqs"
+      ],
+      "exit_status": 0,
+      "wall_time_seconds": 6.84,
+      "peak_rss_bytes": 39796736
+    },
+    {
+      "stage": "decode",
+      "argv": [
+        "conda", "run", "--no-capture-output", "-n", "rbpbench-splits-002",
+        "python", "-m", "rbpbench.splits.runner",
+        "--stage", "decode",
+        "--config", "configs/splits/sequence_partitions_v1.toml",
+        "--repo-root", ".",
+        "--dataset-csv", "dataset_K562_multilabel_with_NEGs.csv",
+        "--output-dir", "artifacts/splits/sequence_partitions_v1",
+        "--mmseqs-bin", "mmseqs"
+      ],
+      "exit_status": 0,
+      "wall_time_seconds": 247.45,
+      "peak_rss_bytes": 533716992
+    }
+  ],
+  "config": {
+    "path": "configs/splits/sequence_partitions_v1.toml",
+    "sha256": "34a9ca16137a8c7b25da8b4a94c72aaf62b9dc4e4f0e63837aa53ccb2964346b",
+    "byte_size": 3858,
+    "config_hash_reported_by_runner": "894cb2cb17b35594f7f6258e57dc7836b68263549cd2f9dff1485b264aa7ebc6"
+  },
+  "frozen_inputs": {
+    "dataset_csv": {
+      "filename": "dataset_K562_multilabel_with_NEGs.csv",
+      "sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945",
+      "byte_size": 724425277
+    },
+    "dataset_audit_json": {
+      "path": "manifests/dataset_audit.json",
+      "sha256": "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"
+    },
+    "proteins_tsv": {
+      "path": "configs/proteins.tsv",
+      "sha256": "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+    }
+  },
+  "environment": {
+    "conda_env": "rbpbench-splits-002",
+    "manifest_files": [
+      {
+        "path": "manifests/sequence_partition_environment_002a.json",
+        "sha256": "23b8710320630fdd89033660b4be9194321e3555648252e42856b362c3493f14"
+      },
+      {
+        "path": "manifests/sequence_partition_environment_002a.yml",
+        "sha256": "837f60c53cee12b82ee0a6fae89e29876fd64e07dd646ada8c1b5dec6ca16ef8"
+      },
+      {
+        "path": "manifests/sequence_partition_environment_002a.explicit.txt",
+        "sha256": "43a54b813593215b8f87e8cc8ca750e6fda3c18adc6235f9919cebfa978ef4ca"
+      }
+    ]
+  },
+  "binary": {
+    "exe_name": "mmseqs",
+    "version": "18.8cc5c",
+    "sha256": "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed635",
+    "note": "resolved via the isolated rbpbench-splits-002 conda environment; absolute local path omitted"
+  },
+  "stage_fingerprints": {
+    "preflight": "528e7e9e33246eeb17c66a6b97f9f5abe1b73e9ec8ee117978addf9f1e37de35",
+    "decode": "7f987fb38cea02f9697d2af5a34e477407157811b0191e85e33f9d08820100b5"
+  },
+  "decode_generation_digest": "c61501d1d0ee2bd928877af9c9646cc440b1480ac22b5f5a90dad8e6de9ce4b1",
+  "decode_generation_dir": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a",
+  "retained_artifacts": [
+    {
+      "path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/sequence_partitions_width_500.fasta",
+      "byte_size": 185174230,
+      "sha256": "0849d4f8aceaed37c3dc7fec69056f38ae344338aa4adf321a3e11c4a72df0b0"
+    },
+    {
+      "path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/sequence_partitions_width_251.fasta",
+      "byte_size": 95240410,
+      "sha256": "f4f436ef2eb0f17409c5145507991b688e49965a09c346ddd380942a5b1d5b5c"
+    },
+    {
+      "path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/sequence_partitions_width_101.fasta",
+      "byte_size": 41063410,
+      "sha256": "60be2b211923d303570974fced0f85e546ceb4b5b5182d2cd0a9f72f483b08b1"
+    },
+    {
+      "path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/duplicate_edges_500.json",
+      "byte_size": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/duplicate_edges_251.json",
+      "byte_size": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/duplicate_edges_101.json",
+      "byte_size": 59,
+      "sha256": "9e3e12c9ba46196b3bfc6f01034922438481b529880190fc29189823f3d64282"
+    }
+  ],
+  "reconciliation": {
+    "expected_row_count": 361180,
+    "runner_reported_total_rows": 361180,
+    "id_universe_check": "row_0..row_361179, exactly 361180 unique canonical IDs in order, independently re-verified from all three retained FASTAs; no missing, foreign, or duplicate ID",
+    "per_width": {
+      "500": {"records": 361180, "sequence_length_nt": 500, "alphabet": ["A", "C", "G", "T"], "id_order_matches_expected": true},
+      "251": {"records": 361180, "sequence_length_nt": 251, "alphabet": ["A", "C", "G", "T"], "id_order_matches_expected": true},
+      "101": {"records": 361180, "sequence_length_nt": 101, "alphabet": ["A", "C", "G", "T"], "id_order_matches_expected": true}
+    },
+    "strict_one_hot_round_trip": "every row decoded via rbpbench.coordinates.decode.decode_and_validate (strict, round-trip-validated); a single failure aborts the whole run before any output is promoted; decode completed for all 361180 rows with exit status 0, so the round trip succeeded for every row",
+    "exact_rc_duplicate_reconciliation": {
+      "method": "independent bounded-memory Python re-implementation (canonical = min(seq, revcomp(seq)), SHA-256 of the canonical sequence, grouped by hash), run directly against the retained FASTAs, separate from rbpbench.splits.hashing",
+      "500": {
+        "runner_reported": {"duplicate_group_count": 0, "max_duplicate_group_size": 1},
+        "independently_recomputed": {"duplicate_group_count": 0, "max_duplicate_group_size": 1},
+        "match": true
+      },
+      "251": {
+        "runner_reported": {"duplicate_group_count": 0, "max_duplicate_group_size": 1},
+        "independently_recomputed": {"duplicate_group_count": 0, "max_duplicate_group_size": 1},
+        "match": true
+      },
+      "101": {
+        "runner_reported": {"duplicate_group_count": 2, "max_duplicate_group_size": 2},
+        "independently_recomputed": {"duplicate_group_count": 2, "max_duplicate_group_size": 2},
+        "match": true
+      }
+    },
+    "edge_endpoint_validity": "all duplicate-edge endpoints at every width are members of the exact row_0..row_361179 ID universe; no raw sequence or label value appears in any retained edge artifact (each is a JSON list of sample-ID pairs only)",
+    "artifact_rehash": "all six retained decode-generation artifacts (three FASTAs, three duplicate-edge JSON files) were independently re-hashed from disk and matched the selection record's path/size/SHA-256 inventory exactly",
+    "selection_record_currency": "selected/preflight.json and selected/decode.json are byte-identical to each stage's own stdout record; decode's stage_fingerprint is bound to preflight's own stage_fingerprint"
+  },
+  "resource_evidence": {
+    "preflight": {
+      "wall_time_seconds": 6.84,
+      "peak_rss_bytes": 39796736,
+      "free_disk_gib_before": 147.30,
+      "free_disk_gib_after": 147.30
+    },
+    "decode": {
+      "wall_time_seconds": 247.45,
+      "peak_rss_bytes": 533716992,
+      "free_disk_gib_before": 147.30,
+      "free_disk_gib_after": 146.0
+    },
+    "installed_ram_gib": 16.0,
+    "artifact_byte_total": 321478113
+  },
+  "no_out_of_scope_action": {
+    "labels_used_for_grouping": false,
+    "probe_stage_run": false,
+    "cluster_stage_run": false,
+    "component_report_stage_run": false,
+    "partition_assignment_performed": false,
+    "model_action_performed": false,
+    "coordinate_action_performed": false,
+    "reference_action_performed": false,
+    "network_action_performed": false,
+    "mmseqs_clustering_command_run": false,
+    "evidence": "only artifacts/splits/sequence_partitions_v1/{selected,decode,checkpoint_logs} exist -- no probe/cluster/component_report directories were created; src/rbpbench/splits/decode.py never reads the labels column and issues no subprocess/mmseqs invocation; preflight only resolves, hashes, and version-queries the mmseqs binary, it does not cluster"
+  }
+}

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 MEMBERSHIP_HEADER: tuple[str, ...] = ("sample_id", "component_id", "partition")
+COMPONENT_MEMBERSHIP_HEADER: tuple[str, ...] = ("sample_id", "component_id")
 
 
 def _atomic_write_bytes(output_path: Path, write_fn) -> None:
@@ -55,6 +56,68 @@ def read_membership_gzip(path: Path) -> list[tuple[str, str, str]]:
     if not lines or tuple(lines[0].split("\t")) != MEMBERSHIP_HEADER:
         raise ValueError(f"{path}: missing or unexpected membership header")
     return [tuple(line.split("\t")) for line in lines[1:] if line]
+
+
+def write_deterministic_component_membership_gzip(rows: Iterable[tuple[str, str]], output_path: Path) -> None:
+    """Task 002B's own two-column ``sample_id,component_id`` artifact --
+    Task 002B does not assign partitions, so unlike
+    :func:`write_deterministic_membership_gzip` (Task 002C's final
+    three-column output) there is no ``partition`` value to write yet. Same
+    deterministic ``mtime=0``, sorted-row, atomic-replace contract.
+    """
+
+    def _write(tmp_path: Path) -> None:
+        with open(tmp_path, "wb") as raw:
+            with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz:
+                gz.write(("\t".join(COMPONENT_MEMBERSHIP_HEADER) + "\n").encode("utf-8"))
+                for sample_id, cid in sorted(rows):
+                    gz.write(f"{sample_id}\t{cid}\n".encode("utf-8"))
+
+    _atomic_write_bytes(Path(output_path), _write)
+
+
+def read_component_membership_gzip(path: Path) -> list[tuple[str, str]]:
+    with gzip.open(path, "rt") as handle:
+        lines = [line.rstrip("\n") for line in handle]
+    if not lines or tuple(lines[0].split("\t")) != COMPONENT_MEMBERSHIP_HEADER:
+        raise ValueError(f"{path}: missing or unexpected component-membership header")
+    return [tuple(line.split("\t")) for line in lines[1:] if line]
+
+
+def build_component_report(
+    *,
+    total_rows: int,
+    component_sizes: Mapping[str, int],
+    protected_widths: tuple[int, ...],
+    giant_component_gate: dict,
+    per_width_contribution: Mapping[str, int],
+    duplicate_edge_summary: Mapping[str, dict],
+    input_hashes: Mapping[str, str],
+    config: Mapping[str, object],
+    tool_provenance: list[dict] | None = None,
+) -> dict:
+    """Task 002B's sanitized component-report manifest (docs/tasks/002b_real_sequence_grouping.md,
+    "Required component-report evidence"): component sizes, the giant-
+    component gate, per-width/exact-RC contribution, tool provenance, and
+    hashes only -- never a sequence or label value, and no partition,
+    model-output, or coordinate field, since Task 002B never touches any of
+    those.
+    """
+    return {
+        "schema_version": 1,
+        "checkpoint": "002B",
+        "config": dict(config),
+        "protected_widths": list(protected_widths),
+        "input_hashes": dict(input_hashes),
+        "total_rows": total_rows,
+        "component_count": len(component_sizes),
+        "component_sizes": dict(sorted(component_sizes.items())),
+        "per_width_contribution": dict(per_width_contribution),
+        "duplicate_edge_summary": dict(duplicate_edge_summary),
+        "giant_component_gate": giant_component_gate,
+        "labels_model_outputs_coordinates_partition_used": False,
+        "tool_provenance": tool_provenance or [],
+    }
 
 
 def build_report(
@@ -113,8 +176,12 @@ def write_manifest_json(manifest: dict, output_path: Path) -> None:
 
 __all__ = [
     "MEMBERSHIP_HEADER",
+    "COMPONENT_MEMBERSHIP_HEADER",
     "write_deterministic_membership_gzip",
     "read_membership_gzip",
+    "write_deterministic_component_membership_gzip",
+    "read_component_membership_gzip",
     "build_report",
+    "build_component_report",
     "write_manifest_json",
 ]

@@ -107,6 +107,45 @@ def _width_similarity_flags(width: int) -> tuple[str, ...]:
     return ("--min-seq-id", FROZEN_MIN_SEQ_ID, "-c", coverage, "--cov-mode", "0", "--max-seqs", FROZEN_MAX_SEQS)
 
 
+def with_threads(command: ToolCommand, threads: int) -> ToolCommand:
+    """Appends ``--threads N`` to an already-built command.
+
+    Thread count is a resource-management setting, not one of the frozen
+    identity/coverage/``--max-seqs`` scientific flags: unlike those, it never
+    changes which similarity edges MMseqs2 reports, so it is deliberately
+    kept out of :func:`cluster_command`/:func:`audit_search_command`
+    themselves (which accept no override parameters at all) and is instead
+    applied here, once, by the runner.
+    """
+    if threads < 1:
+        raise ValueError("threads must be >= 1")
+    return ToolCommand(tool=command.tool, argv=command.argv + ("--threads", str(threads)), pinned_version=command.pinned_version)
+
+
+def with_split_memory_limit(command: ToolCommand, limit: str | None) -> ToolCommand:
+    """Appends ``--split-memory-limit LIMIT`` to an already-built command, or
+    returns ``command`` unchanged when ``limit`` is ``None``.
+
+    Like :func:`with_threads`, this is a resource-management setting, not a
+    scientific flag -- but unlike thread count, it is NOT applied by the
+    production runner: the 002B-1 real-binary gate
+    (``tests/test_splits_split_memory_gate.py``) proved the candidate 8-GiB
+    production value fails closed on the pinned host even for a tiny
+    fixture, and that no value below the observed ~9.1-GiB fixed per-split
+    floor completes at all under the frozen ``-s 7.5`` sensitivity setting,
+    so genuine forced multi-way splitting can never be safely demonstrated
+    on a 16-GiB host. This helper is kept only so that gate test itself (and
+    any future re-attempt on a higher-memory host) has one shared, correct
+    way to construct the flag -- never silently invoked by the runner with a
+    hard-coded limit.
+    """
+    if limit is None:
+        return command
+    return ToolCommand(
+        tool=command.tool, argv=command.argv + ("--split-memory-limit", limit), pinned_version=command.pinned_version
+    )
+
+
 def createdb_command(input_fasta: Path, db_path: Path, *, mmseqs_bin: str = "mmseqs") -> ToolCommand:
     """``mmseqs createdb INPUT DB --dbtype 2``: the explicit nucleotide
     database every downstream ``cluster`` call is bound to. ``cluster``
@@ -333,6 +372,8 @@ __all__ = [
     "FROZEN_MIN_SEQ_ID",
     "FROZEN_MAX_SEQS",
     "UnknownWidthError",
+    "with_threads",
+    "with_split_memory_limit",
     "createdb_command",
     "cluster_command",
     "createtsv_command",

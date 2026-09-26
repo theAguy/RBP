@@ -65,6 +65,24 @@ def reconcile_membership(membership: dict[str, str], expected_ids: Iterable[str]
         raise MembershipReconciliationError("cluster TSV reconciliation failed: " + "; ".join(problems))
 
 
+def reconcile_representatives(membership: dict[str, str], expected_ids: Iterable[str]) -> None:
+    """Confirms every representative ID named in ``membership`` (not only
+    every member) is inside ``expected_ids``.
+
+    MMseqs2 always chooses a representative from within the same input
+    database, so a foreign representative can only mean a corrupted or
+    cross-generation TSV; raises :class:`MembershipReconciliationError`
+    rather than silently accepting it.
+    """
+    expected = set(expected_ids)
+    foreign_reps = set(membership.values()) - expected
+    if foreign_reps:
+        raise MembershipReconciliationError(
+            f"cluster TSV reconciliation failed: contains {len(foreign_reps)} foreign representative "
+            f"ID(s) outside the expected universe: {sorted(foreign_reps)}"
+        )
+
+
 def membership_edges(membership: dict[str, str]) -> list[tuple[str, str]]:
     """``(member, representative)`` edges suitable for union-find: unioning
     every member with its own cluster representative transitively unions
@@ -79,5 +97,6 @@ __all__ = [
     "parse_cluster_tsv_lines",
     "parse_cluster_tsv",
     "reconcile_membership",
+    "reconcile_representatives",
     "membership_edges",
 ]

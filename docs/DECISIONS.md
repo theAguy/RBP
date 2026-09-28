@@ -292,3 +292,24 @@
   split them; model results cannot influence either grouping or assignment.
 - Execute as three reviewed checkpoints: fixture-only implementation, real
   grouping/component review, then partition assignment and audit.
+
+## 2026-09-28 — Task 002B real grouping acceptance
+
+- Task 002B is accepted from returned attempt
+  `20260928T091014Z_87391_arm64`. All 361,180 IDs reconcile at each protected
+  width, and independently unioning the three membership files reproduces the
+  returned 173,465 deterministic components exactly.
+- The largest component contains 611 rows (0.169%); the largest 20 together
+  contain 1.156%. Neither prespecified giant-component gate trips.
+- The execution used the official Bioconda native `osx-arm64` build of
+  MMseqs2 18.8cc5c (`h44b2af9_0`, binary SHA-256
+  `3fa397a9af5f8142ab8df13cc3e19b3aefc91cb9908d9c147883c8ac4162db0d`)
+  after the frozen Intel/Rosetta executable failed with `SIGILL` on that host.
+  This is an explicit execution exception, not a claim that the original
+  osx-64 binary hash was reproduced. Scientific command flags were unchanged,
+  all real-binary smoke tests passed, and the native run reproduced the same
+  deterministic probe ID set and per-width probe cluster counts previously
+  observed with the frozen Intel build.
+- Task 002C may now assign whole components to the locked 70/15/15 partitions
+  and run the prespecified fresh cross-partition audits. No Task 002B result is
+  itself a train/validation/test assignment.

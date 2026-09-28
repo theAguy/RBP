@@ -1,8 +1,9 @@
 # Task 002B — Real sequence grouping and component report
 
-**Status:** checkpoints 002B-1 and 002B-2 accepted; checkpoint 002B-3 is
-moving to the 24-GiB M4 under its reviewed migration/probe handoff after the
-16-GiB host failed the frozen launch-memory gate without executing a probe
+**Status:** accepted; the real-data run completed all probes, all three full
+widths, and the component report. See
+`docs/reviews/002b_real_sequence_grouping_acceptance.md` for the reviewed
+Apple-Silicon execution exception and final evidence.
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 

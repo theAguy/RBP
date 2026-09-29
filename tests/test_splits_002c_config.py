@@ -25,6 +25,9 @@ class LoadConfig002CTests(unittest.TestCase):
         self.assertEqual(config.legacy_diagnostic.fold_index, 0)
         self.assertEqual(config.audit.max_threads, 4)
         self.assertEqual(config.binary.mmseqs_sha256, "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed635")
+        self.assertEqual(config.decode_002b2.manifest_path, "manifests/sequence_decode_002b2.json")
+        self.assertEqual(len(config.decode_002b2.manifest_sha256), 64)
+        self.assertEqual(set(config.legacy_edges.similarity_edges), {500, 251, 101})
 
     def test_content_hash_is_stable_across_loads(self):
         first = load_config_002c(_CONFIG_PATH)

@@ -89,3 +89,26 @@ probe_min_available_memory_gib_before_next_stage = 10.0
 
 [binary]
 mmseqs_sha256 = "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed635"
+
+[decode_002b2]
+# The already committed, sanitized Task 002B-2 decode-evidence manifest
+# (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+# F2). Per-width accepted "sequence_partitions_width_<width>.fasta" byte
+# size/SHA-256 and the accepted decode-duplicate-edge artifacts (F4) are
+# auto-extracted from this manifest at run time -- never re-typed here.
+manifest_path = "manifests/sequence_decode_002b2.json"
+manifest_sha256 = "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3"
+
+[legacy_edges.similarity_edges]
+# Pinned per-width provenance for the Task 002B similarity/cluster edges
+# ("edges_<width>.json") consumed by legacy_diagnostic (F4). No sanitized
+# per-width cluster-edge manifest is committed yet -- producing one would
+# require opening the real, ignored Task 002B cluster generation directory,
+# out of scope for this bounded correction. The all-zero placeholder hashes
+# below can never be satisfied by any real or fixture file, so a real
+# invocation fails closed by construction until a Task 002B executor
+# replaces them with the real accepted per-width cluster-edge SHA-256/size
+# (mirroring how every other frozen hash in this file was filled in).
+500 = { byte_size = 0, sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+251 = { byte_size = 0, sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+101 = { byte_size = 0, sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }

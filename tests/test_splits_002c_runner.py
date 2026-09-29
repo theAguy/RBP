@@ -141,6 +141,15 @@ probe_min_available_memory_gib_before_next_stage = 0.0
 
 [binary]
 mmseqs_sha256 = "{mmseqs_sha256}"
+
+[decode_002b2]
+manifest_path = "tiny_decode_manifest.json"
+manifest_sha256 = "{'0' * 64}"
+
+[legacy_edges.similarity_edges]
+500 = {{ byte_size = 0, sha256 = "{'0' * 64}" }}
+251 = {{ byte_size = 0, sha256 = "{'0' * 64}" }}
+101 = {{ byte_size = 0, sha256 = "{'0' * 64}" }}
 """)
 
 
@@ -159,6 +168,7 @@ class _Fixture:
         self.proteins_tsv_path = root / "tiny_proteins.tsv"
         self.decode_fasta_dir = root / "decode"
         self.similarity_edges_dir = root / "similarity_edges"
+        self.decode_manifest_path = root / "tiny_decode_manifest.json"
         self.config_path = root / "sequence_partitions_002c_v1_fixture.toml"
         self.mmseqs_bin = mmseqs_bin
 
@@ -214,20 +224,66 @@ class _Fixture:
         text = text.replace(
             'proteins_tsv_sha256 = "' + "0" * 64 + '"', f'proteins_tsv_sha256 = "{proteins_tsv_sha256}"'
         )
-        self.config_path.write_text(text)
 
         self.decode_fasta_dir.mkdir(parents=True, exist_ok=True)
+        fasta_evidence: dict[int, tuple[str, int, str]] = {}
         for width in _PROTECTED_WIDTHS:
-            fasta_path = self.decode_fasta_dir / f"width_{width}.fasta"
+            fasta_path = self.decode_fasta_dir / f"sequence_partitions_width_{width}.fasta"
             sequences = _SEQUENCES_BY_WIDTH[width]
             with fasta_path.open("w") as handle:
                 for sample_id in sorted(sequences):
                     handle.write(f">{sample_id}\n{sequences[sample_id]}\n")
+            fasta_evidence[width] = (
+                f"decode/generations/decode_tiny/sequence_partitions_width_{width}.fasta",
+                fasta_path.stat().st_size,
+                _sha256_bytes(fasta_path.read_bytes()),
+            )
 
         self.similarity_edges_dir.mkdir(parents=True, exist_ok=True)
+        duplicate_edges_evidence: dict[int, tuple[str, int, str]] = {}
+        similarity_edges_evidence: dict[int, tuple[int, str]] = {}
+        for width_index, width in enumerate(_PROTECTED_WIDTHS):
+            # Distinct, non-empty, in-universe content per width (rather
+            # than a uniform "[]" for all three) so a width-swapped file is
+            # actually hash-distinguishable -- see
+            # LegacyEdgeProvenanceTests.test_width_swapped_exact_rc_edges_is_rejected.
+            a, b = f"row_{2 * width_index}", f"row_{2 * width_index + 1}"
+
+            similarity_path = self.similarity_edges_dir / f"edges_{width}.json"
+            similarity_path.write_text(json.dumps([[a, b]]))
+            similarity_edges_evidence[width] = (similarity_path.stat().st_size, _sha256_bytes(similarity_path.read_bytes()))
+
+            exact_rc_path = self.similarity_edges_dir / f"exact_rc_edges_{width}.json"
+            exact_rc_path.write_text(json.dumps([[a, b]]))
+            duplicate_edges_evidence[width] = (
+                f"decode/generations/decode_tiny/duplicate_edges_{width}.json",
+                exact_rc_path.stat().st_size,
+                _sha256_bytes(exact_rc_path.read_bytes()),
+            )
+
+        decode_manifest = {
+            "checkpoint": "002B-2",
+            "decode_generation_digest": "tiny-fixture-decode-generation-digest",
+            "retained_artifacts": [
+                {"path": path, "byte_size": size, "sha256": sha}
+                for path, size, sha in fasta_evidence.values()
+            ] + [
+                {"path": path, "byte_size": size, "sha256": sha}
+                for path, size, sha in duplicate_edges_evidence.values()
+            ],
+        }
+        self.decode_manifest_path.write_text(json.dumps(decode_manifest))
+        decode_manifest_sha256 = _sha256_bytes(self.decode_manifest_path.read_bytes())
+
+        text = text.replace(
+            'manifest_sha256 = "' + "0" * 64 + '"', f'manifest_sha256 = "{decode_manifest_sha256}"'
+        )
         for width in _PROTECTED_WIDTHS:
-            (self.similarity_edges_dir / f"edges_{width}.json").write_text("[]")
-            (self.similarity_edges_dir / f"exact_rc_edges_{width}.json").write_text("[]")
+            size, sha = similarity_edges_evidence[width]
+            text = text.replace(
+                f'{width} = {{ byte_size = 0, sha256 = "{"0" * 64}" }}', f'{width} = {{ byte_size = {size}, sha256 = "{sha}" }}'
+            )
+        self.config_path.write_text(text)
 
         self.config = load_config_002c(self.config_path)
 
@@ -245,7 +301,32 @@ class _Fixture:
     def legacy_diagnostic(self, *, assign_record: dict) -> dict:
         return r002c.stage_legacy_diagnostic(
             config=self.config, csv_path=self.csv_path, output_dir=self.output_dir, assign_record=assign_record,
-            similarity_edges_dir=self.similarity_edges_dir,
+            similarity_edges_dir=self.similarity_edges_dir, decode_manifest_path=self.decode_manifest_path,
+        )
+
+    def exact_audit(self, *, width: int, assign_record: dict, decode_fasta_dir: Path | None = None) -> dict:
+        return r002c.stage_exact_audit(
+            width=width, config=self.config, output_dir=self.output_dir,
+            decode_fasta_dir=decode_fasta_dir if decode_fasta_dir is not None else self.decode_fasta_dir,
+            decode_manifest_path=self.decode_manifest_path, assign_record=assign_record,
+        )
+
+    def audit_probe(self, *, width: int, assign_record: dict, authorize: bool = True, mmseqs_bin: str | None = None) -> dict:
+        return r002c.stage_audit_probe(
+            width=width, config=self.config, output_dir=self.output_dir, decode_fasta_dir=self.decode_fasta_dir,
+            decode_manifest_path=self.decode_manifest_path, assign_record=assign_record, authorize=authorize,
+            mmseqs_bin=mmseqs_bin if mmseqs_bin is not None else self.mmseqs_bin,
+        )
+
+    def audit_search(
+        self, *, width: int, query_partition: str, target_partition: str, assign_record: dict, authorize: bool = True,
+        mmseqs_bin: str | None = None,
+    ) -> dict:
+        return r002c.stage_audit_search(
+            width=width, query_partition=query_partition, target_partition=target_partition, config=self.config,
+            output_dir=self.output_dir, decode_fasta_dir=self.decode_fasta_dir,
+            decode_manifest_path=self.decode_manifest_path, assign_record=assign_record, authorize=authorize,
+            mmseqs_bin=mmseqs_bin if mmseqs_bin is not None else self.mmseqs_bin,
         )
 
 
@@ -387,7 +468,7 @@ class ExactAuditStageTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            record = r002c.stage_exact_audit(width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+            record = fx.exact_audit(width=500, assign_record=assign_record)
             self.assertTrue(record["passed"])
             self.assertEqual(record["violation_count"], 0)
 
@@ -396,7 +477,7 @@ class ExactAuditStageTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
             with self.assertRaises(r002c.StageValidationError):
-                r002c.stage_exact_audit(width=999, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+                fx.exact_audit(width=999, assign_record=assign_record)
 
     def test_exact_audit_invalidated_by_a_changed_upstream_assignment(self):
         with TemporaryDirectory() as tmp:
@@ -405,6 +486,7 @@ class ExactAuditStageTests(unittest.TestCase):
             fp1 = r002c.exact_audit_fingerprint(
                 config=fx.config, width=500, assign_stage_fingerprint=assign_record["stage_fingerprint"],
                 assign_generation_digest=assign_record["generation_digest"], fasta_sha256="ignored-for-this-comparison",
+                decode_generation_digest="ignored-for-this-comparison",
             )
             # A different (simulated) assign stage_fingerprint must produce a
             # different exact_audit fingerprint, so a rerun after a real
@@ -412,6 +494,7 @@ class ExactAuditStageTests(unittest.TestCase):
             fp2 = r002c.exact_audit_fingerprint(
                 config=fx.config, width=500, assign_stage_fingerprint="a-different-assign-fingerprint",
                 assign_generation_digest=assign_record["generation_digest"], fasta_sha256="ignored-for-this-comparison",
+                decode_generation_digest="ignored-for-this-comparison",
             )
             self.assertNotEqual(fp1, fp2)
 
@@ -431,10 +514,12 @@ class ExactAuditStageTests(unittest.TestCase):
             fp1 = r002c.exact_audit_fingerprint(
                 config=fx.config, width=500, assign_stage_fingerprint=assign_record["stage_fingerprint"],
                 assign_generation_digest=assign_record["generation_digest"], fasta_sha256="x",
+                decode_generation_digest="x",
             )
             fp2 = r002c.exact_audit_fingerprint(
                 config=fx.config, width=500, assign_stage_fingerprint=rebuilt["stage_fingerprint"],
                 assign_generation_digest=rebuilt["generation_digest"], fasta_sha256="x",
+                decode_generation_digest="x",
             )
             self.assertNotEqual(fp1, fp2)
 
@@ -445,14 +530,14 @@ class ExactAuditStageTests(unittest.TestCase):
             bad_dir = fx.root / "dup_decode"
             bad_dir.mkdir()
             sequences = _SEQUENCES_BY_WIDTH[500]
-            with (bad_dir / "width_500.fasta").open("w") as handle:
+            with (bad_dir / "sequence_partitions_width_500.fasta").open("w") as handle:
                 for sample_id in sorted(sequences):
                     handle.write(f">{sample_id}\n{sequences[sample_id]}\n")
                 # Duplicate the very first header.
                 first_id = sorted(sequences)[0]
                 handle.write(f">{first_id}\n{sequences[first_id]}\n")
             with self.assertRaises(r002c.FastaValidationError):
-                r002c.stage_exact_audit(width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=bad_dir, assign_record=assign_record)
+                fx.exact_audit(width=500, assign_record=assign_record, decode_fasta_dir=bad_dir)
 
     def test_wrong_width_sequence_is_rejected(self):
         with TemporaryDirectory() as tmp:
@@ -460,13 +545,13 @@ class ExactAuditStageTests(unittest.TestCase):
             assign_record = fx.assign()
             bad_dir = fx.root / "wrong_width_decode"
             bad_dir.mkdir()
-            # Reuse the 251-nt sequences under a "width_500" filename.
+            # Reuse the 251-nt sequences under a width-500 filename.
             sequences = _SEQUENCES_BY_WIDTH[251]
-            with (bad_dir / "width_500.fasta").open("w") as handle:
+            with (bad_dir / "sequence_partitions_width_500.fasta").open("w") as handle:
                 for sample_id in sorted(sequences):
                     handle.write(f">{sample_id}\n{sequences[sample_id]}\n")
             with self.assertRaises(r002c.FastaValidationError):
-                r002c.stage_exact_audit(width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=bad_dir, assign_record=assign_record)
+                fx.exact_audit(width=500, assign_record=assign_record, decode_fasta_dir=bad_dir)
 
     def test_missing_id_in_fasta_is_rejected(self):
         with TemporaryDirectory() as tmp:
@@ -476,11 +561,11 @@ class ExactAuditStageTests(unittest.TestCase):
             bad_dir.mkdir()
             sequences = dict(_SEQUENCES_BY_WIDTH[500])
             del sequences["row_0"]
-            with (bad_dir / "width_500.fasta").open("w") as handle:
+            with (bad_dir / "sequence_partitions_width_500.fasta").open("w") as handle:
                 for sample_id in sorted(sequences):
                     handle.write(f">{sample_id}\n{sequences[sample_id]}\n")
             with self.assertRaises(r002c.FastaValidationError):
-                r002c.stage_exact_audit(width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=bad_dir, assign_record=assign_record)
+                fx.exact_audit(width=500, assign_record=assign_record, decode_fasta_dir=bad_dir)
 
     def test_non_acgt_alphabet_is_rejected(self):
         with TemporaryDirectory() as tmp:
@@ -493,17 +578,21 @@ class ExactAuditStageTests(unittest.TestCase):
             # Replace one nucleotide with an ambiguity code (N), keeping the
             # length exactly correct -- only the alphabet is wrong.
             sequences[first_id] = "N" + sequences[first_id][1:]
-            with (bad_dir / "width_500.fasta").open("w") as handle:
+            with (bad_dir / "sequence_partitions_width_500.fasta").open("w") as handle:
                 for sample_id in sorted(sequences):
                     handle.write(f">{sample_id}\n{sequences[sample_id]}\n")
             with self.assertRaises(r002c.FastaValidationError):
-                r002c.stage_exact_audit(width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=bad_dir, assign_record=assign_record)
+                fx.exact_audit(width=500, assign_record=assign_record, decode_fasta_dir=bad_dir)
 
     def test_changed_fasta_content_produces_a_different_exact_audit_fingerprint(self):
+        # F2 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md):
+        # a syntactically valid decode FASTA whose content no longer matches
+        # the pinned Task 002B-2 decode-evidence manifest fails closed, even
+        # though its own universe/width/alphabet are otherwise fine.
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            record1 = r002c.stage_exact_audit(width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+            record1 = fx.exact_audit(width=500, assign_record=assign_record)
 
             # Mutate one sequence's content (same ID, same width) so the
             # FASTA file's hash changes without touching anything else.
@@ -514,12 +603,53 @@ class ExactAuditStageTests(unittest.TestCase):
             seq = sequences[first_id]
             swapped = ("C" if seq[0] != "C" else "G") + seq[1:]
             sequences[first_id] = swapped
-            with (mutated_dir / "width_500.fasta").open("w") as handle:
+            with (mutated_dir / "sequence_partitions_width_500.fasta").open("w") as handle:
                 for sample_id in sorted(sequences):
                     handle.write(f">{sample_id}\n{sequences[sample_id]}\n")
-            record2 = r002c.stage_exact_audit(width=500, config=fx.config, output_dir=fx.output_dir / "mutated_run", decode_fasta_dir=mutated_dir, assign_record=assign_record)
-            self.assertNotEqual(record1["fasta_sha256"], record2["fasta_sha256"])
-            self.assertNotEqual(record1["stage_fingerprint"], record2["stage_fingerprint"])
+            with self.assertRaises(r002c.DecodeManifestError):
+                fx.exact_audit(width=500, assign_record=assign_record, decode_fasta_dir=mutated_dir)
+
+
+class DecodeManifestBindingTests(unittest.TestCase):
+    """F2: every stage that reads a decode FASTA verifies it against the
+    pinned decode-evidence manifest -- a syntactically valid but
+    non-accepted FASTA fails closed, distinctly from a structurally invalid
+    one (covered by ``ExactAuditStageTests``).
+    """
+
+    def test_syntactically_valid_but_non_accepted_fasta_fails_closed(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            # A full replacement re-draw at the SAME width, using a
+            # different seed: still exactly 20 rows, exact width, pure
+            # A/C/G/T, and the identical accepted ID universe -- so every
+            # structural/universe check in `_read_fasta_strict` passes, and
+            # only the pinned decode-evidence hash comparison catches it.
+            other_dir = fx.root / "other_valid_decode"
+            other_dir.mkdir()
+            sequences = {
+                f"row_{i}": _pseudo_random_sequence(seed=9_000_000 + i, length=500) for i in range(_SAMPLE_COUNT)
+            }
+            with (other_dir / "sequence_partitions_width_500.fasta").open("w") as handle:
+                for sample_id in sorted(sequences):
+                    handle.write(f">{sample_id}\n{sequences[sample_id]}\n")
+            with self.assertRaises(r002c.DecodeManifestError):
+                fx.exact_audit(width=500, assign_record=assign_record, decode_fasta_dir=other_dir)
+
+    def test_decode_manifest_hash_mismatch_fails_closed(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            tampered_manifest = fx.root / "tampered_decode_manifest.json"
+            data = json.loads(fx.decode_manifest_path.read_text())
+            data["decode_generation_digest"] = "tampered"
+            tampered_manifest.write_text(json.dumps(data))
+            with self.assertRaises(r002c.DecodeManifestError):
+                r002c.stage_exact_audit(
+                    width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir,
+                    decode_manifest_path=tampered_manifest, assign_record=assign_record,
+                )
 
 
 class DryRunAndAuthorizationTests(unittest.TestCase):
@@ -527,9 +657,9 @@ class DryRunAndAuthorizationTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             result = r002c.stage_audit_probe(
-                width=500, query_partition="train", target_partition="validation", config=fx.config,
-                output_dir=fx.output_dir, decode_fasta_dir=Path("/does/not/exist"), assign_record={},
-                authorize=False, mmseqs_bin="mmseqs-does-not-exist", dry_run=True,
+                width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=Path("/does/not/exist"),
+                decode_manifest_path=Path("/does/not/exist.json"), assign_record={}, authorize=False,
+                mmseqs_bin="mmseqs-does-not-exist", dry_run=True,
             )
             self.assertTrue(result["dry_run"])
             self.assertFalse(fx.output_dir.exists())
@@ -539,9 +669,9 @@ class DryRunAndAuthorizationTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             with self.assertRaises(r002c.AuthorizationError):
                 r002c.stage_audit_probe(
-                    width=500, query_partition="train", target_partition="validation", config=fx.config,
-                    output_dir=fx.output_dir, decode_fasta_dir=Path("/does/not/exist"), assign_record={},
-                    authorize=False, mmseqs_bin="mmseqs-does-not-exist", dry_run=False,
+                    width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=Path("/does/not/exist"),
+                    decode_manifest_path=Path("/does/not/exist.json"), assign_record={}, authorize=False,
+                    mmseqs_bin="mmseqs-does-not-exist", dry_run=False,
                 )
             self.assertFalse(fx.output_dir.exists())
 
@@ -552,7 +682,8 @@ class DryRunAndAuthorizationTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             result = r002c.stage_audit_search(
                 width=500, query_partition="train", target_partition="validation", config=fx.config,
-                output_dir=fx.output_dir, decode_fasta_dir=Path("/does/not/exist"), assign_record={},
+                output_dir=fx.output_dir, decode_fasta_dir=Path("/does/not/exist"),
+                decode_manifest_path=Path("/does/not/exist.json"), assign_record={},
                 authorize=False, mmseqs_bin="mmseqs-does-not-exist", dry_run=True,
             )
             self.assertTrue(result["dry_run"])
@@ -574,14 +705,18 @@ class MemoryGateEnforcementTests(unittest.TestCase):
             config = dataclasses.replace(
                 fx.config, audit=dataclasses.replace(fx.config.audit, min_installed_ram_gib=1_000_000.0)
             )
+            fx.config = config
             with self.assertRaises(r002c.guarded_exec.ResourceGateExceededError):
-                r002c.stage_audit_probe(
-                    width=500, query_partition="train", target_partition="validation", config=config,
-                    output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record,
-                    authorize=True, mmseqs_bin=fx.mmseqs_bin,
-                )
-            probe_dir = fx.output_dir / "audit_probe" / "500" / "train_to_validation" / "generations"
-            self.assertFalse(probe_dir.exists())
+                fx.audit_probe(width=500, assign_record=assign_record)
+            # F3: the per-launch gate now runs immediately before the FIRST
+            # subprocess too, after the candidate generation directory
+            # already exists (its query/target FASTAs must be written before
+            # any subprocess can launch) -- the discarded candidate's own
+            # generation subdirectory is removed, never merely a directory
+            # that was never created.
+            probe_dir = fx.output_dir / "audit_probe" / "500" / "generations"
+            if probe_dir.exists():
+                self.assertEqual(list(probe_dir.iterdir()), [])
 
     def test_unreachable_min_available_memory_before_launch_refuses(self):
         import dataclasses
@@ -593,12 +728,44 @@ class MemoryGateEnforcementTests(unittest.TestCase):
                 fx.config,
                 audit=dataclasses.replace(fx.config.audit, min_available_memory_gib_before_launch=1_000_000.0),
             )
+            fx.config = config
             with self.assertRaises(r002c.guarded_exec.ResourceGateExceededError):
-                r002c.stage_audit_probe(
-                    width=500, query_partition="train", target_partition="validation", config=config,
-                    output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record,
-                    authorize=True, mmseqs_bin=fx.mmseqs_bin,
-                )
+                fx.audit_probe(width=500, assign_record=assign_record)
+
+    def test_low_memory_before_second_subprocess_discards_candidate_without_launching_it(self):
+        # F3 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md):
+        # memory is rechecked immediately before EVERY individual MMseqs2
+        # subprocess launch, not merely once before the whole four-command
+        # attempt -- sufficient for the first command, insufficient for the
+        # second, and the second must never launch.
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+
+            real_check = r002c.guarded_exec.check_available_memory_before_launch_or_fail
+            call_count = {"n": 0}
+
+            def _fail_on_second_call(**kwargs):
+                call_count["n"] += 1
+                if call_count["n"] == 2:
+                    raise r002c.guarded_exec.ResourceGateExceededError("simulated low memory before the 2nd command")
+                return real_check(**kwargs)
+
+            r002c.guarded_exec.check_available_memory_before_launch_or_fail = _fail_on_second_call
+            try:
+                with self.assertRaises(r002c.guarded_exec.ResourceGateExceededError):
+                    fx.audit_probe(width=500, assign_record=assign_record)
+            finally:
+                r002c.guarded_exec.check_available_memory_before_launch_or_fail = real_check
+
+            # Exactly 2 launch-time checks ran (createdb(query) succeeded,
+            # createdb(target) refused) -- the search/createtsv commands
+            # after it never launched, and the whole candidate generation was
+            # discarded without touching any prior accepted evidence.
+            self.assertEqual(call_count["n"], 2)
+            probe_dir = fx.output_dir / "audit_probe" / "500" / "generations"
+            if probe_dir.exists():
+                self.assertEqual(list(probe_dir.iterdir()), [])
 
 
 class DirectionAndWidthValidationTests(unittest.TestCase):
@@ -625,13 +792,28 @@ class DirectionAndWidthValidationTests(unittest.TestCase):
             ])
 
     def test_direction_required_for_direction_scoped_stage_via_cli(self):
+        # F1: audit_probe is width-scoped only now -- audit_search is the
+        # sole remaining direction-scoped stage.
         with self.assertRaises(r002c.StageValidationError):
-            r002c.main(["--stage", "audit_probe", "--width", "500", "--config", "/does/not/exist.toml"])
+            r002c.main(["--stage", "audit_search", "--width", "500", "--config", "/does/not/exist.toml"])
+
+    def test_direction_rejected_for_audit_probe_via_cli(self):
+        # F1: --query-partition/--target-partition must be rejected for
+        # audit_probe (it is width-scoped only, never direction-scoped).
+        with self.assertRaises(r002c.StageValidationError):
+            r002c.main([
+                "--stage", "audit_probe", "--width", "500", "--query-partition", "train",
+                "--target-partition", "validation", "--config", "/does/not/exist.toml",
+            ])
 
     def test_mmseqs_stage_without_authorization_raises_before_config_load_via_cli(self):
         with self.assertRaises(r002c.AuthorizationError):
+            r002c.main(["--stage", "audit_probe", "--width", "500", "--config", "/does/not/exist.toml"])
+
+    def test_search_stage_without_authorization_raises_before_config_load_via_cli(self):
+        with self.assertRaises(r002c.AuthorizationError):
             r002c.main([
-                "--stage", "audit_probe", "--width", "500", "--query-partition", "train",
+                "--stage", "audit_search", "--width", "500", "--query-partition", "train",
                 "--target-partition", "validation", "--config", "/does/not/exist.toml",
             ])
 
@@ -643,9 +825,10 @@ class DirectionAndWidthValidationTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             with self.assertRaises(mmseqs_audit.InvalidDirectionError):
-                r002c.stage_audit_probe(
+                r002c.stage_audit_search(
                     width=500, query_partition="train", target_partition="train", config=fx.config,
-                    output_dir=fx.output_dir, decode_fasta_dir=Path("/tmp"), assign_record={}, authorize=True,
+                    output_dir=fx.output_dir, decode_fasta_dir=Path("/tmp"),
+                    decode_manifest_path=Path("/tmp/does-not-exist.json"), assign_record={}, authorize=True,
                     dry_run=False,
                 )
 
@@ -678,10 +861,133 @@ class LegacyDiagnosticCompletenessTests(unittest.TestCase):
                 self.assertIn(str(width), record["report"]["exact_rc_by_width"])
 
 
+class LegacyEdgeProvenanceTests(unittest.TestCase):
+    """F4 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md):
+    every legacy-diagnostic edge file is bound to explicit, pinned
+    ``(width, evidence kind, size, hash)`` provenance with every endpoint
+    reconciled against the closed canonical sample universe -- a bare
+    operator-authored JSON, even an empty list, no longer qualifies merely
+    because its own current hash is recorded.
+    """
+
+    def test_foreign_endpoint_in_similarity_edges_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            edges_path = fx.similarity_edges_dir / "edges_500.json"
+            edges_path.write_text(json.dumps([["row_0", "row_99999"]]))
+            self._repin_similarity(fx, 500, edges_path)
+            with self.assertRaises(r002c.InputValidationError):
+                fx.legacy_diagnostic(assign_record=assign_record)
+
+    def test_manually_unbound_similarity_edges_hash_is_rejected(self):
+        # A bare operator-authored JSON -- even a structurally valid, fully
+        # in-universe empty list -- must not qualify merely because its OWN
+        # current hash is recorded: it must match the config's PINNED
+        # expectation, which this test deliberately leaves stale.
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            edges_path = fx.similarity_edges_dir / "edges_500.json"
+            edges_path.write_text(json.dumps([["row_5", "row_6"]]))  # content changed, config NOT re-pinned
+            with self.assertRaises(r002c.InputValidationError):
+                fx.legacy_diagnostic(assign_record=assign_record)
+
+    def test_width_swapped_exact_rc_edges_is_rejected(self):
+        # Width 251's accepted exact/RC edges content served under width
+        # 500's slot: still a structurally valid, in-universe empty-or-real
+        # list, but its hash does not match width 500's pinned expectation.
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            width_251_content = (fx.similarity_edges_dir / "exact_rc_edges_251.json").read_bytes()
+            (fx.similarity_edges_dir / "exact_rc_edges_500.json").write_bytes(width_251_content)
+            with self.assertRaises(r002c.InputValidationError):
+                fx.legacy_diagnostic(assign_record=assign_record)
+
+    @staticmethod
+    def _repin_similarity(fx, width: int, edges_path: Path) -> None:
+        """Test-only helper: re-pins the config's similarity-edges
+        expectation for ``width`` to whatever ``edges_path`` currently
+        contains, isolating the foreign-endpoint check from the (already
+        separately covered) pinned-hash check.
+        """
+        import dataclasses
+
+        new_size = edges_path.stat().st_size
+        new_sha = _sha256_bytes(edges_path.read_bytes())
+        similarity = dict(fx.config.legacy_edges.similarity_edges)
+        from rbpbench.splits.config_002c import LegacyEdgeFileExpectation, LegacyEdgesConfig
+
+        similarity[width] = LegacyEdgeFileExpectation(byte_size=new_size, sha256=new_sha)
+        fx.config = dataclasses.replace(fx.config, legacy_edges=LegacyEdgesConfig(similarity_edges=similarity))
+
+
+class CurrentAssignmentValidatorTests(unittest.TestCase):
+    """F4: a shared current-assignment validator re-hashes the accepted
+    ``assign`` record's five frozen inputs before every downstream real
+    stage/finalization -- editing the component report, component
+    membership, dataset-audit JSON, or proteins table after ``assign``
+    accepted must leave every downstream stage refusing, even though
+    ``assign``'s OWN generation directory is still perfectly intact.
+    """
+
+    def test_component_membership_changed_after_assign_is_rejected_downstream(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            fx.membership_path.write_bytes(fx.membership_path.read_bytes() + b"\x00")
+            with self.assertRaises(r002c.StaleAssignmentInputError):
+                fx.exact_audit(width=500, assign_record=assign_record)
+
+    def test_component_report_changed_after_assign_is_rejected_downstream(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            fx.component_report_path.write_text(fx.component_report_path.read_text() + " ")
+            with self.assertRaises(r002c.StaleAssignmentInputError):
+                fx.exact_audit(width=500, assign_record=assign_record)
+
+    def test_audit_json_changed_after_assign_is_rejected_downstream(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            fx.audit_json_path.write_text(fx.audit_json_path.read_text() + " ")
+            with self.assertRaises(r002c.StaleAssignmentInputError):
+                fx.exact_audit(width=500, assign_record=assign_record)
+
+    def test_proteins_tsv_changed_after_assign_is_rejected_downstream(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            fx.proteins_tsv_path.write_text(fx.proteins_tsv_path.read_text() + "\n")
+            with self.assertRaises(r002c.StaleAssignmentInputError):
+                fx.exact_audit(width=500, assign_record=assign_record)
+
+    def test_stale_input_is_also_rejected_at_finalize(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            fx.legacy_diagnostic(assign_record=assign_record)
+            for width in fx.config.protected_widths:
+                fx.exact_audit(width=width, assign_record=assign_record)
+            fx.proteins_tsv_path.write_text(fx.proteins_tsv_path.read_text() + "\n")
+            with self.assertRaises(r002c.StaleAssignmentInputError):
+                r002c.stage_finalize(config=fx.config, output_dir=fx.output_dir)
+
+
 class FullPipelineEndToEndTests(unittest.TestCase):
     """The complete assign -> legacy_diagnostic -> exact_audit (x3 widths) ->
-    audit_probe/audit_search (x18 directed) -> finalize chain, using the
-    accepted local MMseqs2 binary and tiny synthetic fixtures throughout.
+    audit_probe (x3 width-scoped, F1) -> audit_search (x18 directed) ->
+    finalize chain, using the accepted local MMseqs2 binary and tiny
+    synthetic fixtures throughout.
+
+    NOTE: this exercises the real MMseqs2 binary 3 + 18 = 21 times (84
+    subprocess launches). Per the reduced focused-test instructions
+    (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+    "Focused evidence only"), this full directed pipeline is not rerun as
+    part of routine focused verification -- see ``RealBinarySmokeTests``
+    for the single tiny probe+search smoke that is.
     """
 
     def test_full_pipeline_promotes_to_finalize(self):
@@ -695,56 +1001,83 @@ class FullPipelineEndToEndTests(unittest.TestCase):
             self.assertTrue(legacy_record["executed"])
 
             for width in fx.config.protected_widths:
-                exact_record = r002c.stage_exact_audit(width=width, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+                exact_record = fx.exact_audit(width=width, assign_record=assign_record)
                 self.assertTrue(exact_record["passed"])
+
+            probe_records = {}
+            for width in fx.config.protected_widths:
+                probe_record = fx.audit_probe(width=width, assign_record=assign_record)
+                self.assertTrue(probe_record["executed"])
+                probe_records[width] = probe_record
 
             for width in fx.config.protected_widths:
                 for query_partition, target_partition in mmseqs_audit.ORDERED_PARTITION_PAIRS:
-                    probe_record = r002c.stage_audit_probe(
+                    search_record = fx.audit_search(
                         width=width, query_partition=query_partition, target_partition=target_partition,
-                        config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir,
-                        assign_record=assign_record, authorize=True, mmseqs_bin=fx.mmseqs_bin,
-                    )
-                    self.assertTrue(probe_record["executed"])
-                    search_record = r002c.stage_audit_search(
-                        width=width, query_partition=query_partition, target_partition=target_partition,
-                        config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir,
-                        assign_record=assign_record, authorize=True, mmseqs_bin=fx.mmseqs_bin,
+                        assign_record=assign_record,
                     )
                     self.assertTrue(search_record["passed"])
                     self.assertEqual(
-                        search_record["upstream"]["probe_generation_digest"], probe_record["generation_digest"]
+                        search_record["upstream"]["probe_generation_digest"],
+                        probe_records[width]["generation_digest"],
                     )
 
             finalize_record = r002c.stage_finalize(config=fx.config, output_dir=fx.output_dir)
             self.assertTrue(finalize_record["executed"])
             final_rows = splits_output.read_membership_gzip(Path(finalize_record["membership_path"]))
             self.assertEqual(len(final_rows), _SAMPLE_COUNT)
-            # assign(2) + legacy(2) + 3 widths x 2 (exact_audit) + 18 probes x 2 + 18 searches x 2
-            self.assertEqual(len(finalize_record["upstream"]), 2 + 2 + 3 * 2 + 18 * 2 + 18 * 2)
+            # assign(2) + legacy(2) + 3 widths x 2 (exact_audit) + 3 probes x 2 (F1) + 18 searches x 2
+            self.assertEqual(len(finalize_record["upstream"]), 2 + 2 + 3 * 2 + 3 * 2 + 18 * 2)
+
+
+class RealBinarySmokeTests(unittest.TestCase):
+    """A single tiny real-binary smoke covering one width probe and one
+    directed search, in place of rerunning the full 3-probe/18-search
+    directed pipeline for routine focused verification (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+    "Focused evidence only").
+    """
+
+    def test_one_probe_and_one_search_via_real_binary(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+
+            probe_record = fx.audit_probe(width=500, assign_record=assign_record)
+            self.assertTrue(probe_record["executed"])
+            self.assertEqual(probe_record["stage"], "audit_probe")
+
+            search_record = fx.audit_search(
+                width=500, query_partition="train", target_partition="validation", assign_record=assign_record,
+            )
+            self.assertTrue(search_record["passed"])
+            self.assertEqual(
+                search_record["upstream"]["probe_generation_digest"], probe_record["generation_digest"]
+            )
 
 
 class FinalizeRefusalTests(unittest.TestCase):
+    """NOTE: several of these tests exercise the real MMseqs2 binary across
+    all 3 probes/18 searches. Per the reduced focused-test instructions,
+    this class is not rerun as part of routine focused verification -- see
+    ``RealBinarySmokeTests`` for the single tiny probe+search smoke that is.
+    """
+
     def _assign_and_legacy(self, fx):
         assign_record = fx.assign()
         legacy_record = fx.legacy_diagnostic(assign_record=assign_record)
         return assign_record, legacy_record
 
+    def _run_all_probes(self, fx, assign_record):
+        for width in fx.config.protected_widths:
+            fx.audit_probe(width=width, assign_record=assign_record)
+
     def _run_all_probes_and_searches(self, fx, assign_record, *, skip=None):
+        self._run_all_probes(fx, assign_record)
         for width in fx.config.protected_widths:
             for query_partition, target_partition in mmseqs_audit.ORDERED_PARTITION_PAIRS:
                 if skip is not None and (width, query_partition, target_partition) == skip:
                     continue
-                r002c.stage_audit_probe(
-                    width=width, query_partition=query_partition, target_partition=target_partition,
-                    config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir,
-                    assign_record=assign_record, authorize=True, mmseqs_bin=fx.mmseqs_bin,
-                )
-                r002c.stage_audit_search(
-                    width=width, query_partition=query_partition, target_partition=target_partition,
-                    config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir,
-                    assign_record=assign_record, authorize=True, mmseqs_bin=fx.mmseqs_bin,
-                )
+                fx.audit_search(width=width, query_partition=query_partition, target_partition=target_partition, assign_record=assign_record)
 
     def test_finalize_refuses_when_assign_is_missing(self):
         with TemporaryDirectory() as tmp:
@@ -764,35 +1097,24 @@ class FinalizeRefusalTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             assign_record, _legacy = self._assign_and_legacy(fx)
             # Only run exact_audit for 2 of the 3 required widths.
-            r002c.stage_exact_audit(width=500, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
-            r002c.stage_exact_audit(width=251, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+            fx.exact_audit(width=500, assign_record=assign_record)
+            fx.exact_audit(width=251, assign_record=assign_record)
             with self.assertRaises(restart.PriorStageNotAcceptedError):
                 r002c.stage_finalize(config=fx.config, output_dir=fx.output_dir)
 
     def test_finalize_refuses_when_a_probe_is_missing(self):
+        # F1: finalize requires exactly the THREE width-scoped probes.
+        # Running only 2 of the 3 (and skipping the third's dependent
+        # searches too) already leaves finalize refusing on the missing
+        # probe alone -- no real mmseqs run for the skipped width is needed.
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record, _legacy = self._assign_and_legacy(fx)
             for width in fx.config.protected_widths:
-                r002c.stage_exact_audit(width=width, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
-            # Run every search, but skip exactly one probe (search still
-            # requires its own probe internally, so run that pair's search
-            # via a probe generated then discarded from the selected store).
-            for width in fx.config.protected_widths:
-                for query_partition, target_partition in mmseqs_audit.ORDERED_PARTITION_PAIRS:
-                    r002c.stage_audit_probe(
-                        width=width, query_partition=query_partition, target_partition=target_partition,
-                        config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir,
-                        assign_record=assign_record, authorize=True, mmseqs_bin=fx.mmseqs_bin,
-                    )
-                    r002c.stage_audit_search(
-                        width=width, query_partition=query_partition, target_partition=target_partition,
-                        config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir,
-                        assign_record=assign_record, authorize=True, mmseqs_bin=fx.mmseqs_bin,
-                    )
-            # Now remove one accepted probe's selection record entirely.
-            probe_key = mmseqs_audit.selection_key("audit_probe", 500, "train", "validation")
-            restart.selected_record_path(fx.output_dir, probe_key).unlink()
+                fx.exact_audit(width=width, assign_record=assign_record)
+            fx.audit_probe(width=500, assign_record=assign_record)
+            fx.audit_probe(width=251, assign_record=assign_record)
+            # width 101's probe is deliberately never run/accepted.
             with self.assertRaises(restart.PriorStageNotAcceptedError):
                 r002c.stage_finalize(config=fx.config, output_dir=fx.output_dir)
 
@@ -801,7 +1123,7 @@ class FinalizeRefusalTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             assign_record, _legacy = self._assign_and_legacy(fx)
             for width in fx.config.protected_widths:
-                r002c.stage_exact_audit(width=width, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+                fx.exact_audit(width=width, assign_record=assign_record)
             # Skip exactly ONE direction (validation->train at width 500) to
             # prove a one-direction-only pair still refuses.
             self._run_all_probes_and_searches(fx, assign_record, skip=(500, "validation", "train"))
@@ -813,7 +1135,7 @@ class FinalizeRefusalTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             assign_record, _legacy = self._assign_and_legacy(fx)
             for width in fx.config.protected_widths:
-                r002c.stage_exact_audit(width=width, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+                fx.exact_audit(width=width, assign_record=assign_record)
             self._run_all_probes_and_searches(fx, assign_record)
             # Tamper one accepted search record to simulate a discovered
             # cross-partition violation, and confirm finalize refuses on it.
@@ -831,11 +1153,11 @@ class FinalizeRefusalTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             assign_record, _legacy = self._assign_and_legacy(fx)
             for width in fx.config.protected_widths:
-                r002c.stage_exact_audit(width=width, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+                fx.exact_audit(width=width, assign_record=assign_record)
             self._run_all_probes_and_searches(fx, assign_record)
             # Simulate a stale binding: the accepted search claims a probe
             # generation digest that no longer matches the currently
-            # accepted probe.
+            # accepted (width-scoped, F1) probe.
             key = mmseqs_audit.selection_key("audit_search", 500, "train", "validation")
             record_path = restart.selected_record_path(fx.output_dir, key)
             record = json.loads(record_path.read_text())
@@ -853,7 +1175,7 @@ class FinalizeRefusalTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             assign_record, _legacy = self._assign_and_legacy(fx)
             for width in fx.config.protected_widths:
-                r002c.stage_exact_audit(width=width, config=fx.config, output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record)
+                fx.exact_audit(width=width, assign_record=assign_record)
             self._run_all_probes_and_searches(fx, assign_record)
 
             assign_record_path = restart.selected_record_path(fx.output_dir, "assign")
@@ -872,13 +1194,9 @@ class SubprocessFailureDoesNotDamagePriorEvidenceTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
             with self.assertRaises(Exception):
-                r002c.stage_audit_probe(
-                    width=500, query_partition="train", target_partition="validation", config=fx.config,
-                    output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record,
-                    authorize=True, mmseqs_bin="/definitely/not/a/real/mmseqs/binary",
-                )
-            self.assertIsNone(restart.load_accepted(fx.output_dir, mmseqs_audit.selection_key("audit_probe", 500, "train", "validation")))
-            probe_dir = fx.output_dir / "audit_probe" / "500" / "train_to_validation" / "generations"
+                fx.audit_probe(width=500, assign_record=assign_record, mmseqs_bin="/definitely/not/a/real/mmseqs/binary")
+            self.assertIsNone(restart.load_accepted(fx.output_dir, mmseqs_audit.probe_selection_key(500)))
+            probe_dir = fx.output_dir / "audit_probe" / "500" / "generations"
             if probe_dir.exists():
                 self.assertEqual(list(probe_dir.iterdir()), [])
 
@@ -889,11 +1207,7 @@ class SubprocessFailureDoesNotDamagePriorEvidenceTests(unittest.TestCase):
             accepted_before = restart.load_accepted(fx.output_dir, "assign")
             self.assertIsNotNone(accepted_before)
             try:
-                r002c.stage_audit_probe(
-                    width=500, query_partition="train", target_partition="validation", config=fx.config,
-                    output_dir=fx.output_dir, decode_fasta_dir=fx.decode_fasta_dir, assign_record=assign_record,
-                    authorize=True, mmseqs_bin="/definitely/not/a/real/mmseqs/binary",
-                )
+                fx.audit_probe(width=500, assign_record=assign_record, mmseqs_bin="/definitely/not/a/real/mmseqs/binary")
             except Exception:
                 pass
             accepted_after = restart.load_accepted(fx.output_dir, "assign")

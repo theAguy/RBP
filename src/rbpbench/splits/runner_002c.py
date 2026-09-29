@@ -37,12 +37,34 @@ force-rebuilt-but-byte-identical upstream generation still invalidates
 downstream currency; ``finalize`` additionally requires all three width
 probes and independently re-derives its own summary from the final
 membership plus a fresh CSV stream before promotion.
+
+Final acceptance correction (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+F1-F4): ``audit_probe`` is now WIDTH-scoped only -- exactly one
+deterministic bounded resource probe per protected width (``audit_probe_500``/
+``audit_probe_251``/``audit_probe_101``), never direction-scoped, and every
+one of the six full ``audit_search`` directions at a width binds that same
+current width probe generation; ``finalize`` requires exactly three probes
+plus all 18 directed searches (F1). Every stage that reads a decode FASTA
+verifies it against the already committed, sanitized
+``manifests/sequence_decode_002b2.json`` decode-evidence manifest (pinned by
+hash in the config's ``[decode_002b2]`` table) -- a syntactically valid but
+non-accepted FASTA fails closed (F2). The live RAM/disk gates are rechecked
+immediately before EVERY individual MMseqs2 subprocess launch inside a
+directed audit, not merely once before the whole four-command attempt (F3).
+A shared current-assignment validator re-hashes and re-fingerprints the
+accepted ``assign`` record's five frozen inputs before every downstream real
+stage/finalization, and the six legacy-diagnostic edge files are bound to
+explicit, pinned ``(width, evidence kind, size, hash)`` provenance with
+every endpoint reconciled against the closed canonical sample universe
+(F4, :mod:`rbpbench.splits.legacy_edges`).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -59,6 +81,7 @@ from rbpbench.splits import exact_audit as splits_exact_audit
 from rbpbench.splits import guarded_exec
 from rbpbench.splits import ingestion
 from rbpbench.splits import legacy_diagnostic as splits_legacy_diagnostic
+from rbpbench.splits import legacy_edges as splits_legacy_edges
 from rbpbench.splits import mmseqs_audit
 from rbpbench.splits import output as splits_output
 from rbpbench.splits import restart
@@ -69,8 +92,12 @@ STAGES: tuple[str, ...] = (
     "assign", "legacy_diagnostic", "exact_audit", "audit_probe", "audit_search", "finalize",
 )
 WIDTH_SCOPED_STAGES: tuple[str, ...] = ("exact_audit", "audit_probe", "audit_search")
-DIRECTION_SCOPED_STAGES: tuple[str, ...] = ("audit_probe", "audit_search")
+# F1 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md):
+# ``audit_probe`` is WIDTH-scoped only, never direction-scoped -- exactly
+# three probes (one per protected width), not 18.
+DIRECTION_SCOPED_STAGES: tuple[str, ...] = ("audit_search",)
 MMSEQS_STAGES: tuple[str, ...] = ("audit_probe", "audit_search")
+DECODE_FASTA_FILENAME_TEMPLATE = "sequence_partitions_width_{width}.fasta"
 
 DEFAULT_CONFIG_PATH = Path("configs/splits/sequence_partitions_002c_v1.toml")
 DEFAULT_OUTPUT_DIR = Path("artifacts/splits/sequence_partitions_002c_v1")
@@ -109,6 +136,29 @@ class FinalizationRefusedError(RuntimeError):
     missing, stale, failed, or one-direction-only, or its own independent
     recomputation disagrees with the accepted evidence. Never promotes a
     partial or failing result.
+    """
+
+
+class StaleAssignmentInputError(InputValidationError):
+    """The currently-accepted ``assign`` record's five frozen live inputs
+    (CSV, component membership, component report, dataset-audit JSON,
+    proteins TSV) no longer match the config's frozen expectations, the
+    hashes recorded in the ``assign`` record itself, or its own stage
+    fingerprint no longer reproduces from those recorded hashes
+    (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+    F4). Checked before every downstream real stage/finalization -- never
+    ``--dry-run`` -- so editing the component report, membership,
+    dataset-audit JSON, or proteins table after ``assign`` accepted can
+    never leave a downstream stage or finalization apparently current.
+    """
+
+
+class DecodeManifestError(InputValidationError):
+    """The pinned, already committed, sanitized Task 002B-2 decode-evidence
+    manifest failed hash verification, was missing a required field, or a
+    per-width decode FASTA's current byte size/SHA-256 disagreed with its
+    accepted entry (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+    F2): a syntactically valid but non-accepted FASTA fails closed here.
     """
 
 
@@ -166,6 +216,159 @@ def _verify_csv(csv_path: Path, config: SplitsConfig002C) -> str:
             f"CSV at {csv_path} hashes to {actual_sha256}, expected exactly {config.dataset.csv_sha256}"
         )
     return actual_sha256
+
+
+@dataclass(frozen=True)
+class DecodeFastaEvidence:
+    path: str
+    byte_size: int
+    sha256: str
+
+
+_DECODE_FASTA_PATTERN = re.compile(r"sequence_partitions_width_(\d+)\.fasta$")
+_DECODE_DUPLICATE_EDGES_PATTERN = re.compile(r"duplicate_edges_(\d+)\.json$")
+
+
+def _load_decode_manifest(
+    manifest_path: Path, *, expected_sha256: str
+) -> tuple[str, dict[int, DecodeFastaEvidence], dict[int, DecodeFastaEvidence]]:
+    """Hash-verifies the pinned, already committed, sanitized Task 002B-2
+    decode-evidence manifest (``manifests/sequence_decode_002b2.json``) and
+    extracts its generation digest plus, from its own ``retained_artifacts``
+    inventory, each protected width's accepted
+    ``sequence_partitions_width_<width>.fasta`` AND ``duplicate_edges_<width>.json``
+    byte size/SHA-256 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+    F2, F4) -- never a second, independently hard-coded copy of those values
+    in the 002C config.
+
+    Returns ``(decode_generation_digest, fasta_evidence_by_width,
+    duplicate_edges_evidence_by_width)``.
+    """
+    try:
+        _verify_frozen_file(manifest_path, expected_sha256=expected_sha256, label="decode evidence manifest")
+    except InputValidationError as exc:
+        raise DecodeManifestError(str(exc)) from exc
+    data = json.loads(Path(manifest_path).read_text())
+    generation_digest = data.get("decode_generation_digest")
+    if not generation_digest:
+        raise DecodeManifestError(f"{manifest_path}: missing decode_generation_digest")
+
+    fasta_evidence: dict[int, DecodeFastaEvidence] = {}
+    duplicate_edges_evidence: dict[int, DecodeFastaEvidence] = {}
+    for entry in data.get("retained_artifacts", []):
+        entry_path = entry.get("path", "")
+        fasta_match = _DECODE_FASTA_PATTERN.search(entry_path)
+        if fasta_match is not None:
+            width = int(fasta_match.group(1))
+            fasta_evidence[width] = DecodeFastaEvidence(
+                path=entry_path, byte_size=entry["byte_size"], sha256=entry["sha256"]
+            )
+            continue
+        edges_match = _DECODE_DUPLICATE_EDGES_PATTERN.search(entry_path)
+        if edges_match is not None:
+            width = int(edges_match.group(1))
+            duplicate_edges_evidence[width] = DecodeFastaEvidence(
+                path=entry_path, byte_size=entry["byte_size"], sha256=entry["sha256"]
+            )
+    return generation_digest, fasta_evidence, duplicate_edges_evidence
+
+
+def _verify_decode_fasta(fasta_path: Path, *, width: int, fasta_evidence: dict[int, DecodeFastaEvidence]) -> str:
+    """F2: verifies the current decode FASTA at ``fasta_path`` against its
+    accepted Task 002B-2 decode-evidence-manifest entry for ``width`` -- a
+    syntactically valid but non-accepted (content-different) FASTA fails
+    closed here, never merely recording its new hash.
+    """
+    entry = fasta_evidence.get(width)
+    if entry is None:
+        raise DecodeManifestError(f"decode evidence manifest has no accepted entry for width {width}")
+    actual_size = Path(fasta_path).stat().st_size
+    if actual_size != entry.byte_size:
+        raise DecodeManifestError(
+            f"{fasta_path} is {actual_size} bytes, expected exactly {entry.byte_size} per the accepted decode "
+            f"evidence for width {width}"
+        )
+    actual_sha256 = sha256_file(Path(fasta_path))
+    if actual_sha256 != entry.sha256:
+        raise DecodeManifestError(
+            f"{fasta_path} hashes to {actual_sha256}, expected exactly {entry.sha256} per the accepted decode "
+            f"evidence for width {width} (syntactically valid but not the accepted content)"
+        )
+    return actual_sha256
+
+
+def _verify_current_assignment(*, config: SplitsConfig002C, assign_record: dict) -> None:
+    """F4: the shared current-assignment validator, called before every
+    downstream real stage/finalization (never ``--dry-run``). Re-hashes all
+    five frozen inputs recorded by the accepted ``assign`` record, compares
+    each against BOTH the config's frozen expectation and the hash the
+    ``assign`` record itself recorded, and recomputes the ``assign`` stage
+    fingerprint from those recorded hashes -- so editing the component
+    report, component membership, dataset-audit JSON, or protein table (or
+    tampering the recorded hashes themselves) after ``assign`` accepted can
+    never leave a downstream stage or ``finalize`` apparently current.
+    """
+    problems: list[str] = []
+
+    csv_path = Path(assign_record["csv_path"])
+    if not csv_path.is_file():
+        problems.append(f"assign's CSV no longer exists at {csv_path}")
+    else:
+        actual_size = csv_path.stat().st_size
+        if actual_size != config.dataset.csv_byte_size:
+            problems.append(
+                f"CSV at {csv_path} is now {actual_size} bytes, expected exactly {config.dataset.csv_byte_size}"
+            )
+        actual_sha256 = sha256_file(csv_path)
+        if actual_sha256 != config.dataset.csv_sha256:
+            problems.append(
+                f"CSV at {csv_path} now hashes to {actual_sha256}, expected the frozen config hash "
+                f"{config.dataset.csv_sha256}"
+            )
+        if actual_sha256 != assign_record["csv_sha256"]:
+            problems.append(
+                f"CSV at {csv_path} now hashes to {actual_sha256}, but the accepted assign record recorded "
+                f"{assign_record['csv_sha256']}"
+            )
+
+    for path_key, record_hash_key, expected_sha256 in (
+        ("component_membership_path", "component_membership_sha256", config.components_002b.membership_sha256),
+        ("component_report_path", "component_report_sha256", config.components_002b.report_sha256),
+        ("audit_json_path", "audit_json_sha256", config.dataset.audit_json_sha256),
+        ("proteins_tsv_path", "proteins_tsv_sha256", config.dataset.proteins_tsv_sha256),
+    ):
+        path = Path(assign_record[path_key])
+        if not path.is_file():
+            problems.append(f"assign's {path_key} no longer exists at {path}")
+            continue
+        actual_sha256 = sha256_file(path)
+        if actual_sha256 != expected_sha256:
+            problems.append(
+                f"{path_key} at {path} now hashes to {actual_sha256}, expected the frozen config hash "
+                f"{expected_sha256}"
+            )
+        if actual_sha256 != assign_record[record_hash_key]:
+            problems.append(
+                f"{path_key} at {path} now hashes to {actual_sha256}, but the accepted assign record recorded "
+                f"{assign_record[record_hash_key]}"
+            )
+
+    if problems:
+        raise StaleAssignmentInputError("current-assignment validation failed: " + "; ".join(problems))
+
+    recomputed_fp = assign_fingerprint(
+        config=config,
+        csv_sha256=assign_record["csv_sha256"],
+        membership_sha256=assign_record["component_membership_sha256"],
+        component_report_sha256=assign_record["component_report_sha256"],
+        audit_json_sha256=assign_record["audit_json_sha256"],
+        proteins_tsv_sha256=assign_record["proteins_tsv_sha256"],
+    )
+    if recomputed_fp != assign_record["stage_fingerprint"]:
+        raise StaleAssignmentInputError(
+            f"assign record's stage_fingerprint {assign_record['stage_fingerprint']!r} does not reproduce from "
+            f"its own recorded input hashes under the current config (recomputed {recomputed_fp!r})"
+        )
 
 
 class FastaValidationError(InputValidationError):
@@ -241,6 +444,31 @@ def _deterministic_subset(sequences: dict[str, str], sample_size: int, seed: int
     ranked = sorted(sequences, key=lambda sid: (label_blind_rank(seed, sid), sid))
     selected = set(ranked[:sample_size])
     return {sid: seq for sid, seq in sequences.items() if sid in selected}
+
+
+def _deterministic_probe_split(
+    sequences: dict[str, str], sample_size: int, seed: int
+) -> tuple[dict[str, str], dict[str, str]]:
+    """F1 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md):
+    ``audit_probe`` uses ONE deterministic, documented query/target sample
+    covering the intended command/resource shape -- never a
+    partition-directed pair. Ranks the WHOLE width universe by the same
+    label-blind deterministic rank already used for subsetting, then splits
+    the first ``2 * sample_size`` ranked IDs into two disjoint halves (query,
+    then target); when the universe is too small for two full
+    ``sample_size`` halves, falls back to an even split of whatever is
+    available, so both sides are always non-empty for a non-trivial universe.
+    """
+    ranked = sorted(sequences, key=lambda sid: (label_blind_rank(seed, sid), sid))
+    query_ids = ranked[:sample_size]
+    target_ids = ranked[sample_size : sample_size * 2]
+    if not target_ids:
+        half = len(ranked) // 2
+        query_ids, target_ids = ranked[:half], ranked[half:]
+    return (
+        {sid: sequences[sid] for sid in query_ids},
+        {sid: sequences[sid] for sid in target_ids},
+    )
 
 
 def _read_assign_membership_rows(assign_record: dict) -> list[tuple[str, str, str]]:
@@ -482,11 +710,18 @@ def legacy_diagnostic_fingerprint(
     csv_sha256: str,
     assign_stage_fingerprint: str,
     assign_generation_digest: str,
-    edges_hashes: tuple[str, ...],
+    decode_generation_digest: str,
+    edges_evidence: dict[str, dict],
 ) -> str:
+    # F4: bind EACH edge file's own (key, size, hash) triple, sorted by key
+    # -- never a flat, bare-hash list sorted on its own values, which loses
+    # which file a hash belongs to.
+    edges_terms = tuple(
+        (key, entry["byte_size"], entry["sha256"]) for key, entry in sorted(edges_evidence.items())
+    )
     return content_fingerprint(
         "legacy_diagnostic", config.content_hash, csv_sha256, assign_stage_fingerprint, assign_generation_digest,
-        *edges_hashes,
+        decode_generation_digest, *edges_terms,
     )
 
 
@@ -497,10 +732,15 @@ def stage_legacy_diagnostic(
     output_dir: Path,
     assign_record: dict,
     similarity_edges_dir: Path,
+    decode_manifest_path: Path,
     dry_run: bool = False,
 ) -> dict:
     if dry_run:
         return {"dry_run": True, "stage": "legacy_diagnostic", "would_read": {"csv": str(csv_path)}}
+
+    # F4: the accepted assign record's five frozen inputs must still be
+    # current before any downstream real stage runs.
+    _verify_current_assignment(config=config, assign_record=assign_record)
 
     versions = splits_legacy_diagnostic.resolve_dependency_versions()
     splits_legacy_diagnostic.require_pinned_versions(
@@ -535,29 +775,62 @@ def stage_legacy_diagnostic(
     sample_to_component = {sample_id: component_id for sample_id, component_id, _p in membership_rows}
     sample_to_partition = {sample_id: partition for sample_id, _c, partition in membership_rows}
 
-    # C6: hash-bound evidence is REQUIRED for all three protected widths --
-    # a missing edges/exact-RC file is a hard failure, never a silently
-    # narrower diagnostic.
+    # F2/F4: pinned decode-evidence manifest -- the accepted per-width
+    # duplicate-edge (exact/RC) provenance is auto-extracted from it, never
+    # hand-typed.
+    decode_generation_digest, _fasta_evidence, duplicate_edges_evidence = _load_decode_manifest(
+        decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
+    )
+    canonical_ids = splits_legacy_edges.canonical_sample_ids(config.dataset.expected_row_count)
+
+    # C6/F4: hash-bound, provenance-pinned, endpoint-reconciled evidence is
+    # REQUIRED for all three protected widths -- a missing, foreign-endpoint,
+    # or unbound (hash not matching its pinned provenance) edges/exact-RC
+    # file is a hard failure, never a silently narrower diagnostic, and a
+    # bare operator-authored JSON (even an empty list) can no longer qualify
+    # merely because its own current hash is recorded.
     similarity_edges_by_width: dict[int, list[tuple[str, str]]] = {}
     exact_rc_edges_by_width: dict[int, list[tuple[str, str]]] = {}
-    edges_hashes: list[str] = []
+    edges_evidence: dict[str, dict] = {}
     edges_provenance: dict[str, str] = {}
     for width in config.protected_widths:
         edges_path = Path(similarity_edges_dir) / f"edges_{width}.json"
         exact_rc_path = Path(similarity_edges_dir) / f"exact_rc_edges_{width}.json"
-        if not edges_path.is_file():
-            raise InputValidationError(f"required similarity-edges file not found for width {width}: {edges_path}")
-        if not exact_rc_path.is_file():
-            raise InputValidationError(f"required exact/RC-edges file not found for width {width}: {exact_rc_path}")
-        similarity_edges_by_width[width] = [tuple(pair) for pair in json.loads(edges_path.read_text())]
-        exact_rc_edges_by_width[width] = [tuple(pair) for pair in json.loads(exact_rc_path.read_text())]
-        edges_sha = sha256_file(edges_path)
-        exact_rc_sha = sha256_file(exact_rc_path)
-        edges_hashes.extend([edges_sha, exact_rc_sha])
+
+        similarity_expected = config.legacy_edges.similarity_edges.get(width)
+        if similarity_expected is None:
+            raise InputValidationError(f"config has no pinned legacy_edges.similarity_edges entry for width {width}")
+        try:
+            similarity_edges_by_width[width] = splits_legacy_edges.verify_and_parse_edges(
+                edges_path, expected_sha256=similarity_expected.sha256, expected_byte_size=similarity_expected.byte_size,
+                canonical_ids=canonical_ids, label=f"similarity edges width {width}",
+            )
+        except splits_legacy_edges.EdgeProvenanceError as exc:
+            raise InputValidationError(str(exc)) from exc
+        edges_evidence[f"{width}_similarity"] = splits_legacy_edges.bind_edge_evidence(
+            width=width, evidence_kind="similarity", path=edges_path, sha256=similarity_expected.sha256,
+            byte_size=similarity_expected.byte_size,
+        )
+
+        duplicate_expected = duplicate_edges_evidence.get(width)
+        if duplicate_expected is None:
+            raise DecodeManifestError(f"decode evidence manifest has no accepted duplicate_edges entry for width {width}")
+        try:
+            exact_rc_edges_by_width[width] = splits_legacy_edges.verify_and_parse_edges(
+                exact_rc_path, expected_sha256=duplicate_expected.sha256, expected_byte_size=duplicate_expected.byte_size,
+                canonical_ids=canonical_ids, label=f"exact/RC duplicate edges width {width}",
+            )
+        except splits_legacy_edges.EdgeProvenanceError as exc:
+            raise InputValidationError(str(exc)) from exc
+        edges_evidence[f"{width}_exact_rc"] = splits_legacy_edges.bind_edge_evidence(
+            width=width, evidence_kind="exact_rc", path=exact_rc_path, sha256=duplicate_expected.sha256,
+            byte_size=duplicate_expected.byte_size,
+        )
+
         edges_provenance[f"edges_{width}_path"] = str(edges_path)
-        edges_provenance[f"edges_{width}_sha256"] = edges_sha
+        edges_provenance[f"edges_{width}_sha256"] = similarity_expected.sha256
         edges_provenance[f"exact_rc_edges_{width}_path"] = str(exact_rc_path)
-        edges_provenance[f"exact_rc_edges_{width}_sha256"] = exact_rc_sha
+        edges_provenance[f"exact_rc_edges_{width}_sha256"] = duplicate_expected.sha256
 
     report = splits_legacy_diagnostic.build_leakage_diagnostic_report(
         legacy_result=fold_result,
@@ -580,7 +853,8 @@ def stage_legacy_diagnostic(
         )
         stage_fp = legacy_diagnostic_fingerprint(
             config=config, csv_sha256=csv_sha256, assign_stage_fingerprint=assign_record["stage_fingerprint"],
-            assign_generation_digest=assign_record["generation_digest"], edges_hashes=tuple(sorted(edges_hashes)),
+            assign_generation_digest=assign_record["generation_digest"], decode_generation_digest=decode_generation_digest,
+            edges_evidence=edges_evidence,
         )
         record = {
             "stage": "legacy_diagnostic",
@@ -596,9 +870,13 @@ def stage_legacy_diagnostic(
             # diagnostic, not only its two index-set digests.
             "report": report,
             "edges_provenance": edges_provenance,
+            # F4: explicit (width, evidence kind, size, hash) bindings for
+            # all six edge files, never a flat sorted-away hash list.
+            "edges_evidence": edges_evidence,
             "upstream": {
                 "assign_stage_fingerprint": assign_record["stage_fingerprint"],
                 "assign_generation_digest": assign_record["generation_digest"],
+                "decode_generation_digest": decode_generation_digest,
             },
             "artifacts": artifacts,
         }
@@ -615,22 +893,46 @@ def stage_legacy_diagnostic(
 
 
 def exact_audit_fingerprint(
-    *, width: int, config: SplitsConfig002C, assign_stage_fingerprint: str, assign_generation_digest: str, fasta_sha256: str
+    *,
+    width: int,
+    config: SplitsConfig002C,
+    assign_stage_fingerprint: str,
+    assign_generation_digest: str,
+    fasta_sha256: str,
+    decode_generation_digest: str,
 ) -> str:
     return content_fingerprint(
-        "exact_audit", width, config.content_hash, assign_stage_fingerprint, assign_generation_digest, fasta_sha256
+        "exact_audit", width, config.content_hash, assign_stage_fingerprint, assign_generation_digest, fasta_sha256,
+        decode_generation_digest,
     )
 
 
 def stage_exact_audit(
-    *, width: int, config: SplitsConfig002C, output_dir: Path, decode_fasta_dir: Path, assign_record: dict, dry_run: bool = False
+    *,
+    width: int,
+    config: SplitsConfig002C,
+    output_dir: Path,
+    decode_fasta_dir: Path,
+    decode_manifest_path: Path,
+    assign_record: dict,
+    dry_run: bool = False,
 ) -> dict:
     if width not in config.protected_widths:
         raise StageValidationError(f"width {width!r} is not one of the protected widths {config.protected_widths}")
     if dry_run:
         return {"dry_run": True, "stage": "exact_audit", "width": width}
 
-    fasta_path = Path(decode_fasta_dir) / f"width_{width}.fasta"
+    # F4: the accepted assign record's five frozen inputs must still be
+    # current before any downstream real stage runs.
+    _verify_current_assignment(config=config, assign_record=assign_record)
+
+    # F2: bind this width's decode FASTA to the accepted Task 002B-2
+    # decode-evidence manifest.
+    decode_generation_digest, fasta_evidence, _duplicate_edges_evidence = _load_decode_manifest(
+        decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
+    )
+
+    fasta_path = Path(decode_fasta_dir) / DECODE_FASTA_FILENAME_TEMPLATE.format(width=width)
     if not fasta_path.is_file():
         raise InputValidationError(f"decode FASTA not found at {fasta_path}")
     sample_to_partition = _sample_to_partition(assign_record)
@@ -638,7 +940,8 @@ def stage_exact_audit(
     # requested width, nonempty A/C/G/T-only sequence, and the COMPLETE
     # assigned universe reconciled before any hash group is computed.
     sequences = _read_fasta_strict(fasta_path, expected_width=width, expected_ids=set(sample_to_partition))
-    fasta_sha256 = sha256_file(fasta_path)
+    # F2: a syntactically valid but non-accepted FASTA fails closed here.
+    fasta_sha256 = _verify_decode_fasta(fasta_path, width=width, fasta_evidence=fasta_evidence)
 
     report = splits_exact_audit.audit_width(sequences, sample_to_partition)
 
@@ -655,6 +958,7 @@ def stage_exact_audit(
         stage_fp = exact_audit_fingerprint(
             config=config, width=width, assign_stage_fingerprint=assign_record["stage_fingerprint"],
             assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
+            decode_generation_digest=decode_generation_digest,
         )
         record = {
             "stage": "exact_audit",
@@ -670,6 +974,7 @@ def stage_exact_audit(
             "upstream": {
                 "assign_stage_fingerprint": assign_record["stage_fingerprint"],
                 "assign_generation_digest": assign_record["generation_digest"],
+                "decode_generation_digest": decode_generation_digest,
             },
             "artifacts": artifacts,
         }
@@ -685,59 +990,34 @@ def stage_exact_audit(
 # --------------------------------------------------------------------------
 
 
-def directed_audit_fingerprint(
-    *, stage_name: str, width: int, query_partition: str, target_partition: str, config: SplitsConfig002C,
-    assign_stage_fingerprint: str, assign_generation_digest: str, fasta_sha256: str, mmseqs_bin: str,
-    probe_generation_digest: str | None = None,
+def audit_probe_fingerprint(
+    *, width: int, config: SplitsConfig002C, assign_stage_fingerprint: str, assign_generation_digest: str,
+    fasta_sha256: str, decode_generation_digest: str, mmseqs_bin: str,
 ) -> str:
     binary = splits_commands.resolve_mmseqs_binary_provenance(mmseqs_bin)
-    parts: list[object] = [
-        stage_name, width, query_partition, target_partition, config.content_hash, assign_stage_fingerprint,
-        assign_generation_digest, fasta_sha256, binary.sha256 or "MISSING", mmseqs_bin,
-    ]
-    # C4: an audit_search's fingerprint additionally binds the specific
-    # probe GENERATION that authorized it, so a rebuilt (even
-    # byte-identical) probe generation still invalidates a search accepted
-    # against the old one.
-    if probe_generation_digest is not None:
-        parts.append(probe_generation_digest)
-    return content_fingerprint(*parts)
+    return content_fingerprint(
+        "audit_probe", width, config.content_hash, assign_stage_fingerprint, assign_generation_digest, fasta_sha256,
+        decode_generation_digest, binary.sha256 or "MISSING", mmseqs_bin,
+    )
 
 
-def _run_directed_audit(
-    *, stage_name: str, width: int, query_partition: str, target_partition: str, config: SplitsConfig002C,
-    output_dir: Path, decode_fasta_dir: Path, assign_record: dict, authorize: bool, mmseqs_bin: str,
-    dry_run: bool, subset_sample_size: int | None,
-) -> dict:
-    mmseqs_audit.validate_direction(query_partition, target_partition)
-    if width not in config.protected_widths:
-        raise StageValidationError(f"width {width!r} is not one of the protected widths {config.protected_widths}")
+def audit_search_fingerprint(
+    *, width: int, query_partition: str, target_partition: str, config: SplitsConfig002C,
+    assign_stage_fingerprint: str, assign_generation_digest: str, fasta_sha256: str, decode_generation_digest: str,
+    mmseqs_bin: str, probe_generation_digest: str,
+) -> str:
+    binary = splits_commands.resolve_mmseqs_binary_provenance(mmseqs_bin)
+    # C4: binds the specific probe GENERATION that authorized this search,
+    # so a rebuilt (even byte-identical) probe generation still invalidates
+    # a search accepted against the old one.
+    return content_fingerprint(
+        "audit_search", width, query_partition, target_partition, config.content_hash, assign_stage_fingerprint,
+        assign_generation_digest, fasta_sha256, decode_generation_digest, binary.sha256 or "MISSING", mmseqs_bin,
+        probe_generation_digest,
+    )
 
-    if dry_run:
-        return {
-            "dry_run": True, "stage": stage_name, "width": width, "query_partition": query_partition,
-            "target_partition": target_partition, "would_authorize_mmseqs": authorize,
-        }
 
-    if not authorize:
-        raise AuthorizationError(f"stage {stage_name!r} launches MMseqs2 and requires --authorize-mmseqs")
-
-    key = mmseqs_audit.selection_key(stage_name, width, query_partition, target_partition)
-    probe_record: dict | None = None
-    if stage_name == "audit_search":
-        probe_key = mmseqs_audit.selection_key("audit_probe", width, query_partition, target_partition)
-        probe_record = restart.require_accepted(output_dir, probe_key)
-
-    fasta_path = Path(decode_fasta_dir) / f"width_{width}.fasta"
-    if not fasta_path.is_file():
-        raise InputValidationError(f"decode FASTA not found at {fasta_path}")
-    sample_to_partition = _sample_to_partition(assign_record)
-    # C3: reconcile the COMPLETE FASTA universe before ever subsetting a
-    # directed query/target pair -- a decode/assignment mismatch fails
-    # closed here, never silently narrows the audited universe.
-    sequences = _read_fasta_strict(fasta_path, expected_width=width, expected_ids=set(sample_to_partition))
-    fasta_sha256 = sha256_file(fasta_path)
-
+def _resolve_and_verify_mmseqs_binary(mmseqs_bin: str, *, config: SplitsConfig002C, stage_name: str):
     live_binary = splits_commands.resolve_mmseqs_binary_provenance(mmseqs_bin)
     if live_binary.resolved_path is None:
         raise InputValidationError(f"mmseqs binary {mmseqs_bin!r} not found on PATH")
@@ -747,77 +1027,247 @@ def _run_directed_audit(
         raise InputValidationError(
             f"mmseqs binary SHA-256 {live_binary.sha256!r} != accepted {config.binary.mmseqs_sha256!r} for stage {stage_name!r}"
         )
+    return live_binary
 
-    # C5: fail-closed installed-RAM and live available-memory gates
-    # immediately before EVERY MMseqs2 subprocess launch (the already
-    # established Task 002B semantics).
+
+def _launch_guarded_mmseqs(command, *, config: SplitsConfig002C, output_dir: Path, log_dir: Path, label: str) -> dict:
+    """F3 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md):
+    recheck installed RAM, live available memory, and free disk IMMEDIATELY
+    before THIS individual MMseqs2 subprocess launch -- never only once
+    before a whole multi-command directed-audit attempt. If memory is
+    sufficient for an earlier command in the same attempt but insufficient
+    here, this command never launches; the caller's ``except Exception``
+    discards the whole candidate generation without touching any prior
+    accepted evidence.
+    """
     guarded_exec.check_installed_ram_or_fail(min_installed_ram_gib=config.audit.min_installed_ram_gib)
     guarded_exec.check_available_memory_before_launch_or_fail(
-        min_available_memory_gib_before_launch=config.audit.min_available_memory_gib_before_launch, label=stage_name
+        min_available_memory_gib_before_launch=config.audit.min_available_memory_gib_before_launch, label=label
     )
-    guarded_exec.check_free_disk_or_fail(disk_path=output_dir, min_free_disk_gib=config.audit.min_free_disk_gib, label=stage_name)
+    guarded_exec.check_free_disk_or_fail(disk_path=output_dir, min_free_disk_gib=config.audit.min_free_disk_gib, label=label)
+    return guarded_exec.run_guarded_mmseqs(
+        command, log_dir=log_dir, timeout_seconds=config.audit.timeout_seconds, output_dir=output_dir,
+        max_new_disk_gib=config.audit.max_new_disk_gib, min_free_disk_gib=config.audit.min_free_disk_gib,
+        poll_interval=config.audit.resource_poll_interval_seconds,
+    )
 
-    base_dir = output_dir / stage_name / str(width) / f"{query_partition}_to_{target_partition}"
-    generation_dir = splits_commands.new_generation_dir(base_dir, prefix=stage_name)
+
+def _run_mmseqs_pipeline(
+    *, width: int, query_seqs: dict[str, str], target_seqs: dict[str, str], config: SplitsConfig002C,
+    output_dir: Path, generation_dir: Path, mmseqs_bin: str, label: str,
+) -> tuple[Path, list[dict], int]:
+    """The shared ``createdb`` (x2) / ``search`` / ``createtsv`` subprocess
+    pipeline used by both ``audit_probe`` and ``audit_search``, with F3's
+    per-launch resource gate immediately before EACH of the four commands.
+    """
+    query_fasta = generation_dir / "query.fasta"
+    target_fasta = generation_dir / "target.fasta"
+    _write_fasta(query_seqs, query_fasta)
+    _write_fasta(target_seqs, target_fasta)
+
+    query_db = generation_dir / "query_db"
+    target_db = generation_dir / "target_db"
+    result_prefix = generation_dir / "result"
+    tmp_dir = generation_dir / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = generation_dir / "logs"
+    threads = config.audit.max_threads
+
+    executed: list[dict] = []
+    executed.append(_launch_guarded_mmseqs(
+        splits_commands.with_threads(splits_commands.createdb_command(query_fasta, query_db, mmseqs_bin=mmseqs_bin), threads),
+        config=config, output_dir=output_dir, log_dir=log_dir, label=f"{label}:createdb(query)",
+    ))
+    executed.append(_launch_guarded_mmseqs(
+        splits_commands.with_threads(splits_commands.createdb_command(target_fasta, target_db, mmseqs_bin=mmseqs_bin), threads),
+        config=config, output_dir=output_dir, log_dir=log_dir, label=f"{label}:createdb(target)",
+    ))
+    search_cmd = splits_commands.with_threads(
+        splits_commands.audit_search_command(query_db, target_db, result_prefix, tmp_dir, width=width, mmseqs_bin=mmseqs_bin), threads
+    )
+    executed.append(_launch_guarded_mmseqs(search_cmd, config=config, output_dir=output_dir, log_dir=log_dir, label=f"{label}:search"))
+    hits_tsv = generation_dir / "hits.tsv"
+    executed.append(_launch_guarded_mmseqs(
+        splits_commands.with_threads(
+            splits_commands.createtsv_search_command(query_db, target_db, result_prefix, hits_tsv, mmseqs_bin=mmseqs_bin), threads
+        ),
+        config=config, output_dir=output_dir, log_dir=log_dir, label=f"{label}:createtsv",
+    ))
+    return hits_tsv, executed, threads
+
+
+def stage_audit_probe(
+    *,
+    width: int,
+    config: SplitsConfig002C,
+    output_dir: Path,
+    decode_fasta_dir: Path,
+    decode_manifest_path: Path,
+    assign_record: dict,
+    authorize: bool,
+    mmseqs_bin: str = "mmseqs",
+    dry_run: bool = False,
+) -> dict:
+    """F1: ``audit_probe`` is WIDTH-scoped only -- exactly one deterministic
+    bounded resource probe per protected width, never direction-scoped.
+    """
+    if width not in config.protected_widths:
+        raise StageValidationError(f"width {width!r} is not one of the protected widths {config.protected_widths}")
+    if dry_run:
+        return {"dry_run": True, "stage": "audit_probe", "width": width, "would_authorize_mmseqs": authorize}
+    if not authorize:
+        raise AuthorizationError("stage 'audit_probe' launches MMseqs2 and requires --authorize-mmseqs")
+
+    _verify_current_assignment(config=config, assign_record=assign_record)
+
+    decode_generation_digest, fasta_evidence, _duplicate_edges_evidence = _load_decode_manifest(
+        decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
+    )
+
+    fasta_path = Path(decode_fasta_dir) / DECODE_FASTA_FILENAME_TEMPLATE.format(width=width)
+    if not fasta_path.is_file():
+        raise InputValidationError(f"decode FASTA not found at {fasta_path}")
+    sample_to_partition = _sample_to_partition(assign_record)
+    # C3: reconcile the COMPLETE FASTA universe before ever subsetting the
+    # deterministic probe sample.
+    sequences = _read_fasta_strict(fasta_path, expected_width=width, expected_ids=set(sample_to_partition))
+    fasta_sha256 = _verify_decode_fasta(fasta_path, width=width, fasta_evidence=fasta_evidence)
+
+    _resolve_and_verify_mmseqs_binary(mmseqs_bin, config=config, stage_name="audit_probe")
+
+    base_dir = output_dir / "audit_probe" / str(width)
+    generation_dir = splits_commands.new_generation_dir(base_dir, prefix="audit_probe")
+    try:
+        # F1: one deterministic, documented query/target sample covering the
+        # intended command/resource shape -- never a partition-directed pair.
+        query_seqs, target_seqs = _deterministic_probe_split(sequences, config.audit.probe_sample_size, config.seed)
+
+        hits_tsv, executed, threads = _run_mmseqs_pipeline(
+            width=width, query_seqs=query_seqs, target_seqs=target_seqs, config=config, output_dir=output_dir,
+            generation_dir=generation_dir, mmseqs_bin=mmseqs_bin, label="audit_probe",
+        )
+
+        # C5: peak RSS across this whole guarded attempt, measured once after
+        # every subprocess above has been reaped.
+        peak_rss_kib = peak_rss_kib_of_children()
+        probe_memory = guarded_exec.check_probe_memory_gates_or_fail(
+            peak_rss_kib=peak_rss_kib, max_peak_memory_gib=config.audit.probe_max_peak_memory_gib,
+            min_available_memory_gib_before_next_stage=config.audit.probe_min_available_memory_gib_before_next_stage,
+            label="audit_probe",
+        )
+
+        hits = mmseqs_audit.parse_search_hits(hits_tsv)
+        guarded_exec.check_combined_ceiling_or_discard(output_dir=output_dir, max_new_disk_gib=config.audit.max_new_disk_gib)
+
+        report = {
+            "width": width,
+            "query_sample_count": len(query_seqs),
+            "target_sample_count": len(target_seqs),
+            "hit_count": len(hits),
+        }
+        manifest_path = generation_dir / "audit_probe_report.json"
+        restart.atomic_write_json(manifest_path, report)
+
+        artifacts = restart.inventory_generation(generation_dir)
+        generation_digest = content_fingerprint(
+            "audit_probe_generation", width, str(generation_dir), *((e["path"], e["sha256"]) for e in artifacts)
+        )
+        stage_fp = audit_probe_fingerprint(
+            width=width, config=config, assign_stage_fingerprint=assign_record["stage_fingerprint"],
+            assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
+            decode_generation_digest=decode_generation_digest, mmseqs_bin=mmseqs_bin,
+        )
+        record = {
+            "stage": "audit_probe",
+            "executed": True,
+            "width": width,
+            "stage_fingerprint": stage_fp,
+            "generation_dir": str(generation_dir),
+            "generation_digest": generation_digest,
+            "manifest_path": str(manifest_path),
+            "hits_tsv": str(hits_tsv),
+            "fasta_sha256": fasta_sha256,
+            "hit_count": len(hits),
+            "query_sample_count": len(query_seqs),
+            "target_sample_count": len(target_seqs),
+            "upstream": {
+                "assign_stage_fingerprint": assign_record["stage_fingerprint"],
+                "assign_generation_digest": assign_record["generation_digest"],
+                "decode_generation_digest": decode_generation_digest,
+            },
+            "mmseqs_bin": mmseqs_bin,
+            "threads": threads,
+            "peak_rss_kib_of_children": peak_rss_kib,
+            "available_memory_gib_after": probe_memory["available_memory_gib_after"],
+            "tool_provenance": executed,
+            "artifacts": artifacts,
+        }
+        restart.atomic_write_json(restart.selected_record_path(output_dir, mmseqs_audit.probe_selection_key(width)), record)
+    except Exception:
+        shutil.rmtree(generation_dir, ignore_errors=True)
+        raise
+    return record
+
+
+def stage_audit_search(
+    *,
+    width: int,
+    query_partition: str,
+    target_partition: str,
+    config: SplitsConfig002C,
+    output_dir: Path,
+    decode_fasta_dir: Path,
+    decode_manifest_path: Path,
+    assign_record: dict,
+    authorize: bool,
+    mmseqs_bin: str = "mmseqs",
+    dry_run: bool = False,
+) -> dict:
+    mmseqs_audit.validate_direction(query_partition, target_partition)
+    if width not in config.protected_widths:
+        raise StageValidationError(f"width {width!r} is not one of the protected widths {config.protected_widths}")
+    if dry_run:
+        return {
+            "dry_run": True, "stage": "audit_search", "width": width, "query_partition": query_partition,
+            "target_partition": target_partition, "would_authorize_mmseqs": authorize,
+        }
+    if not authorize:
+        raise AuthorizationError("stage 'audit_search' launches MMseqs2 and requires --authorize-mmseqs")
+
+    _verify_current_assignment(config=config, assign_record=assign_record)
+
+    # F1: audit_search binds the SAME current width probe generation (not a
+    # per-direction probe -- there is only one, width-scoped).
+    probe_record = restart.require_accepted(output_dir, mmseqs_audit.probe_selection_key(width))
+
+    decode_generation_digest, fasta_evidence, _duplicate_edges_evidence = _load_decode_manifest(
+        decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
+    )
+
+    fasta_path = Path(decode_fasta_dir) / DECODE_FASTA_FILENAME_TEMPLATE.format(width=width)
+    if not fasta_path.is_file():
+        raise InputValidationError(f"decode FASTA not found at {fasta_path}")
+    sample_to_partition = _sample_to_partition(assign_record)
+    # C3: reconcile the COMPLETE FASTA universe before ever subsetting a
+    # directed query/target pair -- a decode/assignment mismatch fails
+    # closed here, never silently narrows the audited universe.
+    sequences = _read_fasta_strict(fasta_path, expected_width=width, expected_ids=set(sample_to_partition))
+    fasta_sha256 = _verify_decode_fasta(fasta_path, width=width, fasta_evidence=fasta_evidence)
+
+    _resolve_and_verify_mmseqs_binary(mmseqs_bin, config=config, stage_name="audit_search")
+
+    base_dir = output_dir / "audit_search" / str(width) / f"{query_partition}_to_{target_partition}"
+    generation_dir = splits_commands.new_generation_dir(base_dir, prefix="audit_search")
     try:
         query_seqs = mmseqs_audit.build_partition_fasta_subset(sequences, sample_to_partition, query_partition)
         target_seqs = mmseqs_audit.build_partition_fasta_subset(sequences, sample_to_partition, target_partition)
-        if subset_sample_size is not None:
-            query_seqs = _deterministic_subset(query_seqs, subset_sample_size, config.seed)
-            target_seqs = _deterministic_subset(target_seqs, subset_sample_size, config.seed)
 
-        query_fasta = generation_dir / "query.fasta"
-        target_fasta = generation_dir / "target.fasta"
-        _write_fasta(query_seqs, query_fasta)
-        _write_fasta(target_seqs, target_fasta)
-
-        query_db = generation_dir / "query_db"
-        target_db = generation_dir / "target_db"
-        result_prefix = generation_dir / "result"
-        tmp_dir = generation_dir / "tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        log_dir = generation_dir / "logs"
-        threads = config.audit.max_threads
-        guard_kwargs = dict(
-            timeout_seconds=config.audit.timeout_seconds, output_dir=output_dir,
-            max_new_disk_gib=config.audit.max_new_disk_gib, min_free_disk_gib=config.audit.min_free_disk_gib,
-            poll_interval=config.audit.resource_poll_interval_seconds,
+        hits_tsv, executed, threads = _run_mmseqs_pipeline(
+            width=width, query_seqs=query_seqs, target_seqs=target_seqs, config=config, output_dir=output_dir,
+            generation_dir=generation_dir, mmseqs_bin=mmseqs_bin, label="audit_search",
         )
-        executed: list[dict] = []
-        executed.append(guarded_exec.run_guarded_mmseqs(
-            splits_commands.with_threads(splits_commands.createdb_command(query_fasta, query_db, mmseqs_bin=mmseqs_bin), threads),
-            log_dir=log_dir, **guard_kwargs,
-        ))
-        executed.append(guarded_exec.run_guarded_mmseqs(
-            splits_commands.with_threads(splits_commands.createdb_command(target_fasta, target_db, mmseqs_bin=mmseqs_bin), threads),
-            log_dir=log_dir, **guard_kwargs,
-        ))
-        search_cmd = splits_commands.with_threads(
-            splits_commands.audit_search_command(query_db, target_db, result_prefix, tmp_dir, width=width, mmseqs_bin=mmseqs_bin), threads
-        )
-        executed.append(guarded_exec.run_guarded_mmseqs(search_cmd, log_dir=log_dir, **guard_kwargs))
-        hits_tsv = generation_dir / "hits.tsv"
-        executed.append(guarded_exec.run_guarded_mmseqs(
-            splits_commands.with_threads(
-                splits_commands.createtsv_search_command(query_db, target_db, result_prefix, hits_tsv, mmseqs_bin=mmseqs_bin), threads
-            ),
-            log_dir=log_dir, **guard_kwargs,
-        ))
 
-        # C5: peak RSS across this whole guarded attempt, measured once after
-        # every subprocess above has been reaped (ru_maxrss is itself already
-        # a running maximum, never a per-call delta -- see
-        # rbpbench.coordinates.provenance.peak_rss_kib_of_children).
         peak_rss_kib = peak_rss_kib_of_children()
-        available_memory_gib_after: float | None = None
-        if stage_name == "audit_probe":
-            probe_memory = guarded_exec.check_probe_memory_gates_or_fail(
-                peak_rss_kib=peak_rss_kib, max_peak_memory_gib=config.audit.probe_max_peak_memory_gib,
-                min_available_memory_gib_before_next_stage=config.audit.probe_min_available_memory_gib_before_next_stage,
-                label=stage_name,
-            )
-            available_memory_gib_after = probe_memory["available_memory_gib_after"]
-
         hits = mmseqs_audit.parse_search_hits(hits_tsv)
         directed_result = mmseqs_audit.reconcile_directed_hits(
             hits, width=width, query_partition=query_partition, target_partition=target_partition,
@@ -826,23 +1276,24 @@ def _run_directed_audit(
 
         guarded_exec.check_combined_ceiling_or_discard(output_dir=output_dir, max_new_disk_gib=config.audit.max_new_disk_gib)
 
-        manifest_path = generation_dir / f"{stage_name}_report.json"
+        manifest_path = generation_dir / "audit_search_report.json"
         restart.atomic_write_json(manifest_path, directed_result.to_dict())
 
         artifacts = restart.inventory_generation(generation_dir)
         generation_digest = content_fingerprint(
-            f"{stage_name}_generation", width, query_partition, target_partition, str(generation_dir),
+            "audit_search_generation", width, query_partition, target_partition, str(generation_dir),
             *((e["path"], e["sha256"]) for e in artifacts),
         )
-        probe_generation_digest = probe_record["generation_digest"] if probe_record is not None else None
-        stage_fp = directed_audit_fingerprint(
-            stage_name=stage_name, width=width, query_partition=query_partition, target_partition=target_partition,
-            config=config, assign_stage_fingerprint=assign_record["stage_fingerprint"],
+        probe_generation_digest = probe_record["generation_digest"]
+        stage_fp = audit_search_fingerprint(
+            width=width, query_partition=query_partition, target_partition=target_partition, config=config,
+            assign_stage_fingerprint=assign_record["stage_fingerprint"],
             assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
-            mmseqs_bin=mmseqs_bin, probe_generation_digest=probe_generation_digest,
+            decode_generation_digest=decode_generation_digest, mmseqs_bin=mmseqs_bin,
+            probe_generation_digest=probe_generation_digest,
         )
         record = {
-            "stage": stage_name,
+            "stage": "audit_search",
             "executed": True,
             "width": width,
             "query_partition": query_partition,
@@ -859,42 +1310,23 @@ def _run_directed_audit(
             "upstream": {
                 "assign_stage_fingerprint": assign_record["stage_fingerprint"],
                 "assign_generation_digest": assign_record["generation_digest"],
-                **({"probe_generation_digest": probe_generation_digest} if probe_generation_digest is not None else {}),
+                "decode_generation_digest": decode_generation_digest,
+                "probe_generation_digest": probe_generation_digest,
             },
             "mmseqs_bin": mmseqs_bin,
             "threads": threads,
             "peak_rss_kib_of_children": peak_rss_kib,
-            "available_memory_gib_after": available_memory_gib_after,
             "tool_provenance": executed,
             "artifacts": artifacts,
         }
-        restart.atomic_write_json(restart.selected_record_path(output_dir, key), record)
+        restart.atomic_write_json(
+            restart.selected_record_path(output_dir, mmseqs_audit.selection_key("audit_search", width, query_partition, target_partition)),
+            record,
+        )
     except Exception:
         shutil.rmtree(generation_dir, ignore_errors=True)
         raise
     return record
-
-
-def stage_audit_probe(
-    *, width: int, query_partition: str, target_partition: str, config: SplitsConfig002C, output_dir: Path,
-    decode_fasta_dir: Path, assign_record: dict, authorize: bool, mmseqs_bin: str = "mmseqs", dry_run: bool = False,
-) -> dict:
-    return _run_directed_audit(
-        stage_name="audit_probe", width=width, query_partition=query_partition, target_partition=target_partition,
-        config=config, output_dir=output_dir, decode_fasta_dir=decode_fasta_dir, assign_record=assign_record,
-        authorize=authorize, mmseqs_bin=mmseqs_bin, dry_run=dry_run, subset_sample_size=config.audit.probe_sample_size,
-    )
-
-
-def stage_audit_search(
-    *, width: int, query_partition: str, target_partition: str, config: SplitsConfig002C, output_dir: Path,
-    decode_fasta_dir: Path, assign_record: dict, authorize: bool, mmseqs_bin: str = "mmseqs", dry_run: bool = False,
-) -> dict:
-    return _run_directed_audit(
-        stage_name="audit_search", width=width, query_partition=query_partition, target_partition=target_partition,
-        config=config, output_dir=output_dir, decode_fasta_dir=decode_fasta_dir, assign_record=assign_record,
-        authorize=authorize, mmseqs_bin=mmseqs_bin, dry_run=dry_run, subset_sample_size=None,
-    )
 
 
 # --------------------------------------------------------------------------
@@ -984,18 +1416,23 @@ def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool 
         return {"dry_run": True, "stage": "finalize"}
 
     assign_record = restart.require_accepted(output_dir, "assign")
+    # F4: the accepted assign record's five frozen inputs must still be
+    # current before finalization.
+    _verify_current_assignment(config=config, assign_record=assign_record)
+
     legacy_record = restart.require_accepted(output_dir, "legacy_diagnostic")
     exact_audit_records = {
         width: restart.require_accepted(output_dir, f"exact_audit_{width}") for width in config.protected_widths
     }
-    # C4: finalization requires all THREE width probes (not only the 18
-    # full searches).
-    probe_records: dict[str, dict] = {}
+    # F1: finalization requires exactly THREE width-scoped probes (not 18)
+    # plus all 18 directed searches.
+    probe_records: dict[str, dict] = {
+        mmseqs_audit.probe_selection_key(width): restart.require_accepted(output_dir, mmseqs_audit.probe_selection_key(width))
+        for width in config.protected_widths
+    }
     search_records: dict[str, dict] = {}
     for width in config.protected_widths:
         for query_partition, target_partition in mmseqs_audit.ORDERED_PARTITION_PAIRS:
-            probe_key = mmseqs_audit.selection_key("audit_probe", width, query_partition, target_partition)
-            probe_records[probe_key] = restart.require_accepted(output_dir, probe_key)
             search_key = mmseqs_audit.selection_key("audit_search", width, query_partition, target_partition)
             search_records[search_key] = restart.require_accepted(output_dir, search_key)
 
@@ -1012,18 +1449,13 @@ def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool 
     for width, record in exact_audit_records.items():
         if not record.get("passed", False):
             problems.append(f"exact_audit width {width}: cross-partition violation(s) present")
-    for key, record in probe_records.items():
-        if not record.get("passed", False):
-            problems.append(f"{key}: cross-partition violation(s) present")
     for key, record in search_records.items():
         if not record.get("passed", False):
             problems.append(f"{key}: cross-partition violation(s) present")
-        # C4: bind every accepted search to the SAME probe generation
-        # currently accepted for its direction/width, not merely to
-        # whichever probe happened to exist when the search first ran.
-        expected_probe_key = mmseqs_audit.selection_key(
-            "audit_probe", record["width"], record["query_partition"], record["target_partition"]
-        )
+        # F1/C4: bind every accepted search to the SAME width probe
+        # generation currently accepted, not merely to whichever probe
+        # happened to exist when the search first ran.
+        expected_probe_key = mmseqs_audit.probe_selection_key(record["width"])
         current_probe_generation_digest = probe_records[expected_probe_key]["generation_digest"]
         recorded_probe_generation_digest = record.get("upstream", {}).get("probe_generation_digest")
         if recorded_probe_generation_digest != current_probe_generation_digest:
@@ -1097,8 +1529,10 @@ def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool 
                 str(width): {"passed": record["passed"], "violation_count": record.get("violation_count")}
                 for width, record in exact_audit_records.items()
             },
+            # F1: probes carry no "passed"/cross-partition semantics -- the
+            # deterministic query/target split is not partition-directed.
             "audit_probe_summary": {
-                key: {"passed": record["passed"], "hit_count": record.get("hit_count")}
+                key: {"hit_count": record.get("hit_count")}
                 for key, record in probe_records.items()
             },
             "audit_search_summary": {
@@ -1164,6 +1598,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audit-json", type=Path, default=None)
     parser.add_argument("--proteins-tsv", type=Path, default=None)
     parser.add_argument("--decode-fasta-dir", type=Path, default=None)
+    parser.add_argument("--decode-manifest", type=Path, default=None)
     parser.add_argument("--similarity-edges-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--mmseqs-bin", default="mmseqs")
@@ -1200,6 +1635,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     repo_root = _repo_root(args.config, args.repo_root)
     audit_json_path = args.audit_json if args.audit_json is not None else _resolve(repo_root, config.dataset.audit_json_path)
     proteins_tsv_path = args.proteins_tsv if args.proteins_tsv is not None else _resolve(repo_root, config.dataset.proteins_tsv_path)
+    decode_manifest_path = (
+        args.decode_manifest if args.decode_manifest is not None else _resolve(repo_root, config.decode_002b2.manifest_path)
+    )
 
     if args.stage == "assign":
         if args.dry_run:
@@ -1236,19 +1674,37 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.dry_run:
             result = stage_legacy_diagnostic(
                 config=config, csv_path=args.csv, output_dir=output_dir, assign_record={},
-                similarity_edges_dir=args.similarity_edges_dir, dry_run=True,
+                similarity_edges_dir=args.similarity_edges_dir, decode_manifest_path=decode_manifest_path, dry_run=True,
             )
         else:
             assign_record = restart.require_accepted(output_dir, "assign")
+            _verify_current_assignment(config=config, assign_record=assign_record)
             csv_sha256 = sha256_file(Path(args.csv)) if args.csv and Path(args.csv).is_file() else "MISSING"
-            edges_hashes = []
-            for width in config.protected_widths:
-                for name in (f"edges_{width}.json", f"exact_rc_edges_{width}.json"):
-                    candidate = Path(args.similarity_edges_dir) / name
-                    edges_hashes.append(sha256_file(candidate) if candidate.is_file() else "MISSING")
+            decode_generation_digest = "MISSING"
+            edges_evidence: dict[str, dict] = {}
+            if decode_manifest_path.is_file():
+                decode_generation_digest, _fasta_evidence, duplicate_edges_evidence = _load_decode_manifest(
+                    decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
+                )
+                for width in config.protected_widths:
+                    similarity_expected = config.legacy_edges.similarity_edges.get(width)
+                    edges_path = Path(args.similarity_edges_dir) / f"edges_{width}.json"
+                    if similarity_expected is not None:
+                        edges_evidence[f"{width}_similarity"] = splits_legacy_edges.bind_edge_evidence(
+                            width=width, evidence_kind="similarity", path=edges_path,
+                            sha256=similarity_expected.sha256, byte_size=similarity_expected.byte_size,
+                        )
+                    duplicate_expected = duplicate_edges_evidence.get(width)
+                    exact_rc_path = Path(args.similarity_edges_dir) / f"exact_rc_edges_{width}.json"
+                    if duplicate_expected is not None:
+                        edges_evidence[f"{width}_exact_rc"] = splits_legacy_edges.bind_edge_evidence(
+                            width=width, evidence_kind="exact_rc", path=exact_rc_path,
+                            sha256=duplicate_expected.sha256, byte_size=duplicate_expected.byte_size,
+                        )
             current_fp = legacy_diagnostic_fingerprint(
                 config=config, csv_sha256=csv_sha256, assign_stage_fingerprint=assign_record["stage_fingerprint"],
-                assign_generation_digest=assign_record["generation_digest"], edges_hashes=tuple(sorted(edges_hashes)),
+                assign_generation_digest=assign_record["generation_digest"],
+                decode_generation_digest=decode_generation_digest, edges_evidence=edges_evidence,
             )
             prior = None if args.force else restart.load_accepted(output_dir, "legacy_diagnostic")
             if prior is not None and prior.get("stage_fingerprint") == current_fp:
@@ -1256,60 +1712,120 @@ def main(argv: Sequence[str] | None = None) -> None:
             else:
                 result = stage_legacy_diagnostic(
                     config=config, csv_path=args.csv, output_dir=output_dir, assign_record=assign_record,
-                    similarity_edges_dir=args.similarity_edges_dir,
+                    similarity_edges_dir=args.similarity_edges_dir, decode_manifest_path=decode_manifest_path,
                 )
 
     elif args.stage == "exact_audit":
         if args.dry_run:
-            result = stage_exact_audit(width=args.width, config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir, assign_record={}, dry_run=True)
+            result = stage_exact_audit(
+                width=args.width, config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir,
+                decode_manifest_path=decode_manifest_path, assign_record={}, dry_run=True,
+            )
         else:
             assign_record = restart.require_accepted(output_dir, "assign")
-            fasta_path = Path(args.decode_fasta_dir) / f"width_{args.width}.fasta" if args.decode_fasta_dir else None
+            _verify_current_assignment(config=config, assign_record=assign_record)
+            fasta_path = (
+                Path(args.decode_fasta_dir) / DECODE_FASTA_FILENAME_TEMPLATE.format(width=args.width)
+                if args.decode_fasta_dir else None
+            )
             fasta_sha256 = sha256_file(fasta_path) if fasta_path and fasta_path.is_file() else "MISSING"
+            decode_generation_digest = "MISSING"
+            if decode_manifest_path.is_file():
+                decode_generation_digest, _fasta_evidence, _dup = _load_decode_manifest(
+                    decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
+                )
             key = f"exact_audit_{args.width}"
             current_fp = exact_audit_fingerprint(
                 config=config, width=args.width, assign_stage_fingerprint=assign_record["stage_fingerprint"],
                 assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
+                decode_generation_digest=decode_generation_digest,
             )
             prior = None if args.force else restart.load_accepted(output_dir, key)
             if prior is not None and prior.get("stage_fingerprint") == current_fp:
                 result = prior
             else:
-                result = stage_exact_audit(width=args.width, config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir, assign_record=assign_record)
+                result = stage_exact_audit(
+                    width=args.width, config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir,
+                    decode_manifest_path=decode_manifest_path, assign_record=assign_record,
+                )
 
-    elif args.stage in DIRECTION_SCOPED_STAGES:
-        stage_fn = stage_audit_probe if args.stage == "audit_probe" else stage_audit_search
+    elif args.stage == "audit_probe":
         if args.dry_run:
-            result = stage_fn(
-                width=args.width, query_partition=args.query_partition, target_partition=args.target_partition,
-                config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir, assign_record={},
-                authorize=args.authorize_mmseqs, mmseqs_bin=args.mmseqs_bin, dry_run=True,
+            result = stage_audit_probe(
+                width=args.width, config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir,
+                decode_manifest_path=decode_manifest_path, assign_record={}, authorize=args.authorize_mmseqs,
+                mmseqs_bin=args.mmseqs_bin, dry_run=True,
             )
         else:
             assign_record = restart.require_accepted(output_dir, "assign")
-            key = mmseqs_audit.selection_key(args.stage, args.width, args.query_partition, args.target_partition)
-            fasta_path = Path(args.decode_fasta_dir) / f"width_{args.width}.fasta" if args.decode_fasta_dir else None
+            _verify_current_assignment(config=config, assign_record=assign_record)
+            key = mmseqs_audit.probe_selection_key(args.width)
+            fasta_path = (
+                Path(args.decode_fasta_dir) / DECODE_FASTA_FILENAME_TEMPLATE.format(width=args.width)
+                if args.decode_fasta_dir else None
+            )
             fasta_sha256 = sha256_file(fasta_path) if fasta_path and fasta_path.is_file() else "MISSING"
-            probe_generation_digest = None
-            if args.stage == "audit_search":
-                probe_key = mmseqs_audit.selection_key("audit_probe", args.width, args.query_partition, args.target_partition)
-                probe_record = restart.load_accepted(output_dir, probe_key)
-                probe_generation_digest = probe_record["generation_digest"] if probe_record is not None else "MISSING"
-            current_fp = directed_audit_fingerprint(
-                stage_name=args.stage, width=args.width, query_partition=args.query_partition,
-                target_partition=args.target_partition, config=config,
-                assign_stage_fingerprint=assign_record["stage_fingerprint"],
+            decode_generation_digest = "MISSING"
+            if decode_manifest_path.is_file():
+                decode_generation_digest, _fasta_evidence, _dup = _load_decode_manifest(
+                    decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
+                )
+            current_fp = audit_probe_fingerprint(
+                width=args.width, config=config, assign_stage_fingerprint=assign_record["stage_fingerprint"],
                 assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
-                mmseqs_bin=args.mmseqs_bin, probe_generation_digest=probe_generation_digest,
+                decode_generation_digest=decode_generation_digest, mmseqs_bin=args.mmseqs_bin,
             )
             prior = None if args.force else restart.load_accepted(output_dir, key)
             if prior is not None and prior.get("stage_fingerprint") == current_fp:
                 result = prior
             else:
-                result = stage_fn(
+                result = stage_audit_probe(
+                    width=args.width, config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir,
+                    decode_manifest_path=decode_manifest_path, assign_record=assign_record,
+                    authorize=args.authorize_mmseqs, mmseqs_bin=args.mmseqs_bin,
+                )
+
+    elif args.stage == "audit_search":
+        if args.dry_run:
+            result = stage_audit_search(
+                width=args.width, query_partition=args.query_partition, target_partition=args.target_partition,
+                config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir,
+                decode_manifest_path=decode_manifest_path, assign_record={}, authorize=args.authorize_mmseqs,
+                mmseqs_bin=args.mmseqs_bin, dry_run=True,
+            )
+        else:
+            assign_record = restart.require_accepted(output_dir, "assign")
+            _verify_current_assignment(config=config, assign_record=assign_record)
+            key = mmseqs_audit.selection_key("audit_search", args.width, args.query_partition, args.target_partition)
+            fasta_path = (
+                Path(args.decode_fasta_dir) / DECODE_FASTA_FILENAME_TEMPLATE.format(width=args.width)
+                if args.decode_fasta_dir else None
+            )
+            fasta_sha256 = sha256_file(fasta_path) if fasta_path and fasta_path.is_file() else "MISSING"
+            decode_generation_digest = "MISSING"
+            if decode_manifest_path.is_file():
+                decode_generation_digest, _fasta_evidence, _dup = _load_decode_manifest(
+                    decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
+                )
+            probe_key = mmseqs_audit.probe_selection_key(args.width)
+            probe_record = restart.load_accepted(output_dir, probe_key)
+            probe_generation_digest = probe_record["generation_digest"] if probe_record is not None else "MISSING"
+            current_fp = audit_search_fingerprint(
+                width=args.width, query_partition=args.query_partition, target_partition=args.target_partition,
+                config=config, assign_stage_fingerprint=assign_record["stage_fingerprint"],
+                assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
+                decode_generation_digest=decode_generation_digest, mmseqs_bin=args.mmseqs_bin,
+                probe_generation_digest=probe_generation_digest,
+            )
+            prior = None if args.force else restart.load_accepted(output_dir, key)
+            if prior is not None and prior.get("stage_fingerprint") == current_fp:
+                result = prior
+            else:
+                result = stage_audit_search(
                     width=args.width, query_partition=args.query_partition, target_partition=args.target_partition,
                     config=config, output_dir=output_dir, decode_fasta_dir=args.decode_fasta_dir,
-                    assign_record=assign_record, authorize=args.authorize_mmseqs, mmseqs_bin=args.mmseqs_bin,
+                    decode_manifest_path=decode_manifest_path, assign_record=assign_record,
+                    authorize=args.authorize_mmseqs, mmseqs_bin=args.mmseqs_bin,
                 )
 
     elif args.stage == "finalize":

@@ -48,14 +48,25 @@ def validate_direction(query_partition: str, target_partition: str) -> None:
 
 
 def selection_key(stage: str, width: int, query_partition: str, target_partition: str) -> str:
-    """Every audit-search/probe selection-record key and restart
-    fingerprint includes width, query partition, and target partition
+    """Every audit-search selection-record key and restart fingerprint
+    includes width, query partition, and target partition
     (docs/handoffs/002c1_partition_orchestration_claude_handoff.md, item 1):
     e.g. ``audit_search_500_train_to_validation`` and
     ``audit_search_500_validation_to_train`` are independent requirements.
+
+    ``audit_probe`` is WIDTH-scoped only (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+    F1) -- use :func:`probe_selection_key` for it instead.
     """
     validate_direction(query_partition, target_partition)
     return f"{stage}_{width}_{query_partition}_to_{target_partition}"
+
+
+def probe_selection_key(width: int) -> str:
+    """The ``audit_probe`` selection-record key: exactly one deterministic
+    bounded resource probe per protected width (F1) -- e.g.
+    ``audit_probe_500``, never direction-scoped like ``audit_search``.
+    """
+    return f"audit_probe_{width}"
 
 
 def build_partition_fasta_subset(
@@ -188,6 +199,7 @@ __all__ = [
     "InvalidDirectionError",
     "validate_direction",
     "selection_key",
+    "probe_selection_key",
     "build_partition_fasta_subset",
     "parse_search_hits",
     "ForeignAuditSearchEndpointError",

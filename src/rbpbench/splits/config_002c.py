@@ -113,6 +113,40 @@ class BinaryExpectations002C:
 
 
 @dataclass(frozen=True)
+class Decode002BExpectations:
+    """Pins the already committed, sanitized Task 002B-2 decode-evidence
+    manifest (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
+    F2) -- the per-width accepted ``sequence_partitions_width_<width>.fasta``
+    byte size/SHA-256 and the accepted decode-duplicate-edge artifacts
+    (F4) are auto-extracted from this manifest at run time, never a second,
+    independently hard-coded copy of those values here.
+    """
+
+    manifest_path: str
+    manifest_sha256: str
+
+
+@dataclass(frozen=True)
+class LegacyEdgeFileExpectation:
+    byte_size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class LegacyEdgesConfig:
+    """Pinned per-width provenance for the six legacy-diagnostic edge files
+    (F4). ``exact_rc_edges_<width>.json`` is never pinned here -- it is
+    auto-extracted from the decode-evidence manifest's own accepted
+    duplicate-edge artifacts (see :class:`Decode002BExpectations`); only
+    ``edges_<width>.json`` (the Task 002B similarity/cluster edges, for
+    which no sanitized per-width manifest is committed yet) is pinned
+    directly, exactly like ``dataset_audit.json``/``proteins.tsv``.
+    """
+
+    similarity_edges: dict[int, LegacyEdgeFileExpectation]
+
+
+@dataclass(frozen=True)
 class SplitsConfig002C:
     seed: int
     protected_widths: tuple[int, ...]
@@ -122,6 +156,8 @@ class SplitsConfig002C:
     legacy_diagnostic: LegacyDiagnosticConfig
     audit: AuditResourceConfig
     binary: BinaryExpectations002C
+    decode_002b2: Decode002BExpectations
+    legacy_edges: LegacyEdgesConfig
     source_path: str
     content_hash: str
 
@@ -196,6 +232,8 @@ def load_config_002c(path: Path) -> SplitsConfig002C:
     legacy_raw = raw["legacy_diagnostic"]
     audit_raw = raw["audit"]
     binary_raw = raw["binary"]
+    decode_002b2_raw = raw["decode_002b2"]
+    legacy_edges_raw = raw["legacy_edges"]
 
     config = SplitsConfig002C(
         seed=raw["seed"],
@@ -253,6 +291,16 @@ def load_config_002c(path: Path) -> SplitsConfig002C:
             probe_min_available_memory_gib_before_next_stage=audit_raw["probe_min_available_memory_gib_before_next_stage"],
         ),
         binary=BinaryExpectations002C(mmseqs_sha256=binary_raw["mmseqs_sha256"]),
+        decode_002b2=Decode002BExpectations(
+            manifest_path=decode_002b2_raw["manifest_path"],
+            manifest_sha256=decode_002b2_raw["manifest_sha256"],
+        ),
+        legacy_edges=LegacyEdgesConfig(
+            similarity_edges={
+                int(width): LegacyEdgeFileExpectation(byte_size=entry["byte_size"], sha256=entry["sha256"])
+                for width, entry in legacy_edges_raw["similarity_edges"].items()
+            }
+        ),
         source_path=str(path),
         content_hash=content_fingerprint("splits_config_002c_v1", raw_text),
     )
@@ -269,6 +317,9 @@ __all__ = [
     "LegacyDiagnosticConfig",
     "AuditResourceConfig",
     "BinaryExpectations002C",
+    "Decode002BExpectations",
+    "LegacyEdgeFileExpectation",
+    "LegacyEdgesConfig",
     "SplitsConfig002C",
     "validate_frozen_invariants",
     "load_config_002c",

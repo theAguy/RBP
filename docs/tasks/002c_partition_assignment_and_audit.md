@@ -1,7 +1,7 @@
 # Task 002C — Component-level partition assignment and leakage audit
 
-**Status:** planning review requested; implementation and real assignment not
-yet authorized
+**Status:** planning review reconciled; checkpoint 002C-1 synthetic-only
+implementation is authorized, while real assignment remains unauthorized
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 
@@ -116,11 +116,15 @@ Reproduce the submitted notebook's first fold exactly:
 Record environment/package versions and a deterministic digest of both index
 sets. Compare the legacy split with the accepted components using at least:
 
-- components crossing the legacy boundary;
-- training and holdout rows belonging to crossing components;
+- components crossing the legacy boundary, reported both as a count and as a
+  rate over components represented in the legacy holdout;
+- training and holdout rows belonging to crossing components, each reported
+  against its own partition-row denominator;
 - holdout rows with at least one directly recorded Task 002B similarity edge
-  to a training row, by protected width; and
-- exact/reverse-complement cross-boundary violations.
+  to a training row, by protected width, reported as a count and a rate over
+  all legacy holdout rows; and
+- exact/reverse-complement cross-boundary violations, including the number and
+  rate of affected legacy holdout rows (plus raw violating-pair counts).
 
 This diagnostic does not rescue, alter, or reuse the old split. The new test
 partition remains untouched by all model results.
@@ -138,7 +142,8 @@ Extend the split pipeline with explicit, single-stage invocations for:
 - `exact_audit` — independently regenerate canonical exact/reverse-complement
   hashes at 500/251/101 nt and fail on a cross-partition collision;
 - `audit_probe` and `audit_search` — fresh MMseqs2 search generations, scoped
-  to one width and one unordered partition pair per invocation; and
+  to one width and one ordered query/target partition pair per invocation;
+  both directions are required for every unordered pair; and
 - `finalize` — accept only a complete assignment plus all required audit
   records and write the final sanitized manifest.
 
@@ -155,7 +160,11 @@ selection-record write failure; changed upstream invalidation; exact/RC
 crossing; legacy-fold reproduction against a tiny frozen expected result;
 audit-hit parsing; self-hit exclusion; cross-partition failure; subprocess
 kill/timeout/disk/resource failure; and finalization refusing any missing or
-stale audit.
+stale audit. Include a feasible synthetic floor case that requires a chain of
+more than one move/swap so the configured repair bound is exercised rather
+than merely declared. Every audit-search fingerprint and selection-record key
+must include ordered query and target partition identities; an accepted result
+from one direction can never satisfy the reverse direction.
 
 ### 002C-2 — local assignment and non-MMseqs2 diagnostics
 
@@ -176,7 +185,8 @@ They may not launch MMseqs2 or begin model/baseline work.
 ### 002C-3 — fresh cross-partition MMseqs2 audits
 
 For each protected width and each unordered pair
-`train-validation`, `train-test`, and `validation-test`:
+`train-validation`, `train-test`, and `validation-test`, run both ordered
+query/target directions (18 directed searches in total):
 
 1. regenerate the two partition FASTAs from the frozen assignment in a fresh
    audit generation;
@@ -186,8 +196,8 @@ For each protected width and each unordered pair
    strands, 0.90 identity, the width-specific 0.80/0.95 bidirectional
    coverage, `--max-seqs 361180`, alignment mode 3, E-value 1000, masking
    disabled, sensitivity 7.5, and at most four threads; and
-4. reconcile all endpoints against the closed partition universes and require
-   zero qualifying cross-partition hits.
+4. reconcile all endpoints against the closed, direction-specific query and
+   target universes and require zero qualifying cross-partition hits.
 
 First run one deterministic bounded probe per width. Preserve the existing
 10-GiB available-memory launch gate, 10-GiB peak-memory probe gate, 80-GiB
@@ -202,8 +212,8 @@ legacy diagnostics, or Task 002B clustering there.
 
 ### 002C-4 — finalize and freeze
 
-Finalize only after all nine width-by-partition-pair audit searches and all
-three exact/RC width audits are accepted and current. The final output is:
+Finalize only after all 18 directed width-by-partition-pair audit searches and
+all three exact/RC width audits are accepted and current. The final output is:
 
 - `artifacts/splits/sequence_partitions_v1.tsv.gz` containing only
   `sample_id`, `component_id`, and `partition`, deterministically compressed;
@@ -222,7 +232,8 @@ three exact/RC width audits are accepted and current. The final output is:
   validation and test; every larger balance deviation is disclosed.
 - Exact/reverse-complement audits find zero cross-partition collisions at all
   three widths.
-- All nine fresh MMseqs2 searches find zero qualifying cross-partition hits.
+- All 18 directed fresh MMseqs2 searches find zero qualifying
+  cross-partition hits.
 - Repeated assignment/finalization reproduces decompressed membership and
   scientific summaries exactly.
 - The manifest quantifies the legacy split without using it for new model

@@ -313,3 +313,21 @@
 - Task 002C may now assign whole components to the locked 70/15/15 partitions
   and run the prespecified fresh cross-partition audits. No Task 002B result is
   itself a train/validation/test assignment.
+
+## 2026-09-29 — Task 002C planning reconciliation
+
+- Whole-component assignment uses scale-normalized row and 244 separate
+  positive/known-negative objectives followed by a deterministic bounded
+  hard-floor repair. The 30/30 validation/test floors are constraints; larger
+  three-percentage-point balance deviations are disclosed rather than tuned
+  away indefinitely.
+- The former row-level fold is reproduced only as a diagnostic. Every leakage
+  count is accompanied by an explicit, appropriate denominator and rate.
+- Fresh MMseqs2 audits run both query/target directions for every protected
+  width and every unordered partition pair: 18 directed searches total.
+  Direction is part of each restart fingerprint and selection-record key.
+- Assignment, legacy diagnostics, and exact/reverse-complement audits remain
+  local. The MMseqs2 searches move to the collaborator's 64-GiB Mac only if
+  the current Mac fails the unchanged live-memory gate.
+- Only synthetic-only checkpoint 002C-1 is authorized next. No real partition
+  may be created until its implementation is independently reviewed.

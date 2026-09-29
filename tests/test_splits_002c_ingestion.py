@@ -1,4 +1,5 @@
 import gzip
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,10 +9,12 @@ from rbpbench.splits.ingestion import (
     ComponentIngestionError,
     LabelParseError,
     load_component_membership,
+    load_component_report,
     parse_signed_labels,
     stream_component_label_aggregates,
     to_component_label_counts,
     verify_component_membership_file,
+    verify_component_report_file,
 )
 
 _HEX_A = "a" * 64
@@ -140,6 +143,94 @@ class LoadComponentMembershipTests(unittest.TestCase):
                     expected_sha256="6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692",
                     expected_byte_size=14578797,
                 )
+
+
+def _write_report(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data))
+
+
+def _good_report(n: int = 2) -> dict:
+    return {
+        "total_rows": n,
+        "component_count": n,
+        "component_sizes": {[_HEX_A, _HEX_B, _HEX_C][i]: 1 for i in range(n)},
+        "giant_component_gate": {"single_component_gate_tripped": False, "top20_gate_tripped": False},
+    }
+
+
+class VerifyComponentReportFileTests(unittest.TestCase):
+    def test_wrong_hash_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            _write_report(path, _good_report())
+            with self.assertRaises(ComponentIngestionError):
+                verify_component_report_file(path, expected_sha256="0" * 64, expected_byte_size=path.stat().st_size)
+
+    def test_wrong_byte_size_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            _write_report(path, _good_report())
+            with self.assertRaises(ComponentIngestionError):
+                verify_component_report_file(path, expected_sha256=_sha(path), expected_byte_size=path.stat().st_size + 1)
+
+    def test_correct_hash_and_size_are_accepted(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            _write_report(path, _good_report())
+            expected = _sha(path)
+            actual = verify_component_report_file(path, expected_sha256=expected, expected_byte_size=path.stat().st_size)
+            self.assertEqual(actual, expected)
+
+    def test_missing_file_is_rejected(self):
+        with self.assertRaises(ComponentIngestionError):
+            verify_component_report_file(Path("/nonexistent/report.json"), expected_sha256="0" * 64, expected_byte_size=1)
+
+
+class LoadComponentReportTests(unittest.TestCase):
+    def test_valid_report_is_accepted(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            _write_report(path, _good_report(2))
+            report = load_component_report(path, expected_row_count=2, expected_component_count=2)
+            self.assertEqual(report.total_rows, 2)
+            self.assertEqual(report.component_count, 2)
+            self.assertTrue(report.giant_component_gate_passed)
+            self.assertEqual(report.component_sizes[_HEX_A], 1)
+
+    def test_wrong_row_count_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            _write_report(path, _good_report(2))
+            with self.assertRaises(ComponentIngestionError) as ctx:
+                load_component_report(path, expected_row_count=3, expected_component_count=2)
+            self.assertIn("total_rows", str(ctx.exception))
+
+    def test_wrong_component_count_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            _write_report(path, _good_report(2))
+            with self.assertRaises(ComponentIngestionError) as ctx:
+                load_component_report(path, expected_row_count=2, expected_component_count=5)
+            self.assertIn("component_count", str(ctx.exception))
+
+    def test_failed_giant_component_gate_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            report = _good_report(2)
+            report["giant_component_gate"]["single_component_gate_tripped"] = True
+            _write_report(path, report)
+            with self.assertRaises(ComponentIngestionError) as ctx:
+                load_component_report(path, expected_row_count=2, expected_component_count=2)
+            self.assertIn("giant_component_gate", str(ctx.exception))
+
+    def test_missing_giant_component_gate_field_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            report = _good_report(2)
+            del report["giant_component_gate"]
+            _write_report(path, report)
+            with self.assertRaises(ComponentIngestionError):
+                load_component_report(path, expected_row_count=2, expected_component_count=2)
 
 
 class ParseSignedLabelsTests(unittest.TestCase):

@@ -31,6 +31,14 @@ def audit_width(sequences_by_id: Mapping[str, str], sample_to_partition: Mapping
     width's ``sequences_by_id`` and reports every cross-partition group as a
     violation. Reconciles the complete ID universe FIRST (fail-closed on any
     missing/foreign ID) before ever computing a hash group.
+
+    Reports the raw violating-PAIR count/rate (``violation_count``/
+    ``violation_rate_over_rows``, kept for backward compatibility -- an edge
+    count divided by total rows, NOT itself a row rate) alongside a
+    SEPARATE, genuine affected-ROW count/rate (``affected_row_count``/
+    ``affected_row_rate_over_rows``, the distinct sample IDs appearing in
+    any violating pair, over total rows) -- docs/reviews/002c1_partition_orchestration_correction_review.md,
+    C3: "Do not label an edge-count divided by total rows as a row rate."
     """
     foreign = sorted(set(sequences_by_id) - set(sample_to_partition))
     missing = sorted(set(sample_to_partition) - set(sequences_by_id))
@@ -50,6 +58,7 @@ def audit_width(sequences_by_id: Mapping[str, str], sample_to_partition: Mapping
     # the CURRENT sequences_by_id, so this call only ever surfaces ordinary
     # violations here.
     violations = splits_audit.cross_partition_violations(sample_to_partition, edges)
+    affected_rows = {sample_id for v in violations for sample_id in (v["sample_a"], v["sample_b"])}
 
     total_rows = len(sequences_by_id)
     return {
@@ -59,6 +68,8 @@ def audit_width(sequences_by_id: Mapping[str, str], sample_to_partition: Mapping
         "violation_count": len(violations),
         "violations": violations,
         "violation_rate_over_rows": (len(violations) / total_rows) if total_rows else 0.0,
+        "affected_row_count": len(affected_rows),
+        "affected_row_rate_over_rows": (len(affected_rows) / total_rows) if total_rows else 0.0,
         "passed": len(violations) == 0,
     }
 

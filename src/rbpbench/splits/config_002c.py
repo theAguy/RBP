@@ -26,6 +26,24 @@ else:
 
 from rbpbench.coordinates.hashing import content_fingerprint
 
+# The frozen scientific/protocol invariants every real run's config MUST
+# match exactly (docs/reviews/002c1_partition_orchestration_correction_review.md,
+# C1: "A config field must either drive the implementation or be checked
+# against the reviewed code constant; it may not be silently dead."). Every
+# one of these fields ALSO genuinely drives the implementation (threaded
+# through :func:`rbpbench.splits.assignment.assign_partitions` and
+# :func:`rbpbench.splits.legacy_diagnostic.run_legacy_fold`); this table is
+# an independent cross-check that a config edit can never silently drift
+# from the reviewed contract those modules' own docstrings freeze.
+FROZEN_PROTECTED_WIDTHS: tuple[int, ...] = (500, 251, 101)
+
+
+class FrozenInvariantError(ValueError):
+    """A configured value that must match a reviewed, frozen scientific
+    constant does not. Raised at config-load time, before any real stage
+    can run with a silently drifted value.
+    """
+
 
 @dataclass(frozen=True)
 class DatasetExpectations002C:
@@ -58,6 +76,7 @@ class AssignmentConfig:
     row_dimension_weight: int
     protein_class_dimension_weight: int
     max_repair_passes: int
+    max_repair_proposals: int
     row_fraction_repair_limit_pct: float
 
 
@@ -107,6 +126,64 @@ class SplitsConfig002C:
     content_hash: str
 
 
+def validate_frozen_invariants(config: "SplitsConfig002C") -> None:
+    """Fails closed if any configured value that is supposed to reproduce a
+    reviewed, frozen scientific/protocol constant has drifted from it
+    (docs/reviews/002c1_partition_orchestration_correction_review.md, C1).
+
+    Every field checked here ALSO genuinely drives real behavior (it is not
+    validated INSTEAD of being used) -- see
+    :mod:`rbpbench.splits.assignment` and
+    :mod:`rbpbench.splits.legacy_diagnostic` -- so this is a second,
+    independent line of defense, not a substitute for wiring the config
+    through.
+    """
+    from rbpbench.splits import assignment as splits_assignment
+    from rbpbench.splits import audit as splits_audit
+    from rbpbench.splits import legacy_diagnostic as splits_legacy_diagnostic
+
+    problems: list[str] = []
+    if config.protected_widths != FROZEN_PROTECTED_WIDTHS:
+        problems.append(f"protected_widths {config.protected_widths} != frozen {FROZEN_PROTECTED_WIDTHS}")
+    if dict(config.assignment.target_fractions) != dict(splits_assignment.TARGET_FRACTIONS):
+        problems.append(
+            f"assignment.target_fractions {config.assignment.target_fractions} != frozen "
+            f"{splits_assignment.TARGET_FRACTIONS}"
+        )
+    if config.assignment.row_dimension_weight != splits_assignment.ROW_DIMENSION_WEIGHT:
+        problems.append(
+            f"assignment.row_dimension_weight {config.assignment.row_dimension_weight} != frozen "
+            f"{splits_assignment.ROW_DIMENSION_WEIGHT}"
+        )
+    if config.assignment.protein_class_dimension_weight != splits_assignment.PROTEIN_CLASS_DIMENSION_WEIGHT:
+        problems.append(
+            f"assignment.protein_class_dimension_weight {config.assignment.protein_class_dimension_weight} != "
+            f"frozen {splits_assignment.PROTEIN_CLASS_DIMENSION_WEIGHT}"
+        )
+    if config.assignment.balance_deviation_flag_pct != splits_audit.BALANCE_DEVIATION_FLAG_PCT:
+        problems.append(
+            f"assignment.balance_deviation_flag_pct {config.assignment.balance_deviation_flag_pct} != frozen "
+            f"{splits_audit.BALANCE_DEVIATION_FLAG_PCT}"
+        )
+    legacy = config.legacy_diagnostic
+    if legacy.n_splits != splits_legacy_diagnostic.N_SPLITS:
+        problems.append(f"legacy_diagnostic.n_splits {legacy.n_splits} != frozen {splits_legacy_diagnostic.N_SPLITS}")
+    if legacy.shuffle != splits_legacy_diagnostic.SHUFFLE:
+        problems.append(f"legacy_diagnostic.shuffle {legacy.shuffle} != frozen {splits_legacy_diagnostic.SHUFFLE}")
+    if legacy.random_state != splits_legacy_diagnostic.RANDOM_STATE:
+        problems.append(
+            f"legacy_diagnostic.random_state {legacy.random_state} != frozen {splits_legacy_diagnostic.RANDOM_STATE}"
+        )
+    if legacy.fold_index != splits_legacy_diagnostic.FOLD_INDEX:
+        problems.append(
+            f"legacy_diagnostic.fold_index {legacy.fold_index} != frozen {splits_legacy_diagnostic.FOLD_INDEX}"
+        )
+    if problems:
+        raise FrozenInvariantError(
+            f"{config.source_path}: configured value(s) diverge from the reviewed frozen contract: " + "; ".join(problems)
+        )
+
+
 def load_config_002c(path: Path) -> SplitsConfig002C:
     path = Path(path)
     raw_text = path.read_text()
@@ -120,7 +197,7 @@ def load_config_002c(path: Path) -> SplitsConfig002C:
     audit_raw = raw["audit"]
     binary_raw = raw["binary"]
 
-    return SplitsConfig002C(
+    config = SplitsConfig002C(
         seed=raw["seed"],
         protected_widths=tuple(raw["protected_widths"]),
         dataset=DatasetExpectations002C(
@@ -149,6 +226,7 @@ def load_config_002c(path: Path) -> SplitsConfig002C:
             row_dimension_weight=assignment_raw["row_dimension_weight"],
             protein_class_dimension_weight=assignment_raw["protein_class_dimension_weight"],
             max_repair_passes=assignment_raw["max_repair_passes"],
+            max_repair_proposals=assignment_raw["max_repair_proposals"],
             row_fraction_repair_limit_pct=assignment_raw["row_fraction_repair_limit_pct"],
         ),
         legacy_diagnostic=LegacyDiagnosticConfig(
@@ -178,9 +256,13 @@ def load_config_002c(path: Path) -> SplitsConfig002C:
         source_path=str(path),
         content_hash=content_fingerprint("splits_config_002c_v1", raw_text),
     )
+    validate_frozen_invariants(config)
+    return config
 
 
 __all__ = [
+    "FROZEN_PROTECTED_WIDTHS",
+    "FrozenInvariantError",
     "DatasetExpectations002C",
     "Components002BExpectations",
     "AssignmentConfig",
@@ -188,5 +270,6 @@ __all__ = [
     "AuditResourceConfig",
     "BinaryExpectations002C",
     "SplitsConfig002C",
+    "validate_frozen_invariants",
     "load_config_002c",
 ]

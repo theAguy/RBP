@@ -150,6 +150,10 @@ class LegacyFoldResult:
     train_digest: str
     holdout_digest: str
     dependency_versions: LegacyDependencyVersions
+    n_splits: int = N_SPLITS
+    shuffle: bool = SHUFFLE
+    random_state: int = RANDOM_STATE
+    fold_index: int = FOLD_INDEX
 
     def to_dict(self) -> dict:
         return {
@@ -158,26 +162,43 @@ class LegacyFoldResult:
             "train_digest": self.train_digest,
             "holdout_digest": self.holdout_digest,
             "dependency_versions": self.dependency_versions.to_dict(),
-            "n_splits": N_SPLITS,
-            "shuffle": SHUFFLE,
-            "random_state": RANDOM_STATE,
-            "fold_index": FOLD_INDEX,
+            "n_splits": self.n_splits,
+            "shuffle": self.shuffle,
+            "random_state": self.random_state,
+            "fold_index": self.fold_index,
         }
 
 
-def run_legacy_fold(signed_labels_by_row: Sequence[Mapping[int, int]], *, protein_ids: Sequence[int]) -> LegacyFoldResult:
+def run_legacy_fold(
+    signed_labels_by_row: Sequence[Mapping[int, int]],
+    *,
+    protein_ids: Sequence[int],
+    n_splits: int = N_SPLITS,
+    shuffle: bool = SHUFFLE,
+    random_state: int = RANDOM_STATE,
+    fold_index: int = FOLD_INDEX,
+) -> LegacyFoldResult:
     """Exactly reproduces the submitted notebook's fold-0 first CV split:
     ``MultilabelStratifiedKFold(n_splits=5, shuffle=True,
     random_state=42)`` over the positive-only ``targets * masks`` matrix, in
     canonical row order (``signed_labels_by_row[i]`` is ``row_<i>``).
+
+    ``n_splits``/``shuffle``/``random_state``/``fold_index`` default to the
+    frozen module constants and are threaded from
+    ``configs/splits/sequence_partitions_002c_v1.toml``'s
+    ``[legacy_diagnostic]`` section by the runner
+    (docs/reviews/002c1_partition_orchestration_correction_review.md, C1) --
+    :func:`rbpbench.splits.config_002c.validate_frozen_invariants`
+    additionally fails closed if that config ever diverges from these same
+    constants.
     """
     versions = resolve_dependency_versions()
     from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 
     matrix = build_positive_only_matrix(signed_labels_by_row, protein_ids=protein_ids)
-    splitter = MultilabelStratifiedKFold(n_splits=N_SPLITS, shuffle=SHUFFLE, random_state=RANDOM_STATE)
+    splitter = MultilabelStratifiedKFold(n_splits=n_splits, shuffle=shuffle, random_state=random_state)
     folds = list(splitter.split(matrix, matrix))
-    train_idx, holdout_idx = folds[FOLD_INDEX]
+    train_idx, holdout_idx = folds[fold_index]
     train_indices = tuple(int(i) for i in train_idx)
     holdout_indices = tuple(int(i) for i in holdout_idx)
     return LegacyFoldResult(
@@ -186,6 +207,10 @@ def run_legacy_fold(signed_labels_by_row: Sequence[Mapping[int, int]], *, protei
         train_digest=index_set_digest(train_indices),
         holdout_digest=index_set_digest(holdout_indices),
         dependency_versions=versions,
+        n_splits=n_splits,
+        shuffle=shuffle,
+        random_state=random_state,
+        fold_index=fold_index,
     )
 
 

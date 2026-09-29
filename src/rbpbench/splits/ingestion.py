@@ -14,6 +14,7 @@ failure, never silently dropped or repaired.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Mapping
@@ -120,6 +121,103 @@ def load_component_membership(
         raise ComponentIngestionError("component membership reconciliation failed: " + "; ".join(problems))
 
     return ComponentUniverse(sample_to_component=sample_to_component, component_sizes=component_sizes)
+
+
+def verify_component_report_file(path: Path, *, expected_sha256: str, expected_byte_size: int) -> str:
+    """Confirms the accepted Task 002B component-REPORT file's exact byte
+    size and SHA-256 BEFORE it is ever parsed -- the same fail-closed
+    pattern as :func:`verify_component_membership_file`, applied to the
+    sanitized report (``rbpbench.splits.output.build_component_report``)
+    rather than the raw membership gzip
+    (docs/reviews/002c1_partition_orchestration_correction_review.md, C1:
+    "the accepted Task 002B component-report hashes are never checked").
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise ComponentIngestionError(f"component report file not found at {path}")
+    actual_size = path.stat().st_size
+    if actual_size != expected_byte_size:
+        raise ComponentIngestionError(
+            f"component report file {path} is {actual_size} bytes, expected exactly {expected_byte_size}"
+        )
+    actual_sha256 = sha256_file(path)
+    if actual_sha256 != expected_sha256:
+        raise ComponentIngestionError(
+            f"component report file {path} hashes to {actual_sha256}, expected exactly {expected_sha256}"
+        )
+    return actual_sha256
+
+
+@dataclass(frozen=True)
+class ComponentReport:
+    total_rows: int
+    component_count: int
+    component_sizes: Mapping[str, int]
+    giant_component_gate_passed: bool
+
+
+def load_component_report(
+    path: Path, *, expected_row_count: int, expected_component_count: int
+) -> ComponentReport:
+    """Parses and validates the accepted Task 002B component report
+    (``rbpbench.splits.output.build_component_report``'s JSON shape): its
+    row count, component count, component-size map, and PASSED
+    giant-component gate result
+    (docs/reviews/002c1_partition_orchestration_correction_review.md, C1).
+    Never silently accepts a report whose own giant-component gate tripped,
+    or whose declared counts disagree with the frozen expectations -- the
+    membership-derived size map is compared against
+    :attr:`ComponentReport.component_sizes` exactly, byte-for-byte, by
+    :func:`load_component_membership`'s own ``expected_component_sizes``
+    check.
+    """
+    data = json.loads(Path(path).read_text())
+    problems: list[str] = []
+
+    total_rows = data.get("total_rows")
+    if total_rows != expected_row_count:
+        problems.append(f"total_rows {total_rows!r} != expected exactly {expected_row_count}")
+
+    component_count = data.get("component_count")
+    if component_count != expected_component_count:
+        problems.append(f"component_count {component_count!r} != expected exactly {expected_component_count}")
+
+    component_sizes = data.get("component_sizes")
+    if not isinstance(component_sizes, dict):
+        problems.append("component_sizes is missing or not an object")
+        component_sizes = {}
+    elif len(component_sizes) != expected_component_count:
+        problems.append(
+            f"component_sizes has {len(component_sizes)} entries, expected exactly {expected_component_count}"
+        )
+
+    gate = data.get("giant_component_gate")
+    if not isinstance(gate, dict):
+        problems.append("giant_component_gate is missing or not an object")
+        gate_passed = False
+    else:
+        single_tripped = gate.get("single_component_gate_tripped")
+        top20_tripped = gate.get("top20_gate_tripped")
+        if single_tripped is None or top20_tripped is None:
+            problems.append("giant_component_gate is missing its tripped-flag field(s)")
+            gate_passed = False
+        else:
+            gate_passed = not single_tripped and not top20_tripped
+            if not gate_passed:
+                problems.append(
+                    f"accepted component report's giant_component_gate did not pass "
+                    f"(single_component_gate_tripped={single_tripped!r}, top20_gate_tripped={top20_tripped!r})"
+                )
+
+    if problems:
+        raise ComponentIngestionError("component report validation failed: " + "; ".join(problems))
+
+    return ComponentReport(
+        total_rows=total_rows,
+        component_count=component_count,
+        component_sizes={str(cid): int(size) for cid, size in component_sizes.items()},
+        giant_component_gate_passed=gate_passed,
+    )
 
 
 def parse_signed_labels(raw_field: str, *, protein_id_min: int = 1, protein_id_max: int = 122) -> dict[int, int]:
@@ -260,8 +358,11 @@ __all__ = [
     "ComponentIngestionError",
     "LabelParseError",
     "ComponentUniverse",
+    "ComponentReport",
     "ComponentAggregate",
     "verify_component_membership_file",
+    "verify_component_report_file",
+    "load_component_report",
     "load_component_membership",
     "parse_signed_labels",
     "iter_csv_component_label_rows",

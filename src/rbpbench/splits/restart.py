@@ -60,12 +60,21 @@ def verify_generation_intact(record: dict | None) -> bool:
     """Re-hashes and re-lists EVERY file the record's generation directory
     currently contains and compares it to the exact inventory recorded at
     acceptance time.
+
+    A record with a missing/empty ``generation_dir`` fails CLOSED (never
+    fail-open): every 002C stage (``assign``, ``legacy_diagnostic``,
+    ``exact_audit``, ``audit_probe``, ``audit_search``, ``finalize``) always
+    creates its own generation directory, so there is no legitimate
+    generation-less 002C selection record
+    (docs/reviews/002c1_partition_orchestration_correction_review.md, C4:
+    "``load_accepted()`` also returns true for a record without a
+    generation directory, which is fail-open").
     """
     if record is None:
         return False
     generation_dir = record.get("generation_dir")
     if not generation_dir:
-        return True
+        return False
     path = Path(generation_dir)
     if not path.is_dir():
         return False

@@ -1,0 +1,56 @@
+{
+  "checkpoint": "002C-1",
+  "purpose": "Isolated environment for the exact former-notebook legacy-fold diagnostic (rbpbench.splits.legacy_diagnostic), pinned per docs/handoffs/002c1_partition_orchestration_claude_handoff.md ('Environment boundary'). Never used to modify the accepted rbpbench-splits-002 conda environment.",
+  "venv": {
+    "path": ".venv-002c-legacy",
+    "manager": "uv",
+    "uv_version": "0.11.13",
+    "python_home": "/Users/guyassa/.local/share/uv/python/cpython-3.12-macos-x86_64-none/bin",
+    "include_system_site_packages": false,
+    "gitignored": true,
+    "note": "The virtual environment directory itself is never committed (see .venv-002c-legacy/.gitignore); this manifest plus the recreate commands below are the durable evidence."
+  },
+  "resolved_versions": {
+    "python_version": "3.12.13",
+    "numpy_version": "2.0.2",
+    "scipy_version": "1.16.1",
+    "scikit_learn_version": "1.6.1",
+    "iterative_stratification_version": "0.1.9"
+  },
+  "pinned_versions_required_by_handoff": {
+    "python_version": "3.12",
+    "numpy_version": "2.0.2",
+    "scipy_version": "1.16.1",
+    "scikit_learn_version": "1.6.1",
+    "iterative_stratification_version": "0.1.9"
+  },
+  "resolved_matches_pinned": true,
+  "package_dist_info_observed": [
+    "cloudpickle-3.1.2",
+    "iniconfig-2.3.0",
+    "iterative_stratification-0.1.9",
+    "joblib-1.6.0",
+    "numpy-2.0.2",
+    "packaging-26.3",
+    "pluggy-1.6.0",
+    "pygments-2.21.0",
+    "pytest-9.1.1",
+    "rbpbench-0.1.0",
+    "scikit_learn-1.6.1",
+    "scipy-1.16.1",
+    "threadpoolctl-3.7.0"
+  ],
+  "rbpbench_install_mode": "editable (pip/uv install -e ., pointing at src/rbpbench)",
+  "recreate_commands": [
+    "uv venv --python 3.12 .venv-002c-legacy",
+    "uv pip install --python .venv-002c-legacy/bin/python numpy==2.0.2 scipy==1.16.1 scikit-learn==1.6.1 iterative-stratification==0.1.9 pytest",
+    "uv pip install --python .venv-002c-legacy/bin/python -e ."
+  ],
+  "verification_command": "PYTHONPATH=src .venv-002c-legacy/bin/python -c \"import platform, numpy, scipy, sklearn, iterstrat; print(platform.python_version(), numpy.__version__, scipy.__version__, sklearn.__version__, iterstrat.__version__)\"",
+  "mmseqs2_binary": {
+    "note": "Real-binary tiny-fixture audit-search stages reuse the already-accepted MMseqs2 18.8cc5c binary from the rbpbench-splits-002 conda environment (never modified by Task 002C); see manifests/sequence_partition_environment_002a.json for its own environment/binary evidence.",
+    "resolved_path": "/opt/miniconda3/envs/rbpbench-splits-002/bin/mmseqs",
+    "binary_sha256": "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed635"
+  },
+  "scope_note": "Checkpoint 002C-1 only: synthetic-fixture legacy-fold reproduction and tiny real-binary audit-search fixtures. No real CSV row, real component, or real partition was decoded, assigned, or audited under this environment."
+}

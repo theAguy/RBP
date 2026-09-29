@@ -45,10 +45,15 @@ def giant_component_gate(component_sizes: Mapping[str, int], total_rows: int) ->
 
 
 def balance_report(
-    partition_row_counts: Mapping[str, int], target_fractions: Mapping[str, float], total_rows: int
+    partition_row_counts: Mapping[str, int],
+    target_fractions: Mapping[str, float],
+    total_rows: int,
+    *,
+    flag_threshold_pct: float = BALANCE_DEVIATION_FLAG_PCT,
 ) -> dict:
     """Achieved vs. target partition row-count fraction, flagging any
-    deviation over :data:`BALANCE_DEVIATION_FLAG_PCT` percentage points.
+    deviation over ``flag_threshold_pct`` percentage points (defaults to the
+    frozen :data:`BALANCE_DEVIATION_FLAG_PCT`).
     """
     report = {}
     for partition, target in target_fractions.items():
@@ -58,17 +63,20 @@ def balance_report(
             "target_fraction": target,
             "achieved_fraction": achieved,
             "deviation_percentage_points": deviation_pct,
-            "flagged": abs(deviation_pct) > BALANCE_DEVIATION_FLAG_PCT,
+            "flagged": abs(deviation_pct) > flag_threshold_pct,
         }
     return report
 
 
 def per_protein_balance_report(
-    partition_label_counts: Mapping[str, Mapping[int, tuple[int, int]]], target_fractions: Mapping[str, float]
+    partition_label_counts: Mapping[str, Mapping[int, tuple[int, int]]],
+    target_fractions: Mapping[str, float],
+    *,
+    flag_threshold_pct: float = BALANCE_DEVIATION_FLAG_PCT,
 ) -> dict:
     """Per-protein, per-class (known-positive/known-negative) achieved vs.
-    target fraction across partitions, flagging >3-percentage-point
-    deviations at protein-class granularity (same rule as
+    target fraction across partitions, flagging deviations over
+    ``flag_threshold_pct`` percentage points (same rule as
     :func:`balance_report`, applied per protein/class instead of totals).
     """
     protein_ids = sorted({pid for counts in partition_label_counts.values() for pid in counts})
@@ -91,7 +99,7 @@ def per_protein_balance_report(
                     "achieved_fraction": achieved,
                     "target_fraction": target,
                     "deviation_percentage_points": deviation_pct,
-                    "flagged": bool(total) and abs(deviation_pct) > BALANCE_DEVIATION_FLAG_PCT,
+                    "flagged": bool(total) and abs(deviation_pct) > flag_threshold_pct,
                 }
             per_partition[partition] = entry
         report[protein_id] = per_partition

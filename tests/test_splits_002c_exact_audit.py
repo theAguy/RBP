@@ -75,6 +75,20 @@ class AuditWidthTests(unittest.TestCase):
         self.assertEqual(report["total_rows"], 10)
         self.assertIn("violation_rate_over_rows", report)
 
+    def test_affected_row_count_is_distinct_from_the_edge_count(self):
+        # A 3-member cross-partition duplicate group (row_0/row_1/row_2, all
+        # identical) yields 2 edges (consecutive pairs within the sorted
+        # group) but only 3 DISTINCT affected rows -- proving the row count
+        # is not simply the edge count relabeled.
+        sequences = {"row_0": "AAAA", "row_1": "AAAA", "row_2": "AAAA"}
+        partitions = {"row_0": "train", "row_1": "validation", "row_2": "test"}
+        report = audit_width(sequences, partitions)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["violation_count"], 2)
+        self.assertEqual(report["affected_row_count"], 3)
+        self.assertAlmostEqual(report["affected_row_rate_over_rows"], 3 / 3)
+        self.assertNotEqual(report["violation_count"], report["affected_row_count"])
+
 
 class AuditAllWidthsTests(unittest.TestCase):
     def test_passes_when_every_width_passes(self):

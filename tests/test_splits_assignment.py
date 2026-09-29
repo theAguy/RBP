@@ -1,12 +1,15 @@
 import random
+import time
 import unittest
 
 from rbpbench.splits.assignment import (
     PARTITIONS,
+    PROTEIN_CLASS_DIMENSION_WEIGHT,
     ROW_DIMENSION_WEIGHT,
     TARGET_FRACTIONS,
     AssignmentInfeasibleError,
     ComponentLabelCounts,
+    _build_contributors_index,
     _floor_violation_set,
     _lexicographic_tuple,
     _max_dimension_share,
@@ -372,6 +375,121 @@ class FloorRepairTests(unittest.TestCase):
         )
         self.assertIsNotNone(swap_result)
         self.assertEqual(swap_result["kind"], "swap")
+
+
+class ContributorsIndexTests(unittest.TestCase):
+    """Proves the deterministic inverted index (docs/reviews/002c1_partition_orchestration_correction_review.md,
+    C2) only ever holds actual label carriers, never every component.
+    """
+
+    def test_index_excludes_components_with_no_contribution(self):
+        components_by_id = {
+            "bulk": ComponentLabelCounts(component_id="bulk", size=10),
+            "carrier": ComponentLabelCounts(component_id="carrier", size=1, label_counts={1: (3, 0)}),
+        }
+        index = _build_contributors_index(components_by_id)
+        self.assertEqual(index[(1, "known_positive")], ["carrier"])
+        self.assertNotIn((1, "known_negative"), index)
+
+    def test_index_size_is_proportional_to_label_carriers_not_total_components(self):
+        components_by_id = {f"bulk{i}": ComponentLabelCounts(component_id=f"bulk{i}", size=1) for i in range(5000)}
+        for tag, protein_id, pos, neg in [("a", 1, 2, 0), ("b", 1, 0, 2), ("c", 2, 1, 0)]:
+            cid = f"carrier_{tag}"
+            components_by_id[cid] = ComponentLabelCounts(component_id=cid, size=1, label_counts={protein_id: (pos, neg)})
+        index = _build_contributors_index(components_by_id)
+        total_entries = sum(len(v) for v in index.values())
+        # Exactly 3 label-carrying components, regardless of the 5000 bulk
+        # components that carry no label at all.
+        self.assertEqual(total_entries, 3)
+
+    def test_ordering_ranks_largest_contribution_first(self):
+        components_by_id = {
+            "small": ComponentLabelCounts(component_id="small", size=1, label_counts={1: (1, 0)}),
+            "large": ComponentLabelCounts(component_id="large", size=1, label_counts={1: (5, 0)}),
+        }
+        index = _build_contributors_index(components_by_id)
+        self.assertEqual(index[(1, "known_positive")], ["large", "small"])
+
+
+def _small_feasible_repair_components() -> list[ComponentLabelCounts]:
+    # Two pos and two neg carriers for protein 1 (mirrors
+    # FloorRepairTests._multi_protein_fixture): enough for the deterministic
+    # repair to place at least one pos AND one neg carrier into EACH of
+    # validation and test.
+    extra = [
+        ComponentLabelCounts(component_id="p1pos_a", size=1, label_counts={1: (3, 0)}),
+        ComponentLabelCounts(component_id="p1pos_b", size=1, label_counts={1: (3, 0)}),
+        ComponentLabelCounts(component_id="p1neg_a", size=1, label_counts={1: (0, 3)}),
+        ComponentLabelCounts(component_id="p1neg_b", size=1, label_counts={1: (0, 3)}),
+    ]
+    # Row balance alone (weight 244) must overwhelm these small label counts
+    # during the initial greedy placement, exactly like
+    # FloorRepairTests._multi_protein_fixture, so repair is actually
+    # required rather than satisfied for free by the greedy pass.
+    bulk = [ComponentLabelCounts(component_id=f"bulk{i}", size=10) for i in range(100)]
+    return bulk + extra
+
+
+class ProposalBudgetTests(unittest.TestCase):
+    """Proves the separate, fixed proposal bound (C2) fails closed when
+    exhausted, independent of the accepted-pass bound.
+    """
+
+    def test_zero_proposal_budget_fails_closed_even_though_a_move_exists(self):
+        components = _small_feasible_repair_components()
+        with self.assertRaises(AssignmentInfeasibleError) as ctx:
+            assign_partitions(components, seed=1, evaluation_floor=3, max_repair_passes=100, max_repair_proposals=0)
+        self.assertIn("proposal", str(ctx.exception))
+
+    def test_generous_proposal_budget_still_clears_the_same_violation(self):
+        components = _small_feasible_repair_components()
+        result = assign_partitions(
+            components, seed=1, evaluation_floor=3, max_repair_passes=100, max_repair_proposals=10000
+        )
+        for partition in ("validation", "test"):
+            pos, neg = result.partition_label_counts[partition][1]
+            self.assertGreaterEqual(pos, 3)
+            self.assertGreaterEqual(neg, 3)
+
+
+class ScalabilityShapeTests(unittest.TestCase):
+    """A large synthetic sparse-component exercise
+    (docs/reviews/002c1_partition_orchestration_correction_review.md, C2):
+    with thousands of label-blind bulk components and only a handful of
+    actual label carriers needing repair, the real code path must complete
+    quickly -- consistent with indexing label carriers rather than
+    re-scanning every component per evaluation-floor violation, and never
+    building a dense row-by-label matrix (every ``ComponentLabelCounts`` here
+    stays a small sparse dict; nothing resembling a dense array is ever
+    constructed).
+    """
+
+    def test_repair_completes_quickly_with_many_sparse_bulk_components(self):
+        bulk = [ComponentLabelCounts(component_id=f"bulk{i}", size=10) for i in range(8000)]
+        carriers = []
+        # Two carriers per (protein, sign) -- one can land in validation,
+        # the other in test -- mirrors FloorRepairTests._multi_protein_fixture.
+        for tag, protein_id, pos, neg in [
+            ("p1pos_a", 1, 3, 0), ("p1pos_b", 1, 3, 0), ("p1neg_a", 1, 0, 3), ("p1neg_b", 1, 0, 3),
+            ("p2pos_a", 2, 3, 0), ("p2pos_b", 2, 3, 0), ("p2neg_a", 2, 0, 3), ("p2neg_b", 2, 0, 3),
+        ]:
+            carriers.append(ComponentLabelCounts(component_id=f"carrier_{tag}", size=1, label_counts={protein_id: (pos, neg)}))
+        components = bulk + carriers
+
+        start = time.monotonic()
+        result = assign_partitions(components, seed=1, evaluation_floor=3, max_repair_passes=5000)
+        elapsed = time.monotonic() - start
+
+        for partition in ("validation", "test"):
+            for protein_id in (1, 2):
+                pos, neg = result.partition_label_counts[partition][protein_id]
+                self.assertGreaterEqual(pos, 3)
+                self.assertGreaterEqual(neg, 3)
+        # Generous ceiling (indexed search over 4 label carriers, not a
+        # rescan of 8000+ components per violation): real hardware finishes
+        # in well under a second, this only guards against a true
+        # quadratic-over-all-components regression.
+        self.assertLess(elapsed, 15.0)
 
 
 if __name__ == "__main__":

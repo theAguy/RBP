@@ -1,7 +1,8 @@
 """Task 002C restart-safe runner: ``assign``, ``legacy_diagnostic``,
 ``exact_audit``, ``audit_probe``, ``audit_search``, and ``finalize`` stages.
 
-Checkpoint 002C-1 (``docs/handoffs/002c1_partition_orchestration_claude_handoff.md``)
+Checkpoint 002C-1 (``docs/handoffs/002c1_partition_orchestration_claude_handoff.md``,
+``docs/reviews/002c1_partition_orchestration_correction_review.md``)
 authorizes ONLY this orchestration code and tiny synthetic-fixture tests: no
 real dataset access, no accepted Task 002B artifacts, no real MMseqs2
 execution over real sequences, and no partition promoted to acceptance
@@ -23,18 +24,33 @@ from one direction can never satisfy the reverse direction.
 is launched. MMseqs2 stages (``audit_probe``, ``audit_search``) require
 explicit ``--authorize-mmseqs`` and run only one external stage per
 invocation.
+
+Correction pass (docs/reviews/002c1_partition_orchestration_correction_review.md,
+C1-C7): ``assign`` now binds and revalidates all FIVE frozen inputs (CSV,
+dataset-audit JSON, proteins TSV, accepted Task 002B component membership,
+and accepted Task 002B component report); the selection pointer stores only
+paths/hashes/counts/digests, never the large sample-to-component/
+component-to-partition maps themselves; every stage's FASTA reads go
+through a strict validating reader; every downstream fingerprint binds its
+upstream GENERATION digest (not merely its stage fingerprint), so a
+force-rebuilt-but-byte-identical upstream generation still invalidates
+downstream currency; ``finalize`` additionally requires all three width
+probes and independently re-derives its own summary from the final
+membership plus a fresh CSV stream before promotion.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
 from pathlib import Path
 from typing import Sequence
 
+import shutil
+
 from rbpbench.coordinates.decode import fasta_record
 from rbpbench.coordinates.hashing import content_fingerprint, label_blind_rank
+from rbpbench.coordinates.provenance import peak_rss_kib_of_children
 from rbpbench.data.audit import sha256_file
 from rbpbench.splits import assignment
 from rbpbench.splits import audit as splits_audit
@@ -59,6 +75,8 @@ MMSEQS_STAGES: tuple[str, ...] = ("audit_probe", "audit_search")
 DEFAULT_CONFIG_PATH = Path("configs/splits/sequence_partitions_002c_v1.toml")
 DEFAULT_OUTPUT_DIR = Path("artifacts/splits/sequence_partitions_002c_v1")
 
+_ACGT = frozenset("ACGT")
+
 
 class StageValidationError(ValueError):
     """A stage/argument combination is invalid -- raised before any
@@ -79,61 +97,59 @@ class ReproducibilityError(RuntimeError):
 
 
 class InputValidationError(ValueError):
-    """A declared real input (CSV/component membership/decode FASTA) failed
-    exact hash/size revalidation against the current config.
+    """A declared real input (CSV/component membership/component report/
+    dataset-audit JSON/proteins TSV/decode FASTA) failed exact hash/size
+    revalidation against the current config, or a strict FASTA read failed
+    universe/width/alphabet validation.
     """
 
 
 class FinalizationRefusedError(RuntimeError):
     """``finalize`` refused because at least one required record is
-    missing, stale, failed, or one-direction-only. Never promotes a partial
-    or failing result.
+    missing, stale, failed, or one-direction-only, or its own independent
+    recomputation disagrees with the accepted evidence. Never promotes a
+    partial or failing result.
     """
 
 
 # --------------------------------------------------------------------------
-# Small local helpers (FASTA I/O, deterministic label-blind subsetting).
+# Small local helpers (path resolution, strict FASTA I/O, deterministic
+# label-blind subsetting, generic frozen-file hash verification).
 # --------------------------------------------------------------------------
 
 
-def _read_fasta(path: Path) -> dict[str, str]:
-    sequences: dict[str, str] = {}
-    current_id: str | None = None
-    chunks: list[str] = []
-    with Path(path).open() as handle:
-        for raw_line in handle:
-            line = raw_line.rstrip("\n")
-            if line.startswith(">"):
-                if current_id is not None:
-                    sequences[current_id] = "".join(chunks)
-                current_id = line[1:].strip()
-                chunks = []
-            else:
-                chunks.append(line)
-        if current_id is not None:
-            sequences[current_id] = "".join(chunks)
-    return sequences
+def _resolve(base: Path, maybe_relative: str) -> Path:
+    candidate = Path(maybe_relative)
+    return candidate if candidate.is_absolute() else Path(base) / candidate
 
 
-def _write_fasta(sequences: dict[str, str], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with Path(path).open("w") as handle:
-        for sample_id in sorted(sequences):
-            handle.write(fasta_record(sample_id, sequences[sample_id]))
+def _repo_root(config_path: Path, explicit: Path | None) -> Path:
+    """The deterministic base every declared-relative production path
+    (``dataset.audit_json_path``, ``dataset.proteins_tsv_path``) resolves
+    against (docs/reviews/002c1_partition_orchestration_correction_review.md,
+    C1): an explicit ``--repo-root`` always wins; otherwise derived from the
+    CONFIG FILE'S OWN resolved location (two levels above
+    ``configs/splits/<file>.toml``), never from the process's current
+    working directory -- mirrors ``rbpbench.splits.runner._repo_root``.
+    """
+    if explicit is not None:
+        return Path(explicit).resolve()
+    return Path(config_path).resolve().parent.parent.parent
 
 
-def _deterministic_subset(sequences: dict[str, str], sample_size: int, seed: int) -> dict[str, str]:
-    if len(sequences) <= sample_size:
-        return sequences
-    ranked = sorted(sequences, key=lambda sid: (label_blind_rank(seed, sid), sid))
-    selected = set(ranked[:sample_size])
-    return {sid: seq for sid, seq in sequences.items() if sid in selected}
-
-
-def _sample_to_partition(assign_record: dict) -> dict[str, str]:
-    sample_to_component = assign_record["sample_to_component"]
-    component_to_partition = assign_record["component_to_partition"]
-    return {sample_id: component_to_partition[component_id] for sample_id, component_id in sample_to_component.items()}
+def _verify_frozen_file(path: Path, *, expected_sha256: str, label: str) -> str:
+    """Hash-only frozen-input verification (mirrors Task 002B's own
+    ``stage_preflight`` treatment of ``audit_json``/``proteins_tsv``: a
+    small manifest/config file is bound by SHA-256 alone, no separate
+    byte-size check).
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise InputValidationError(f"{label} not found at {path}")
+    actual = sha256_file(path)
+    if actual != expected_sha256:
+        raise InputValidationError(f"{label} at {path} hashes to {actual}, expected exactly {expected_sha256}")
+    return actual
 
 
 def _verify_csv(csv_path: Path, config: SplitsConfig002C) -> str:
@@ -152,33 +168,171 @@ def _verify_csv(csv_path: Path, config: SplitsConfig002C) -> str:
     return actual_sha256
 
 
+class FastaValidationError(InputValidationError):
+    """A strict FASTA read failed duplicate-header, width, alphabet, or
+    universe validation (docs/reviews/002c1_partition_orchestration_correction_review.md,
+    C3).
+    """
+
+
+def _read_fasta_strict(path: Path, *, expected_width: int, expected_ids: set[str]) -> dict[str, str]:
+    """Strict, streaming FASTA reader (C3): rejects a duplicate header
+    (never silently overwrites it), an empty or non-ACGT sequence, and any
+    sequence whose length is not exactly ``expected_width``; then
+    reconciles the complete read ID set against ``expected_ids`` (missing
+    OR foreign is a hard failure) before returning.
+    """
+    sequences: dict[str, str] = {}
+    current_id: str | None = None
+    chunks: list[str] = []
+
+    def _finish() -> None:
+        nonlocal current_id, chunks
+        if current_id is None:
+            return
+        if current_id in sequences:
+            raise FastaValidationError(f"{path}: duplicate FASTA header {current_id!r}")
+        seq = "".join(chunks)
+        if not seq:
+            raise FastaValidationError(f"{path}: {current_id!r} has an empty sequence")
+        if len(seq) != expected_width:
+            raise FastaValidationError(
+                f"{path}: {current_id!r} has length {len(seq)}, expected exactly {expected_width}"
+            )
+        bad = sorted(set(seq) - _ACGT)
+        if bad:
+            raise FastaValidationError(f"{path}: {current_id!r} contains non-A/C/G/T character(s): {bad}")
+        sequences[current_id] = seq
+
+    with Path(path).open() as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if line.startswith(">"):
+                _finish()
+                current_id = line[1:].strip()
+                chunks = []
+            else:
+                chunks.append(line)
+        _finish()
+
+    actual_ids = set(sequences)
+    missing = expected_ids - actual_ids
+    foreign = actual_ids - expected_ids
+    if missing or foreign:
+        problems = []
+        if missing:
+            problems.append(f"missing {len(missing)} expected ID(s), e.g. {sorted(missing)[:5]}")
+        if foreign:
+            problems.append(f"contains {len(foreign)} foreign ID(s), e.g. {sorted(foreign)[:5]}")
+        raise FastaValidationError(f"{path}: FASTA universe reconciliation failed: " + "; ".join(problems))
+    return sequences
+
+
+def _write_fasta(sequences: dict[str, str], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with Path(path).open("w") as handle:
+        for sample_id in sorted(sequences):
+            handle.write(fasta_record(sample_id, sequences[sample_id]))
+
+
+def _deterministic_subset(sequences: dict[str, str], sample_size: int, seed: int) -> dict[str, str]:
+    if len(sequences) <= sample_size:
+        return sequences
+    ranked = sorted(sequences, key=lambda sid: (label_blind_rank(seed, sid), sid))
+    selected = set(ranked[:sample_size])
+    return {sid: seq for sid, seq in sequences.items() if sid in selected}
+
+
+def _read_assign_membership_rows(assign_record: dict) -> list[tuple[str, str, str]]:
+    """Streams the ``assign`` generation's own three-column membership
+    artifact fresh from disk (docs/reviews/002c1_partition_orchestration_correction_review.md,
+    C2: "keeping large maps in inventoried generation artifacts and storing
+    only paths/hashes/counts/digests in the selected record"). The selected
+    ``assign`` record itself never embeds the 361,180-entry
+    sample-to-component or 173,465-entry component-to-partition maps --
+    every downstream stage streams/revalidates this artifact instead.
+    """
+    return splits_output.read_membership_gzip(Path(assign_record["membership_path"]))
+
+
+def _sample_to_partition(assign_record: dict) -> dict[str, str]:
+    return {sample_id: partition for sample_id, _component_id, partition in _read_assign_membership_rows(assign_record)}
+
+
 # --------------------------------------------------------------------------
 # assign
 # --------------------------------------------------------------------------
 
 
-def assign_fingerprint(*, config: SplitsConfig002C, csv_sha256: str, membership_sha256: str) -> str:
-    return content_fingerprint("assign", config.content_hash, csv_sha256, membership_sha256)
+def assign_fingerprint(
+    *,
+    config: SplitsConfig002C,
+    csv_sha256: str,
+    membership_sha256: str,
+    component_report_sha256: str,
+    audit_json_sha256: str,
+    proteins_tsv_sha256: str,
+) -> str:
+    """Binds the config hash plus ALL FIVE frozen inputs' current content
+    hashes (docs/reviews/002c1_partition_orchestration_correction_review.md,
+    C1: "the configured ``dataset_audit.json``, ``proteins.tsv``, and
+    accepted Task 002B component-report hashes are never checked").
+    """
+    return content_fingerprint(
+        "assign", config.content_hash, csv_sha256, membership_sha256, component_report_sha256,
+        audit_json_sha256, proteins_tsv_sha256,
+    )
 
 
 def stage_assign(
-    *, config: SplitsConfig002C, csv_path: Path, membership_path: Path, output_dir: Path, dry_run: bool = False
+    *,
+    config: SplitsConfig002C,
+    csv_path: Path,
+    membership_path: Path,
+    component_report_path: Path,
+    audit_json_path: Path,
+    proteins_tsv_path: Path,
+    output_dir: Path,
+    dry_run: bool = False,
 ) -> dict:
     if dry_run:
         return {
             "dry_run": True, "stage": "assign",
-            "would_read": {"csv": str(csv_path), "component_membership": str(membership_path)},
+            "would_read": {
+                "csv": str(csv_path), "component_membership": str(membership_path),
+                "component_report": str(component_report_path), "audit_json": str(audit_json_path),
+                "proteins_tsv": str(proteins_tsv_path),
+            },
         }
 
+    # C1: bind and revalidate ALL FIVE frozen inputs before any assignment
+    # -- never only the CSV and the raw two-column membership.
+    audit_json_sha256 = _verify_frozen_file(audit_json_path, expected_sha256=config.dataset.audit_json_sha256, label="dataset_audit.json")
+    proteins_tsv_sha256 = _verify_frozen_file(proteins_tsv_path, expected_sha256=config.dataset.proteins_tsv_sha256, label="proteins.tsv")
+    component_report_sha256 = ingestion.verify_component_report_file(
+        component_report_path,
+        expected_sha256=config.components_002b.report_sha256,
+        expected_byte_size=config.components_002b.report_byte_size,
+    )
+    component_report = ingestion.load_component_report(
+        component_report_path,
+        expected_row_count=config.dataset.expected_row_count,
+        expected_component_count=config.components_002b.expected_component_count,
+    )
     membership_sha256 = ingestion.verify_component_membership_file(
         membership_path,
         expected_sha256=config.components_002b.membership_sha256,
         expected_byte_size=config.components_002b.membership_byte_size,
     )
+    # C1: the membership-derived component-size map is compared EXACTLY
+    # (byte-for-byte) against the accepted Task 002B report's own map -- a
+    # membership with the right row/component counts but the wrong size
+    # distribution can no longer pass.
     universe = ingestion.load_component_membership(
         membership_path,
         expected_sample_count=config.dataset.expected_row_count,
         expected_component_count=config.components_002b.expected_component_count,
+        expected_component_sizes=component_report.component_sizes,
     )
     csv_sha256 = _verify_csv(csv_path, config)
 
@@ -192,12 +346,28 @@ def stage_assign(
         seed=config.seed,
         evaluation_floor=config.assignment.evaluation_floor,
         max_repair_passes=config.assignment.max_repair_passes,
+        max_repair_proposals=config.assignment.max_repair_proposals,
         row_fraction_repair_limit_pct=config.assignment.row_fraction_repair_limit_pct,
+        row_dimension_weight=config.assignment.row_dimension_weight,
+        protein_class_dimension_weight=config.assignment.protein_class_dimension_weight,
+        balance_deviation_flag_pct=config.assignment.balance_deviation_flag_pct,
+        # C2: the frozen protein/class universe (1..122 in production), not
+        # merely the protein IDs actually observed in this CSV -- a protein
+        # with zero total known labels anywhere must surface as an explicit
+        # AssignmentInfeasibleError (evaluation_floor > 0) rather than
+        # silently vanishing from the floor check.
+        protein_ids=list(range(config.dataset.protein_id_min, config.dataset.protein_id_max + 1)),
     )
 
     total_rows = sum(assignment_result.partition_row_counts.values())
-    balance = splits_audit.balance_report(assignment_result.partition_row_counts, TARGET_FRACTIONS, total_rows)
-    per_protein_balance = splits_audit.per_protein_balance_report(assignment_result.partition_label_counts, TARGET_FRACTIONS)
+    balance = splits_audit.balance_report(
+        assignment_result.partition_row_counts, TARGET_FRACTIONS, total_rows,
+        flag_threshold_pct=config.assignment.balance_deviation_flag_pct,
+    )
+    per_protein_balance = splits_audit.per_protein_balance_report(
+        assignment_result.partition_label_counts, TARGET_FRACTIONS,
+        flag_threshold_pct=config.assignment.balance_deviation_flag_pct,
+    )
     minimum_counts = splits_audit.minimum_count_check(
         assignment_result.partition_label_counts, floor=config.assignment.evaluation_floor
     )
@@ -209,6 +379,9 @@ def stage_assign(
             (sample_id, component_id, assignment_result.component_to_partition[component_id])
             for sample_id, component_id in universe.sample_to_component.items()
         ]
+        # C2: the large sample-to-component / component-to-partition maps
+        # live ONLY in this immutable generation's membership artifact, never
+        # duplicated a second time inline in the selected record below.
         membership_path_out = generation_dir / "membership.tsv.gz"
         splits_output.write_deterministic_membership_gzip(rows, membership_path_out)
         repeat_path = generation_dir / "membership.repeat_check.tsv.gz"
@@ -221,12 +394,18 @@ def stage_assign(
             partition: {str(pid): list(counts) for pid, counts in per_protein.items()}
             for partition, per_protein in assignment_result.partition_label_counts.items()
         }
-        manifest = {
-            "schema_version": 1,
-            "checkpoint": "002C-1-assign",
-            "config_hash": config.content_hash,
+        input_hashes = {
             "csv_sha256": csv_sha256,
             "component_membership_sha256": membership_sha256,
+            "component_report_sha256": component_report_sha256,
+            "audit_json_sha256": audit_json_sha256,
+            "proteins_tsv_sha256": proteins_tsv_sha256,
+        }
+        manifest = {
+            "schema_version": 2,
+            "checkpoint": "002C-1-assign",
+            "config_hash": config.content_hash,
+            "input_hashes": input_hashes,
             "total_rows": total_rows,
             "component_count": len(universe.component_sizes),
             "partition_row_counts": dict(assignment_result.partition_row_counts),
@@ -240,11 +419,19 @@ def stage_assign(
         manifest_path = generation_dir / "assign_manifest.json"
         restart.atomic_write_json(manifest_path, manifest)
 
+        # C2: the sample-to-component / component-to-partition maps are also
+        # inventoried here (as the generation's own membership artifact),
+        # never duplicated inline into the selected record -- downstream
+        # stages must stream/revalidate this artifact instead.
         artifacts = restart.inventory_generation(generation_dir)
         generation_digest = content_fingerprint(
             "assign_generation", str(generation_dir), *((e["path"], e["sha256"]) for e in artifacts)
         )
-        stage_fp = assign_fingerprint(config=config, csv_sha256=csv_sha256, membership_sha256=membership_sha256)
+        stage_fp = assign_fingerprint(
+            config=config, csv_sha256=csv_sha256, membership_sha256=membership_sha256,
+            component_report_sha256=component_report_sha256, audit_json_sha256=audit_json_sha256,
+            proteins_tsv_sha256=proteins_tsv_sha256,
+        )
         record = {
             "stage": "assign",
             "executed": True,
@@ -257,8 +444,20 @@ def stage_assign(
             "csv_sha256": csv_sha256,
             "component_membership_path": str(membership_path),
             "component_membership_sha256": membership_sha256,
-            "sample_to_component": dict(universe.sample_to_component),
-            "component_to_partition": dict(assignment_result.component_to_partition),
+            "component_report_path": str(component_report_path),
+            "component_report_sha256": component_report_sha256,
+            "audit_json_path": str(audit_json_path),
+            "audit_json_sha256": audit_json_sha256,
+            "proteins_tsv_path": str(proteins_tsv_path),
+            "proteins_tsv_sha256": proteins_tsv_sha256,
+            "input_hashes": input_hashes,
+            # C2: the sample-to-component and component-to-partition maps
+            # are deliberately ABSENT here -- they already live, in full,
+            # exactly once, in the immutable generation's own
+            # ``membership_path`` gzip artifact (inventoried/hashed above).
+            # Every downstream stage streams/revalidates that artifact via
+            # :func:`_sample_to_partition`/:func:`_sample_to_component`
+            # instead of trusting a second inline copy in this record.
             "partition_row_counts": dict(assignment_result.partition_row_counts),
             "partition_label_counts": partition_label_counts_json,
             "minimum_count_report": minimum_counts,
@@ -277,8 +476,18 @@ def stage_assign(
 # --------------------------------------------------------------------------
 
 
-def legacy_diagnostic_fingerprint(*, config: SplitsConfig002C, csv_sha256: str, assign_stage_fingerprint: str) -> str:
-    return content_fingerprint("legacy_diagnostic", config.content_hash, csv_sha256, assign_stage_fingerprint)
+def legacy_diagnostic_fingerprint(
+    *,
+    config: SplitsConfig002C,
+    csv_sha256: str,
+    assign_stage_fingerprint: str,
+    assign_generation_digest: str,
+    edges_hashes: tuple[str, ...],
+) -> str:
+    return content_fingerprint(
+        "legacy_diagnostic", config.content_hash, csv_sha256, assign_stage_fingerprint, assign_generation_digest,
+        *edges_hashes,
+    )
 
 
 def stage_legacy_diagnostic(
@@ -287,7 +496,7 @@ def stage_legacy_diagnostic(
     csv_path: Path,
     output_dir: Path,
     assign_record: dict,
-    similarity_edges_dir: Path | None = None,
+    similarity_edges_dir: Path,
     dry_run: bool = False,
 ) -> dict:
     if dry_run:
@@ -316,21 +525,39 @@ def stage_legacy_diagnostic(
         signed_labels_by_row.append(labels)
     protein_ids = list(range(config.dataset.protein_id_min, config.dataset.protein_id_max + 1))
 
-    fold_result = splits_legacy_diagnostic.run_legacy_fold(signed_labels_by_row, protein_ids=protein_ids)
+    fold_result = splits_legacy_diagnostic.run_legacy_fold(
+        signed_labels_by_row, protein_ids=protein_ids,
+        n_splits=config.legacy_diagnostic.n_splits, shuffle=config.legacy_diagnostic.shuffle,
+        random_state=config.legacy_diagnostic.random_state, fold_index=config.legacy_diagnostic.fold_index,
+    )
 
-    sample_to_component = assign_record["sample_to_component"]
-    sample_to_partition = _sample_to_partition(assign_record)
+    membership_rows = _read_assign_membership_rows(assign_record)
+    sample_to_component = {sample_id: component_id for sample_id, component_id, _p in membership_rows}
+    sample_to_partition = {sample_id: partition for sample_id, _c, partition in membership_rows}
 
+    # C6: hash-bound evidence is REQUIRED for all three protected widths --
+    # a missing edges/exact-RC file is a hard failure, never a silently
+    # narrower diagnostic.
     similarity_edges_by_width: dict[int, list[tuple[str, str]]] = {}
     exact_rc_edges_by_width: dict[int, list[tuple[str, str]]] = {}
-    if similarity_edges_dir is not None:
-        for width in config.protected_widths:
-            edges_path = Path(similarity_edges_dir) / f"edges_{width}.json"
-            if edges_path.is_file():
-                similarity_edges_by_width[width] = [tuple(pair) for pair in json.loads(edges_path.read_text())]
-            exact_rc_path = Path(similarity_edges_dir) / f"exact_rc_edges_{width}.json"
-            if exact_rc_path.is_file():
-                exact_rc_edges_by_width[width] = [tuple(pair) for pair in json.loads(exact_rc_path.read_text())]
+    edges_hashes: list[str] = []
+    edges_provenance: dict[str, str] = {}
+    for width in config.protected_widths:
+        edges_path = Path(similarity_edges_dir) / f"edges_{width}.json"
+        exact_rc_path = Path(similarity_edges_dir) / f"exact_rc_edges_{width}.json"
+        if not edges_path.is_file():
+            raise InputValidationError(f"required similarity-edges file not found for width {width}: {edges_path}")
+        if not exact_rc_path.is_file():
+            raise InputValidationError(f"required exact/RC-edges file not found for width {width}: {exact_rc_path}")
+        similarity_edges_by_width[width] = [tuple(pair) for pair in json.loads(edges_path.read_text())]
+        exact_rc_edges_by_width[width] = [tuple(pair) for pair in json.loads(exact_rc_path.read_text())]
+        edges_sha = sha256_file(edges_path)
+        exact_rc_sha = sha256_file(exact_rc_path)
+        edges_hashes.extend([edges_sha, exact_rc_sha])
+        edges_provenance[f"edges_{width}_path"] = str(edges_path)
+        edges_provenance[f"edges_{width}_sha256"] = edges_sha
+        edges_provenance[f"exact_rc_edges_{width}_path"] = str(exact_rc_path)
+        edges_provenance[f"exact_rc_edges_{width}_sha256"] = exact_rc_sha
 
     report = splits_legacy_diagnostic.build_leakage_diagnostic_report(
         legacy_result=fold_result,
@@ -345,14 +572,15 @@ def stage_legacy_diagnostic(
     generation_dir = splits_commands.new_generation_dir(base_dir, prefix="legacy_diagnostic")
     try:
         manifest_path = generation_dir / "legacy_diagnostic_report.json"
-        restart.atomic_write_json(manifest_path, report)
+        restart.atomic_write_json(manifest_path, {**report, "edges_provenance": edges_provenance})
 
         artifacts = restart.inventory_generation(generation_dir)
         generation_digest = content_fingerprint(
             "legacy_diagnostic_generation", str(generation_dir), *((e["path"], e["sha256"]) for e in artifacts)
         )
         stage_fp = legacy_diagnostic_fingerprint(
-            config=config, csv_sha256=csv_sha256, assign_stage_fingerprint=assign_record["stage_fingerprint"]
+            config=config, csv_sha256=csv_sha256, assign_stage_fingerprint=assign_record["stage_fingerprint"],
+            assign_generation_digest=assign_record["generation_digest"], edges_hashes=tuple(sorted(edges_hashes)),
         )
         record = {
             "stage": "legacy_diagnostic",
@@ -364,7 +592,14 @@ def stage_legacy_diagnostic(
             "train_digest": fold_result.train_digest,
             "holdout_digest": fold_result.holdout_digest,
             "dependency_versions": versions.to_dict(),
-            "upstream": {"assign_stage_fingerprint": assign_record["stage_fingerprint"]},
+            # C6: finalization must include the COMPLETE sanitized legacy
+            # diagnostic, not only its two index-set digests.
+            "report": report,
+            "edges_provenance": edges_provenance,
+            "upstream": {
+                "assign_stage_fingerprint": assign_record["stage_fingerprint"],
+                "assign_generation_digest": assign_record["generation_digest"],
+            },
             "artifacts": artifacts,
         }
         restart.atomic_write_json(restart.selected_record_path(output_dir, "legacy_diagnostic"), record)
@@ -379,8 +614,12 @@ def stage_legacy_diagnostic(
 # --------------------------------------------------------------------------
 
 
-def exact_audit_fingerprint(*, config: SplitsConfig002C, width: int, assign_stage_fingerprint: str, fasta_sha256: str) -> str:
-    return content_fingerprint("exact_audit", width, config.content_hash, assign_stage_fingerprint, fasta_sha256)
+def exact_audit_fingerprint(
+    *, width: int, config: SplitsConfig002C, assign_stage_fingerprint: str, assign_generation_digest: str, fasta_sha256: str
+) -> str:
+    return content_fingerprint(
+        "exact_audit", width, config.content_hash, assign_stage_fingerprint, assign_generation_digest, fasta_sha256
+    )
 
 
 def stage_exact_audit(
@@ -394,9 +633,12 @@ def stage_exact_audit(
     fasta_path = Path(decode_fasta_dir) / f"width_{width}.fasta"
     if not fasta_path.is_file():
         raise InputValidationError(f"decode FASTA not found at {fasta_path}")
-    sequences = _read_fasta(fasta_path)
-    fasta_sha256 = sha256_file(fasta_path)
     sample_to_partition = _sample_to_partition(assign_record)
+    # C3: strict, streaming FASTA validation -- unique canonical IDs, exact
+    # requested width, nonempty A/C/G/T-only sequence, and the COMPLETE
+    # assigned universe reconciled before any hash group is computed.
+    sequences = _read_fasta_strict(fasta_path, expected_width=width, expected_ids=set(sample_to_partition))
+    fasta_sha256 = sha256_file(fasta_path)
 
     report = splits_exact_audit.audit_width(sequences, sample_to_partition)
 
@@ -411,7 +653,8 @@ def stage_exact_audit(
             "exact_audit_generation", width, str(generation_dir), *((e["path"], e["sha256"]) for e in artifacts)
         )
         stage_fp = exact_audit_fingerprint(
-            config=config, width=width, assign_stage_fingerprint=assign_record["stage_fingerprint"], fasta_sha256=fasta_sha256
+            config=config, width=width, assign_stage_fingerprint=assign_record["stage_fingerprint"],
+            assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
         )
         record = {
             "stage": "exact_audit",
@@ -424,7 +667,10 @@ def stage_exact_audit(
             "fasta_sha256": fasta_sha256,
             "violation_count": report["violation_count"],
             "passed": report["passed"],
-            "upstream": {"assign_stage_fingerprint": assign_record["stage_fingerprint"]},
+            "upstream": {
+                "assign_stage_fingerprint": assign_record["stage_fingerprint"],
+                "assign_generation_digest": assign_record["generation_digest"],
+            },
             "artifacts": artifacts,
         }
         restart.atomic_write_json(restart.selected_record_path(output_dir, f"exact_audit_{width}"), record)
@@ -441,13 +687,21 @@ def stage_exact_audit(
 
 def directed_audit_fingerprint(
     *, stage_name: str, width: int, query_partition: str, target_partition: str, config: SplitsConfig002C,
-    assign_stage_fingerprint: str, mmseqs_bin: str,
+    assign_stage_fingerprint: str, assign_generation_digest: str, fasta_sha256: str, mmseqs_bin: str,
+    probe_generation_digest: str | None = None,
 ) -> str:
     binary = splits_commands.resolve_mmseqs_binary_provenance(mmseqs_bin)
-    return content_fingerprint(
+    parts: list[object] = [
         stage_name, width, query_partition, target_partition, config.content_hash, assign_stage_fingerprint,
-        binary.sha256 or "MISSING", mmseqs_bin,
-    )
+        assign_generation_digest, fasta_sha256, binary.sha256 or "MISSING", mmseqs_bin,
+    ]
+    # C4: an audit_search's fingerprint additionally binds the specific
+    # probe GENERATION that authorized it, so a rebuilt (even
+    # byte-identical) probe generation still invalidates a search accepted
+    # against the old one.
+    if probe_generation_digest is not None:
+        parts.append(probe_generation_digest)
+    return content_fingerprint(*parts)
 
 
 def _run_directed_audit(
@@ -469,15 +723,20 @@ def _run_directed_audit(
         raise AuthorizationError(f"stage {stage_name!r} launches MMseqs2 and requires --authorize-mmseqs")
 
     key = mmseqs_audit.selection_key(stage_name, width, query_partition, target_partition)
+    probe_record: dict | None = None
     if stage_name == "audit_search":
         probe_key = mmseqs_audit.selection_key("audit_probe", width, query_partition, target_partition)
-        restart.require_accepted(output_dir, probe_key)
+        probe_record = restart.require_accepted(output_dir, probe_key)
 
     fasta_path = Path(decode_fasta_dir) / f"width_{width}.fasta"
     if not fasta_path.is_file():
         raise InputValidationError(f"decode FASTA not found at {fasta_path}")
-    sequences = _read_fasta(fasta_path)
     sample_to_partition = _sample_to_partition(assign_record)
+    # C3: reconcile the COMPLETE FASTA universe before ever subsetting a
+    # directed query/target pair -- a decode/assignment mismatch fails
+    # closed here, never silently narrows the audited universe.
+    sequences = _read_fasta_strict(fasta_path, expected_width=width, expected_ids=set(sample_to_partition))
+    fasta_sha256 = sha256_file(fasta_path)
 
     live_binary = splits_commands.resolve_mmseqs_binary_provenance(mmseqs_bin)
     if live_binary.resolved_path is None:
@@ -489,6 +748,13 @@ def _run_directed_audit(
             f"mmseqs binary SHA-256 {live_binary.sha256!r} != accepted {config.binary.mmseqs_sha256!r} for stage {stage_name!r}"
         )
 
+    # C5: fail-closed installed-RAM and live available-memory gates
+    # immediately before EVERY MMseqs2 subprocess launch (the already
+    # established Task 002B semantics).
+    guarded_exec.check_installed_ram_or_fail(min_installed_ram_gib=config.audit.min_installed_ram_gib)
+    guarded_exec.check_available_memory_before_launch_or_fail(
+        min_available_memory_gib_before_launch=config.audit.min_available_memory_gib_before_launch, label=stage_name
+    )
     guarded_exec.check_free_disk_or_fail(disk_path=output_dir, min_free_disk_gib=config.audit.min_free_disk_gib, label=stage_name)
 
     base_dir = output_dir / stage_name / str(width) / f"{query_partition}_to_{target_partition}"
@@ -538,6 +804,20 @@ def _run_directed_audit(
             log_dir=log_dir, **guard_kwargs,
         ))
 
+        # C5: peak RSS across this whole guarded attempt, measured once after
+        # every subprocess above has been reaped (ru_maxrss is itself already
+        # a running maximum, never a per-call delta -- see
+        # rbpbench.coordinates.provenance.peak_rss_kib_of_children).
+        peak_rss_kib = peak_rss_kib_of_children()
+        available_memory_gib_after: float | None = None
+        if stage_name == "audit_probe":
+            probe_memory = guarded_exec.check_probe_memory_gates_or_fail(
+                peak_rss_kib=peak_rss_kib, max_peak_memory_gib=config.audit.probe_max_peak_memory_gib,
+                min_available_memory_gib_before_next_stage=config.audit.probe_min_available_memory_gib_before_next_stage,
+                label=stage_name,
+            )
+            available_memory_gib_after = probe_memory["available_memory_gib_after"]
+
         hits = mmseqs_audit.parse_search_hits(hits_tsv)
         directed_result = mmseqs_audit.reconcile_directed_hits(
             hits, width=width, query_partition=query_partition, target_partition=target_partition,
@@ -554,9 +834,12 @@ def _run_directed_audit(
             f"{stage_name}_generation", width, query_partition, target_partition, str(generation_dir),
             *((e["path"], e["sha256"]) for e in artifacts),
         )
+        probe_generation_digest = probe_record["generation_digest"] if probe_record is not None else None
         stage_fp = directed_audit_fingerprint(
             stage_name=stage_name, width=width, query_partition=query_partition, target_partition=target_partition,
-            config=config, assign_stage_fingerprint=assign_record["stage_fingerprint"], mmseqs_bin=mmseqs_bin,
+            config=config, assign_stage_fingerprint=assign_record["stage_fingerprint"],
+            assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
+            mmseqs_bin=mmseqs_bin, probe_generation_digest=probe_generation_digest,
         )
         record = {
             "stage": stage_name,
@@ -569,12 +852,19 @@ def _run_directed_audit(
             "generation_digest": generation_digest,
             "manifest_path": str(manifest_path),
             "hits_tsv": str(hits_tsv),
+            "fasta_sha256": fasta_sha256,
             "hit_count": directed_result.hit_count,
             "violation_count": len(directed_result.violations),
             "passed": directed_result.passed,
-            "upstream": {"assign_stage_fingerprint": assign_record["stage_fingerprint"]},
+            "upstream": {
+                "assign_stage_fingerprint": assign_record["stage_fingerprint"],
+                "assign_generation_digest": assign_record["generation_digest"],
+                **({"probe_generation_digest": probe_generation_digest} if probe_generation_digest is not None else {}),
+            },
             "mmseqs_bin": mmseqs_bin,
             "threads": threads,
+            "peak_rss_kib_of_children": peak_rss_kib,
+            "available_memory_gib_after": available_memory_gib_after,
             "tool_provenance": executed,
             "artifacts": artifacts,
         }
@@ -612,6 +902,83 @@ def stage_audit_search(
 # --------------------------------------------------------------------------
 
 
+def _independently_recompute_summary(*, config: SplitsConfig002C, assign_record: dict, final_rows: list[tuple[str, str, str]]) -> dict:
+    """Re-derives the complete scientific summary FROM SCRATCH off the final
+    membership rows plus a fresh CSV stream, rather than trusting the
+    ``assign`` record's own cached ``balance_report``/``minimum_count_report``
+    fields (docs/reviews/002c1_partition_orchestration_correction_review.md,
+    C4: "independently re-reading the final membership and recomputing the
+    complete ID universe, component indivisibility, partition counts, row
+    deviations, all 244 evaluation-floor counts, and audit completeness
+    before promotion").
+    """
+    expected_ids = {f"row_{i}" for i in range(config.dataset.expected_row_count)}
+    actual_ids = {row[0] for row in final_rows}
+    problems: list[str] = []
+    missing = expected_ids - actual_ids
+    foreign = actual_ids - expected_ids
+    if missing:
+        problems.append(f"final membership is missing {len(missing)} expected ID(s), e.g. {sorted(missing)[:5]}")
+    if foreign:
+        problems.append(f"final membership contains {len(foreign)} foreign ID(s), e.g. {sorted(foreign)[:5]}")
+
+    component_partitions: dict[str, set[str]] = {}
+    sample_to_partition: dict[str, str] = {}
+    partition_row_counts: dict[str, int] = {p: 0 for p in assignment.PARTITIONS}
+    for sample_id, component_id, partition in final_rows:
+        component_partitions.setdefault(component_id, set()).add(partition)
+        sample_to_partition[sample_id] = partition
+        partition_row_counts[partition] = partition_row_counts.get(partition, 0) + 1
+
+    divided = sorted(cid for cid, partitions in component_partitions.items() if len(partitions) > 1)
+    if divided:
+        problems.append(f"{len(divided)} component(s) span more than one partition, e.g. {divided[:5]}")
+
+    total_rows = len(final_rows)
+    balance = splits_audit.balance_report(
+        partition_row_counts, assignment.TARGET_FRACTIONS, total_rows,
+        flag_threshold_pct=config.assignment.balance_deviation_flag_pct,
+    )
+
+    csv_path = Path(assign_record["csv_path"])
+    current_csv_sha256 = _verify_csv(csv_path, config)
+    if current_csv_sha256 != assign_record["csv_sha256"]:
+        problems.append(
+            f"CSV at {csv_path} now hashes to {current_csv_sha256}, but the accepted assign record validated "
+            f"{assign_record['csv_sha256']!r}"
+        )
+
+    partition_pos: dict[tuple[str, int], int] = {}
+    partition_neg: dict[tuple[str, int], int] = {}
+    for _row_index, sample_id, labels in ingestion.iter_csv_component_label_rows(
+        csv_path, protein_id_min=config.dataset.protein_id_min, protein_id_max=config.dataset.protein_id_max
+    ):
+        partition = sample_to_partition.get(sample_id)
+        if partition is None:
+            continue
+        for protein_id, sign in labels.items():
+            key = (partition, protein_id)
+            if sign > 0:
+                partition_pos[key] = partition_pos.get(key, 0) + 1
+            else:
+                partition_neg[key] = partition_neg.get(key, 0) + 1
+
+    protein_ids = list(range(config.dataset.protein_id_min, config.dataset.protein_id_max + 1))
+    partition_label_counts = {
+        p: {pid: (partition_pos.get((p, pid), 0), partition_neg.get((p, pid), 0)) for pid in protein_ids}
+        for p in assignment.PARTITIONS
+    }
+    minimum_count_report = splits_audit.minimum_count_check(partition_label_counts, floor=config.assignment.evaluation_floor)
+
+    return {
+        "problems": problems,
+        "total_rows": total_rows,
+        "partition_row_counts": partition_row_counts,
+        "balance_report": balance,
+        "minimum_count_report": minimum_count_report,
+    }
+
+
 def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool = False) -> dict:
     if dry_run:
         return {"dry_run": True, "stage": "finalize"}
@@ -621,11 +988,16 @@ def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool 
     exact_audit_records = {
         width: restart.require_accepted(output_dir, f"exact_audit_{width}") for width in config.protected_widths
     }
+    # C4: finalization requires all THREE width probes (not only the 18
+    # full searches).
+    probe_records: dict[str, dict] = {}
     search_records: dict[str, dict] = {}
     for width in config.protected_widths:
         for query_partition, target_partition in mmseqs_audit.ORDERED_PARTITION_PAIRS:
-            key = mmseqs_audit.selection_key("audit_search", width, query_partition, target_partition)
-            search_records[key] = restart.require_accepted(output_dir, key)
+            probe_key = mmseqs_audit.selection_key("audit_probe", width, query_partition, target_partition)
+            probe_records[probe_key] = restart.require_accepted(output_dir, probe_key)
+            search_key = mmseqs_audit.selection_key("audit_search", width, query_partition, target_partition)
+            search_records[search_key] = restart.require_accepted(output_dir, search_key)
 
     problems: list[str] = []
     minimum_count_report = assign_record.get("minimum_count_report", {})
@@ -640,14 +1012,52 @@ def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool 
     for width, record in exact_audit_records.items():
         if not record.get("passed", False):
             problems.append(f"exact_audit width {width}: cross-partition violation(s) present")
+    for key, record in probe_records.items():
+        if not record.get("passed", False):
+            problems.append(f"{key}: cross-partition violation(s) present")
     for key, record in search_records.items():
         if not record.get("passed", False):
             problems.append(f"{key}: cross-partition violation(s) present")
+        # C4: bind every accepted search to the SAME probe generation
+        # currently accepted for its direction/width, not merely to
+        # whichever probe happened to exist when the search first ran.
+        expected_probe_key = mmseqs_audit.selection_key(
+            "audit_probe", record["width"], record["query_partition"], record["target_partition"]
+        )
+        current_probe_generation_digest = probe_records[expected_probe_key]["generation_digest"]
+        recorded_probe_generation_digest = record.get("upstream", {}).get("probe_generation_digest")
+        if recorded_probe_generation_digest != current_probe_generation_digest:
+            problems.append(
+                f"{key}: was accepted against a different probe generation than the currently accepted "
+                f"{expected_probe_key!r}; rerun and accept audit_search"
+            )
 
     if problems:
         raise FinalizationRefusedError("finalize refused: " + "; ".join(problems))
 
     rows = splits_output.read_membership_gzip(Path(assign_record["membership_path"]))
+
+    # C4: independently RECOMPUTE the complete ID universe, component
+    # indivisibility, partition counts, row deviations, and all 244
+    # evaluation-floor counts from the final membership plus a fresh CSV
+    # stream -- rather than trusting the assign record's own cached copies.
+    recomputed = _independently_recompute_summary(config=config, assign_record=assign_record, final_rows=rows)
+    if recomputed["problems"]:
+        raise FinalizationRefusedError(
+            "finalize refused: independent recomputation disagrees with accepted evidence: "
+            + "; ".join(recomputed["problems"])
+        )
+    if recomputed["partition_row_counts"] != dict(assign_record["partition_row_counts"]):
+        raise FinalizationRefusedError(
+            "finalize refused: independently recomputed partition row counts "
+            f"{recomputed['partition_row_counts']} disagree with the accepted assign record "
+            f"{assign_record['partition_row_counts']}"
+        )
+    if not recomputed["minimum_count_report"]["passed"]:
+        raise FinalizationRefusedError(
+            "finalize refused: independently recomputed evaluation-floor counts report a violation the accepted "
+            "assign record's cached summary did not"
+        )
 
     base_dir = output_dir / "finalize"
     generation_dir = splits_commands.new_generation_dir(base_dir, prefix="finalize")
@@ -662,31 +1072,44 @@ def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool 
 
         upstream_digests = {
             "assign_stage_fingerprint": assign_record["stage_fingerprint"],
+            "assign_generation_digest": assign_record["generation_digest"],
             "legacy_diagnostic_stage_fingerprint": legacy_record["stage_fingerprint"],
+            "legacy_diagnostic_generation_digest": legacy_record["generation_digest"],
         }
         for width, record in exact_audit_records.items():
             upstream_digests[f"exact_audit_{width}_stage_fingerprint"] = record["stage_fingerprint"]
+            upstream_digests[f"exact_audit_{width}_generation_digest"] = record["generation_digest"]
+        for key, record in probe_records.items():
+            upstream_digests[f"{key}_stage_fingerprint"] = record["stage_fingerprint"]
+            upstream_digests[f"{key}_generation_digest"] = record["generation_digest"]
         for key, record in search_records.items():
             upstream_digests[f"{key}_stage_fingerprint"] = record["stage_fingerprint"]
+            upstream_digests[f"{key}_generation_digest"] = record["generation_digest"]
 
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "checkpoint": "002C-1-finalize",
             "config_hash": config.content_hash,
-            "partition_row_counts": assign_record["partition_row_counts"],
-            "minimum_count_report": minimum_count_report,
-            "balance_report": balance,
+            "partition_row_counts": recomputed["partition_row_counts"],
+            "minimum_count_report": recomputed["minimum_count_report"],
+            "balance_report": recomputed["balance_report"],
             "exact_audit_summary": {
                 str(width): {"passed": record["passed"], "violation_count": record.get("violation_count")}
                 for width, record in exact_audit_records.items()
+            },
+            "audit_probe_summary": {
+                key: {"passed": record["passed"], "hit_count": record.get("hit_count")}
+                for key, record in probe_records.items()
             },
             "audit_search_summary": {
                 key: {"passed": record["passed"], "hit_count": record.get("hit_count")}
                 for key, record in search_records.items()
             },
-            "legacy_diagnostic": {
+            # C6: the COMPLETE sanitized legacy diagnostic, not only its two
+            # index-set digests.
+            "legacy_diagnostic": legacy_record.get("report", {
                 "train_digest": legacy_record["train_digest"], "holdout_digest": legacy_record["holdout_digest"],
-            },
+            }),
             "upstream_digests": upstream_digests,
         }
         manifest_path = generation_dir / "sequence_partitions_002c_v1_manifest.json"
@@ -737,6 +1160,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", type=Path, default=None)
     parser.add_argument("--csv", type=Path, default=None)
     parser.add_argument("--component-membership", type=Path, default=None)
+    parser.add_argument("--component-report", type=Path, default=None)
+    parser.add_argument("--audit-json", type=Path, default=None)
+    parser.add_argument("--proteins-tsv", type=Path, default=None)
     parser.add_argument("--decode-fasta-dir", type=Path, default=None)
     parser.add_argument("--similarity-edges-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -766,32 +1192,64 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.stage in MMSEQS_STAGES and not args.authorize_mmseqs and not args.dry_run:
         raise AuthorizationError(f"stage {args.stage!r} launches MMseqs2 and requires --authorize-mmseqs")
 
+    if args.stage == "legacy_diagnostic" and args.similarity_edges_dir is None and not args.dry_run:
+        raise StageValidationError("stage 'legacy_diagnostic' requires --similarity-edges-dir")
+
     config = load_config_002c(args.config)
     output_dir = args.output_dir
+    repo_root = _repo_root(args.config, args.repo_root)
+    audit_json_path = args.audit_json if args.audit_json is not None else _resolve(repo_root, config.dataset.audit_json_path)
+    proteins_tsv_path = args.proteins_tsv if args.proteins_tsv is not None else _resolve(repo_root, config.dataset.proteins_tsv_path)
 
     if args.stage == "assign":
         if args.dry_run:
-            result = stage_assign(config=config, csv_path=args.csv, membership_path=args.component_membership, output_dir=output_dir, dry_run=True)
-        else:
-            csv_sha256 = sha256_file(Path(args.csv)) if args.csv and Path(args.csv).is_file() else "MISSING"
-            membership_sha256 = (
-                sha256_file(Path(args.component_membership))
-                if args.component_membership and Path(args.component_membership).is_file() else "MISSING"
+            result = stage_assign(
+                config=config, csv_path=args.csv, membership_path=args.component_membership,
+                component_report_path=args.component_report, audit_json_path=audit_json_path,
+                proteins_tsv_path=proteins_tsv_path, output_dir=output_dir, dry_run=True,
             )
-            current_fp = assign_fingerprint(config=config, csv_sha256=csv_sha256, membership_sha256=membership_sha256)
+        else:
+            def _hash_or_missing(p: Path | None) -> str:
+                return sha256_file(Path(p)) if p and Path(p).is_file() else "MISSING"
+
+            csv_sha256 = _hash_or_missing(args.csv)
+            membership_sha256 = _hash_or_missing(args.component_membership)
+            component_report_sha256 = _hash_or_missing(args.component_report)
+            audit_json_sha256 = _hash_or_missing(audit_json_path)
+            proteins_tsv_sha256 = _hash_or_missing(proteins_tsv_path)
+            current_fp = assign_fingerprint(
+                config=config, csv_sha256=csv_sha256, membership_sha256=membership_sha256,
+                component_report_sha256=component_report_sha256, audit_json_sha256=audit_json_sha256,
+                proteins_tsv_sha256=proteins_tsv_sha256,
+            )
             prior = None if args.force else restart.load_accepted(output_dir, "assign")
             if prior is not None and prior.get("stage_fingerprint") == current_fp:
                 result = prior
             else:
-                result = stage_assign(config=config, csv_path=args.csv, membership_path=args.component_membership, output_dir=output_dir)
+                result = stage_assign(
+                    config=config, csv_path=args.csv, membership_path=args.component_membership,
+                    component_report_path=args.component_report, audit_json_path=audit_json_path,
+                    proteins_tsv_path=proteins_tsv_path, output_dir=output_dir,
+                )
 
     elif args.stage == "legacy_diagnostic":
         if args.dry_run:
-            result = stage_legacy_diagnostic(config=config, csv_path=args.csv, output_dir=output_dir, assign_record={}, dry_run=True)
+            result = stage_legacy_diagnostic(
+                config=config, csv_path=args.csv, output_dir=output_dir, assign_record={},
+                similarity_edges_dir=args.similarity_edges_dir, dry_run=True,
+            )
         else:
             assign_record = restart.require_accepted(output_dir, "assign")
             csv_sha256 = sha256_file(Path(args.csv)) if args.csv and Path(args.csv).is_file() else "MISSING"
-            current_fp = legacy_diagnostic_fingerprint(config=config, csv_sha256=csv_sha256, assign_stage_fingerprint=assign_record["stage_fingerprint"])
+            edges_hashes = []
+            for width in config.protected_widths:
+                for name in (f"edges_{width}.json", f"exact_rc_edges_{width}.json"):
+                    candidate = Path(args.similarity_edges_dir) / name
+                    edges_hashes.append(sha256_file(candidate) if candidate.is_file() else "MISSING")
+            current_fp = legacy_diagnostic_fingerprint(
+                config=config, csv_sha256=csv_sha256, assign_stage_fingerprint=assign_record["stage_fingerprint"],
+                assign_generation_digest=assign_record["generation_digest"], edges_hashes=tuple(sorted(edges_hashes)),
+            )
             prior = None if args.force else restart.load_accepted(output_dir, "legacy_diagnostic")
             if prior is not None and prior.get("stage_fingerprint") == current_fp:
                 result = prior
@@ -809,7 +1267,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             fasta_path = Path(args.decode_fasta_dir) / f"width_{args.width}.fasta" if args.decode_fasta_dir else None
             fasta_sha256 = sha256_file(fasta_path) if fasta_path and fasta_path.is_file() else "MISSING"
             key = f"exact_audit_{args.width}"
-            current_fp = exact_audit_fingerprint(config=config, width=args.width, assign_stage_fingerprint=assign_record["stage_fingerprint"], fasta_sha256=fasta_sha256)
+            current_fp = exact_audit_fingerprint(
+                config=config, width=args.width, assign_stage_fingerprint=assign_record["stage_fingerprint"],
+                assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
+            )
             prior = None if args.force else restart.load_accepted(output_dir, key)
             if prior is not None and prior.get("stage_fingerprint") == current_fp:
                 result = prior
@@ -827,10 +1288,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         else:
             assign_record = restart.require_accepted(output_dir, "assign")
             key = mmseqs_audit.selection_key(args.stage, args.width, args.query_partition, args.target_partition)
+            fasta_path = Path(args.decode_fasta_dir) / f"width_{args.width}.fasta" if args.decode_fasta_dir else None
+            fasta_sha256 = sha256_file(fasta_path) if fasta_path and fasta_path.is_file() else "MISSING"
+            probe_generation_digest = None
+            if args.stage == "audit_search":
+                probe_key = mmseqs_audit.selection_key("audit_probe", args.width, args.query_partition, args.target_partition)
+                probe_record = restart.load_accepted(output_dir, probe_key)
+                probe_generation_digest = probe_record["generation_digest"] if probe_record is not None else "MISSING"
             current_fp = directed_audit_fingerprint(
                 stage_name=args.stage, width=args.width, query_partition=args.query_partition,
                 target_partition=args.target_partition, config=config,
-                assign_stage_fingerprint=assign_record["stage_fingerprint"], mmseqs_bin=args.mmseqs_bin,
+                assign_stage_fingerprint=assign_record["stage_fingerprint"],
+                assign_generation_digest=assign_record["generation_digest"], fasta_sha256=fasta_sha256,
+                mmseqs_bin=args.mmseqs_bin, probe_generation_digest=probe_generation_digest,
             )
             prior = None if args.force else restart.load_accepted(output_dir, key)
             if prior is not None and prior.get("stage_fingerprint") == current_fp:

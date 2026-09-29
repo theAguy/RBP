@@ -49,6 +49,13 @@ balance_deviation_flag_pct = 3.0
 row_dimension_weight = 244
 protein_class_dimension_weight = 1
 max_repair_passes = 5000
+# C2 (docs/reviews/002c1_partition_orchestration_correction_review.md): a
+# SEPARATE, generous bound on every tested move/swap PROPOSAL (accepted or
+# rejected), distinct from max_repair_passes (which bounds only ACCEPTED
+# passes). On the real 173,465-component universe the repair search is
+# index-scoped to actual label carriers, not a full component scan, but this
+# bound still caps total proposal work and fails closed if exhausted.
+max_repair_proposals = 2000000
 row_fraction_repair_limit_pct = 3.0
 
 [legacy_diagnostic]

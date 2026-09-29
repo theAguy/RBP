@@ -36,11 +36,46 @@ EVALUATION_PARTITIONS: tuple[str, ...] = ("validation", "test")
 
 # The single row-count objective is given the SAME aggregate weight as all
 # 244 separate protein/class objectives (122 proteins x {known_positive,
-# known_negative}) combined -- never a caller-configurable value, so a
-# future call can never silently drift from the reviewed contract.
+# known_negative}) combined. Task 002C-1 correction
+# (docs/reviews/002c1_partition_orchestration_correction_review.md, C1):
+# ``configs/splits/sequence_partitions_002c_v1.toml``'s own
+# ``assignment.row_dimension_weight``/``protein_class_dimension_weight``
+# fields now genuinely DRIVE :func:`assign_partitions` (threaded through as
+# real parameters, defaulting to these same frozen constants below) --
+# :func:`rbpbench.splits.config_002c.validate_frozen_invariants` is a SECOND,
+# independent line of defense that additionally fails closed if a config
+# edit ever tried to diverge from them, so this remains, in practice, never
+# a silently caller-configurable value.
 ROW_DIMENSION_WEIGHT = 244
+PROTEIN_CLASS_DIMENSION_WEIGHT = 1
 DEFAULT_MAX_REPAIR_PASSES = 5000
+# C2: a separate, generous bound on every tested move/swap PROPOSAL
+# (accepted or rejected) -- distinct from DEFAULT_MAX_REPAIR_PASSES, which
+# bounds only ACCEPTED passes. Exhausting it is a hard, fail-closed stop
+# (:class:`AssignmentInfeasibleError`), never a silent early return with a
+# remaining violation.
+DEFAULT_MAX_REPAIR_PROPOSALS = 2_000_000
 DEFAULT_ROW_FRACTION_REPAIR_LIMIT_PCT = 3.0
+
+
+@dataclass
+class _ProposalBudget:
+    """Counts every tested whole-component move/swap PROPOSAL (accepted or
+    rejected) against a fixed bound, so the deterministic bounded repair can
+    never silently perform unbounded work even when a full sweep over many
+    candidates never finds an improving move
+    (docs/reviews/002c1_partition_orchestration_correction_review.md, C2).
+    """
+
+    remaining: int
+    exhausted: bool = False
+
+    def consume(self) -> bool:
+        if self.remaining <= 0:
+            self.exhausted = True
+            return False
+        self.remaining -= 1
+        return True
 
 
 @dataclass(frozen=True)
@@ -126,6 +161,8 @@ def _partition_delta(
     target_neg: Mapping[tuple[str, int], float],
     partition: str,
     component: ComponentLabelCounts,
+    row_dimension_weight: int = ROW_DIMENSION_WEIGHT,
+    protein_class_dimension_weight: int = PROTEIN_CLASS_DIMENSION_WEIGHT,
 ) -> float:
     """The increase in the normalized squared-deficit objective (only
     ``partition``'s own terms change; every other partition's target counts
@@ -137,20 +174,20 @@ def _partition_delta(
     if target:
         old = running_size[partition]
         new = old + component.size
-        delta += ROW_DIMENSION_WEIGHT * (((new - target) / target) ** 2 - ((old - target) / target) ** 2)
+        delta += row_dimension_weight * (((new - target) / target) ** 2 - ((old - target) / target) ** 2)
     for protein_id, (pos, neg) in component.label_counts.items():
         if pos:
             target = target_pos[(partition, protein_id)]
             if target:
                 old = running_pos.get((partition, protein_id), 0)
                 new = old + pos
-                delta += ((new - target) / target) ** 2 - ((old - target) / target) ** 2
+                delta += protein_class_dimension_weight * (((new - target) / target) ** 2 - ((old - target) / target) ** 2)
         if neg:
             target = target_neg[(partition, protein_id)]
             if target:
                 old = running_neg.get((partition, protein_id), 0)
                 new = old + neg
-                delta += ((new - target) / target) ** 2 - ((old - target) / target) ** 2
+                delta += protein_class_dimension_weight * (((new - target) / target) ** 2 - ((old - target) / target) ** 2)
     return delta
 
 
@@ -160,7 +197,12 @@ def assign_partitions(
     seed: int,
     evaluation_floor: int = splits_audit.EVALUATION_FLOOR,
     max_repair_passes: int = DEFAULT_MAX_REPAIR_PASSES,
+    max_repair_proposals: int = DEFAULT_MAX_REPAIR_PROPOSALS,
     row_fraction_repair_limit_pct: float = DEFAULT_ROW_FRACTION_REPAIR_LIMIT_PCT,
+    row_dimension_weight: int = ROW_DIMENSION_WEIGHT,
+    protein_class_dimension_weight: int = PROTEIN_CLASS_DIMENSION_WEIGHT,
+    balance_deviation_flag_pct: float = splits_audit.BALANCE_DEVIATION_FLAG_PCT,
+    protein_ids: Sequence[int] | None = None,
 ) -> PartitionAssignment:
     """Assigns each whole component to whichever partition minimizes the
     increase in a normalized squared-deficit objective (docs/tasks/002c_partition_assignment_and_audit.md,
@@ -190,9 +232,22 @@ def assign_partitions(
     the fixed partition tie-break together mean re-running -- even with
     ``components`` supplied in a different order -- reproduces the
     identical assignment and repair sequence.
+
+    ``protein_ids`` is the FROZEN protein/class universe to check (the real
+    run must pass the complete configured ``1..122`` range, not merely the
+    protein IDs actually observed in the input --
+    docs/reviews/002c1_partition_orchestration_correction_review.md, C2:
+    "Missing totals must cause an explicit infeasibility or frozen-input
+    error rather than disappearing from the floor check"). Defaults to the
+    protein IDs actually observed in ``components`` only for direct,
+    lower-level callers (e.g. unit tests) that never declare a wider
+    universe explicitly.
     """
     grand_size = sum(c.size for c in components)
-    protein_ids = sorted({pid for c in components for pid in c.label_counts})
+    if protein_ids is None:
+        protein_ids = sorted({pid for c in components for pid in c.label_counts})
+    else:
+        protein_ids = sorted(set(protein_ids))
     grand_pos = {pid: sum(c.label_counts.get(pid, (0, 0))[0] for c in components) for pid in protein_ids}
     grand_neg = {pid: sum(c.label_counts.get(pid, (0, 0))[1] for c in components) for pid in protein_ids}
 
@@ -215,6 +270,7 @@ def assign_partitions(
                 running_size=running_size, running_pos=running_pos, running_neg=running_neg,
                 target_size=target_size, target_pos=target_pos, target_neg=target_neg,
                 partition=partition, component=component,
+                row_dimension_weight=row_dimension_weight, protein_class_dimension_weight=protein_class_dimension_weight,
             )
             if best_delta is None or delta < best_delta:
                 best_delta = delta
@@ -242,6 +298,10 @@ def assign_partitions(
         evaluation_floor=evaluation_floor,
         row_fraction_repair_limit_pct=row_fraction_repair_limit_pct,
         max_repair_passes=max_repair_passes,
+        max_repair_proposals=max_repair_proposals,
+        row_dimension_weight=row_dimension_weight,
+        protein_class_dimension_weight=protein_class_dimension_weight,
+        balance_deviation_flag_pct=balance_deviation_flag_pct,
     )
 
     partition_label_counts = {
@@ -305,18 +365,20 @@ def _normalized_squared_error(
     target_size: Mapping[str, float],
     target_pos: Mapping[tuple[str, int], float],
     target_neg: Mapping[tuple[str, int], float],
+    row_dimension_weight: int = ROW_DIMENSION_WEIGHT,
+    protein_class_dimension_weight: int = PROTEIN_CLASS_DIMENSION_WEIGHT,
 ) -> float:
     total = 0.0
     for partition in PARTITIONS:
         target = target_size[partition]
         if target:
-            total += ROW_DIMENSION_WEIGHT * ((running_size[partition] - target) / target) ** 2
+            total += row_dimension_weight * ((running_size[partition] - target) / target) ** 2
     for partition in PARTITIONS:
         for protein_id in protein_ids:
             for running_map, target_map in ((running_pos, target_pos), (running_neg, target_neg)):
                 target = target_map[(partition, protein_id)]
                 if target:
-                    total += ((running_map.get((partition, protein_id), 0) - target) / target) ** 2
+                    total += protein_class_dimension_weight * ((running_map.get((partition, protein_id), 0) - target) / target) ** 2
     return total
 
 
@@ -331,16 +393,19 @@ def _lexicographic_tuple(
     target_pos: Mapping[tuple[str, int], float],
     target_neg: Mapping[tuple[str, int], float],
     evaluation_floor: int,
+    row_dimension_weight: int = ROW_DIMENSION_WEIGHT,
+    protein_class_dimension_weight: int = PROTEIN_CLASS_DIMENSION_WEIGHT,
+    balance_deviation_flag_pct: float = splits_audit.BALANCE_DEVIATION_FLAG_PCT,
 ) -> tuple[int, int, float, int, float]:
     """The repair-acceptance tuple (docs/reviews/002c_partition_assignment_reconciliation.md,
     "Bounded repair must exercise a multi-step feasible case"): total floor
     deficit, number of floor violations, worst absolute row-fraction
-    deviation, number of protein/class deviations flagged over 3
-    percentage points, then total normalized squared error. Smaller is
-    always strictly better in ordinary tuple comparison. Reuses
-    :mod:`rbpbench.splits.audit`'s own disclosure functions so this tuple's
-    "violation"/"flagged" definitions can never silently diverge from what
-    the accepted manifest itself discloses.
+    deviation, number of protein/class deviations flagged over
+    ``balance_deviation_flag_pct`` percentage points, then total normalized
+    squared error. Smaller is always strictly better in ordinary tuple
+    comparison. Reuses :mod:`rbpbench.splits.audit`'s own disclosure
+    functions so this tuple's "violation"/"flagged" definitions can never
+    silently diverge from what the accepted manifest itself discloses.
     """
     partition_label_counts = _partition_label_counts_view(running_pos, running_neg, protein_ids)
     min_count_report = splits_audit.minimum_count_check(
@@ -349,10 +414,14 @@ def _lexicographic_tuple(
     total_floor_deficit = sum(v["floor"] - v["count"] for v in min_count_report["violations"])
     num_floor_violations = len(min_count_report["violations"])
 
-    balance = splits_audit.balance_report(dict(running_size), TARGET_FRACTIONS, grand_size)
+    balance = splits_audit.balance_report(
+        dict(running_size), TARGET_FRACTIONS, grand_size, flag_threshold_pct=balance_deviation_flag_pct
+    )
     max_abs_row_deviation = max((abs(entry["deviation_percentage_points"]) for entry in balance.values()), default=0.0)
 
-    per_protein = splits_audit.per_protein_balance_report(partition_label_counts, TARGET_FRACTIONS)
+    per_protein = splits_audit.per_protein_balance_report(
+        partition_label_counts, TARGET_FRACTIONS, flag_threshold_pct=balance_deviation_flag_pct
+    )
     num_over_threshold = sum(
         1
         for protein_entry in per_protein.values()
@@ -361,7 +430,10 @@ def _lexicographic_tuple(
         if class_entry["flagged"]
     )
 
-    nse = _normalized_squared_error(running_size, running_pos, running_neg, protein_ids, target_size, target_pos, target_neg)
+    nse = _normalized_squared_error(
+        running_size, running_pos, running_neg, protein_ids, target_size, target_pos, target_neg,
+        row_dimension_weight=row_dimension_weight, protein_class_dimension_weight=protein_class_dimension_weight,
+    )
     return (total_floor_deficit, num_floor_violations, max_abs_row_deviation, num_over_threshold, nse)
 
 
@@ -384,20 +456,69 @@ def _apply_move(
             running_neg[(to_partition, protein_id)] = running_neg.get((to_partition, protein_id), 0) + neg
 
 
+# C2 (docs/reviews/002c1_partition_orchestration_correction_review.md): a
+# fixed, deterministic cap on how many outgoing swap partners are considered
+# per incoming candidate. The sort key (ascending contribution, then size,
+# then ID) always places the "cheapest to give up" members first, so a
+# genuinely useful partner is found near the front of this list; capping it
+# bounds per-attempt work without an unbounded scan of an entire (possibly
+# ~121K-component) partition for every incoming candidate.
+_MAX_OUTGOING_SWAP_CANDIDATES = 500
+
+
+def _build_contributors_index(
+    components_by_id: Mapping[str, ComponentLabelCounts],
+) -> dict[tuple[int, str], list[str]]:
+    """Deterministic inverted index, built ONCE per :func:`assign_partitions`
+    call: ``(protein_id, class_label) -> [component_id, ...]`` for every
+    component with a POSITIVE contribution to that dimension, ordered
+    largest-contribution-first then smallest-size then component ID.
+
+    Replaces scanning every one of the (real-scale: 173,465) components for
+    every evaluation-floor violation (docs/reviews/002c1_partition_orchestration_correction_review.md,
+    C2, "building deterministic inverted indexes for label-carrying repair
+    candidates instead of scanning all components for every violation") with
+    one lookup into the small subset of components that actually carry that
+    protein/class label at all.
+    """
+    ranked: dict[tuple[int, str], list[tuple[int, int, str]]] = {}
+    for component_id, component in components_by_id.items():
+        for protein_id, (pos, neg) in component.label_counts.items():
+            if pos:
+                ranked.setdefault((protein_id, "known_positive"), []).append((-pos, component.size, component_id))
+            if neg:
+                ranked.setdefault((protein_id, "known_negative"), []).append((-neg, component.size, component_id))
+    return {key: [cid for _, _, cid in sorted(entries)] for key, entries in ranked.items()}
+
+
 def _candidate_components_for(
     protein_id: int,
     class_label: str,
     exclude_partition: str,
     component_to_partition: Mapping[str, str],
     components_by_id: Mapping[str, ComponentLabelCounts],
+    contributors_index: Mapping[tuple[int, str], list[str]] | None = None,
 ) -> list[ComponentLabelCounts]:
     """Components NOT currently in ``exclude_partition`` with a positive
     contribution to ``(protein_id, class_label)``, ordered deterministically:
     largest contribution first (fixes the most deficit per move), then
     smallest total size (least collateral row-fraction movement), then
     component ID.
+
+    When ``contributors_index`` is supplied (the production repair loop
+    always builds one once via :func:`_build_contributors_index`), this is a
+    lookup into the precomputed label-carrier list rather than a fresh scan
+    of every component; a caller that omits it (e.g. a direct unit-test
+    call) gets the identical result computed on the fly.
     """
     idx = 0 if class_label == "known_positive" else 1
+    if contributors_index is not None:
+        candidate_ids = contributors_index.get((protein_id, class_label), ())
+        return [
+            components_by_id[component_id]
+            for component_id in candidate_ids
+            if component_to_partition[component_id] != exclude_partition
+        ]
     ranked = []
     for component_id, partition in component_to_partition.items():
         if partition == exclude_partition:
@@ -413,10 +534,16 @@ def _candidate_components_for(
 def _try_single_moves(
     *, ordered_violations, component_to_partition, components_by_id, running_size, running_pos, running_neg,
     protein_ids, grand_size, target_size, target_pos, target_neg, evaluation_floor, row_fraction_repair_limit_pct,
-    old_violations, current_tuple,
+    old_violations, current_tuple, contributors_index=None, proposal_budget=None,
+    row_dimension_weight=ROW_DIMENSION_WEIGHT, protein_class_dimension_weight=PROTEIN_CLASS_DIMENSION_WEIGHT,
+    balance_deviation_flag_pct=splits_audit.BALANCE_DEVIATION_FLAG_PCT,
 ):
     for partition, protein_id, class_label in ordered_violations:
-        for component in _candidate_components_for(protein_id, class_label, partition, component_to_partition, components_by_id):
+        for component in _candidate_components_for(
+            protein_id, class_label, partition, component_to_partition, components_by_id, contributors_index
+        ):
+            if proposal_budget is not None and not proposal_budget.consume():
+                return None
             from_partition = component_to_partition[component.component_id]
             _apply_move(component, from_partition, partition, running_size, running_pos, running_neg)
             within_limit = _row_fractions_within_limit(running_size, grand_size, row_fraction_repair_limit_pct)
@@ -427,6 +554,8 @@ def _try_single_moves(
                     running_size=running_size, running_pos=running_pos, running_neg=running_neg,
                     protein_ids=protein_ids, grand_size=grand_size, target_size=target_size,
                     target_pos=target_pos, target_neg=target_neg, evaluation_floor=evaluation_floor,
+                    row_dimension_weight=row_dimension_weight, protein_class_dimension_weight=protein_class_dimension_weight,
+                    balance_deviation_flag_pct=balance_deviation_flag_pct,
                 )
                 if new_tuple < current_tuple:
                     component_to_partition[component.component_id] = partition
@@ -438,11 +567,15 @@ def _try_single_moves(
 def _try_swaps(
     *, ordered_violations, component_to_partition, components_by_id, running_size, running_pos, running_neg,
     protein_ids, grand_size, target_size, target_pos, target_neg, evaluation_floor, row_fraction_repair_limit_pct,
-    old_violations, current_tuple,
+    old_violations, current_tuple, contributors_index=None, proposal_budget=None,
+    row_dimension_weight=ROW_DIMENSION_WEIGHT, protein_class_dimension_weight=PROTEIN_CLASS_DIMENSION_WEIGHT,
+    balance_deviation_flag_pct=splits_audit.BALANCE_DEVIATION_FLAG_PCT,
 ):
     for partition, protein_id, class_label in ordered_violations:
         idx = 0 if class_label == "known_positive" else 1
-        incoming_candidates = _candidate_components_for(protein_id, class_label, partition, component_to_partition, components_by_id)
+        incoming_candidates = _candidate_components_for(
+            protein_id, class_label, partition, component_to_partition, components_by_id, contributors_index
+        )
         for incoming in incoming_candidates:
             source_partition = component_to_partition[incoming.component_id]
             outgoing_candidates = sorted(
@@ -452,8 +585,10 @@ def _try_swaps(
                     if p == partition and component_id != incoming.component_id
                 ),
                 key=lambda c: (c.label_counts.get(protein_id, (0, 0))[idx], c.size, c.component_id),
-            )
+            )[:_MAX_OUTGOING_SWAP_CANDIDATES]
             for outgoing in outgoing_candidates:
+                if proposal_budget is not None and not proposal_budget.consume():
+                    return None
                 _apply_move(incoming, source_partition, partition, running_size, running_pos, running_neg)
                 _apply_move(outgoing, partition, source_partition, running_size, running_pos, running_neg)
                 within_limit = _row_fractions_within_limit(running_size, grand_size, row_fraction_repair_limit_pct)
@@ -464,6 +599,8 @@ def _try_swaps(
                         running_size=running_size, running_pos=running_pos, running_neg=running_neg,
                         protein_ids=protein_ids, grand_size=grand_size, target_size=target_size,
                         target_pos=target_pos, target_neg=target_neg, evaluation_floor=evaluation_floor,
+                        row_dimension_weight=row_dimension_weight, protein_class_dimension_weight=protein_class_dimension_weight,
+                        balance_deviation_flag_pct=balance_deviation_flag_pct,
                     )
                     if new_tuple < current_tuple:
                         component_to_partition[incoming.component_id] = partition
@@ -483,6 +620,10 @@ def _try_swaps(
 def _repair_floor_violations(
     *, component_to_partition, components_by_id, running_size, running_pos, running_neg, protein_ids,
     grand_size, target_size, target_pos, target_neg, evaluation_floor, row_fraction_repair_limit_pct, max_repair_passes,
+    max_repair_proposals: int = DEFAULT_MAX_REPAIR_PROPOSALS,
+    row_dimension_weight: int = ROW_DIMENSION_WEIGHT,
+    protein_class_dimension_weight: int = PROTEIN_CLASS_DIMENSION_WEIGHT,
+    balance_deviation_flag_pct: float = splits_audit.BALANCE_DEVIATION_FLAG_PCT,
 ) -> list[dict]:
     """Applies at most ``max_repair_passes`` accepted whole-component
     moves/swaps (one per pass, the first strictly-improving, constraint-
@@ -491,10 +632,20 @@ def _repair_floor_violations(
     violations remain. Raises :class:`AssignmentInfeasibleError` -- never
     splits a component or weakens a floor -- if the bound is exhausted or a
     full sweep finds no valid move/swap while a violation remains.
+
+    Builds the label-carrier inverted index (:func:`_build_contributors_index`)
+    and the proposal budget (:class:`_ProposalBudget`, counting every TESTED
+    move/swap, accepted or not, across the whole repair -- not merely every
+    accepted pass) exactly ONCE, up front, so real-scale repair search never
+    re-scans the full component universe per violation
+    (docs/reviews/002c1_partition_orchestration_correction_review.md, C2).
     """
     repair_steps: list[dict] = []
     if not _floor_violation_set(running_pos, running_neg, protein_ids, evaluation_floor):
         return repair_steps
+
+    contributors_index = _build_contributors_index(components_by_id)
+    proposal_budget = _ProposalBudget(remaining=max_repair_proposals)
 
     for _pass_index in range(max_repair_passes):
         old_violations = _floor_violation_set(running_pos, running_neg, protein_ids, evaluation_floor)
@@ -504,7 +655,9 @@ def _repair_floor_violations(
         current_tuple = _lexicographic_tuple(
             running_size=running_size, running_pos=running_pos, running_neg=running_neg, protein_ids=protein_ids,
             grand_size=grand_size, target_size=target_size, target_pos=target_pos, target_neg=target_neg,
-            evaluation_floor=evaluation_floor,
+            evaluation_floor=evaluation_floor, row_dimension_weight=row_dimension_weight,
+            protein_class_dimension_weight=protein_class_dimension_weight,
+            balance_deviation_flag_pct=balance_deviation_flag_pct,
         )
         ordered_violations = sorted(old_violations)
 
@@ -514,12 +667,19 @@ def _repair_floor_violations(
             running_neg=running_neg, protein_ids=protein_ids, grand_size=grand_size, target_size=target_size,
             target_pos=target_pos, target_neg=target_neg, evaluation_floor=evaluation_floor,
             row_fraction_repair_limit_pct=row_fraction_repair_limit_pct, old_violations=old_violations,
-            current_tuple=current_tuple,
+            current_tuple=current_tuple, contributors_index=contributors_index, proposal_budget=proposal_budget,
+            row_dimension_weight=row_dimension_weight, protein_class_dimension_weight=protein_class_dimension_weight,
+            balance_deviation_flag_pct=balance_deviation_flag_pct,
         )
         accepted = _try_single_moves(**shared_kwargs)
         if accepted is None:
             accepted = _try_swaps(**shared_kwargs)
         if accepted is None:
+            if proposal_budget.exhausted:
+                raise AssignmentInfeasibleError(
+                    f"deterministic bounded repair exhausted its {max_repair_proposals} configured proposal(s) "
+                    f"with {len(old_violations)} evaluation-floor violation(s) remaining"
+                )
             raise AssignmentInfeasibleError(
                 f"deterministic bounded repair found no valid whole-component move or swap that improves the "
                 f"remaining {len(old_violations)} evaluation-floor violation(s) without splitting a component, "
@@ -541,7 +701,9 @@ __all__ = [
     "TARGET_FRACTIONS",
     "EVALUATION_PARTITIONS",
     "ROW_DIMENSION_WEIGHT",
+    "PROTEIN_CLASS_DIMENSION_WEIGHT",
     "DEFAULT_MAX_REPAIR_PASSES",
+    "DEFAULT_MAX_REPAIR_PROPOSALS",
     "DEFAULT_ROW_FRACTION_REPAIR_LIMIT_PCT",
     "ComponentLabelCounts",
     "PartitionAssignment",

@@ -15,6 +15,7 @@ dependencies = [
 rbp-audit = "rbpbench.data.audit:main"
 rbp-coordinates = "rbpbench.coordinates.runner:main"
 rbp-splits = "rbpbench.splits.runner:main"
+rbp-splits-002c = "rbpbench.splits.runner_002c:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

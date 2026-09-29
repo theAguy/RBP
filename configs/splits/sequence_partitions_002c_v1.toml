@@ -1,0 +1,84 @@
+# Task 002C-specific versioned configuration (docs/tasks/002c_partition_assignment_and_audit.md,
+# docs/handoffs/002c1_partition_orchestration_claude_handoff.md).
+#
+# Deliberately SEPARATE from Task 002B's own
+# configs/splits/sequence_partitions_v1.toml: 002C must never mutate that
+# file or invalidate its accepted selection records. Scientific
+# identity/coverage/max-seqs MMseqs2 flags remain hardcoded in
+# rbpbench.splits.commands and are not reachable from here, exactly as in
+# the 002B config.
+
+seed = 20260925
+protected_widths = [500, 251, 101]
+
+[dataset]
+# Frozen real-input expectations (docs/tasks/002c_partition_assignment_and_audit.md,
+# "Frozen inputs"). A fixture-mode config supplies its own tiny hashes/
+# universe; production hashes here can never accept a tiny fixture file
+# because the SHA-256/byte-size check would simply fail.
+csv_filename = "dataset_K562_multilabel_with_NEGs.csv"
+csv_sha256 = "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945"
+csv_byte_size = 724425277
+expected_row_count = 361180
+audit_json_path = "manifests/dataset_audit.json"
+audit_json_sha256 = "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"
+proteins_tsv_path = "configs/proteins.tsv"
+proteins_tsv_sha256 = "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+protein_id_min = 1
+protein_id_max = 122
+
+[components_002b]
+# The accepted Task 002B component membership/report this real run must
+# bind (docs/tasks/002c_partition_assignment_and_audit.md, "Frozen inputs").
+# Paths are supplied explicitly on the 002C CLI (never a hard-coded
+# collaborator absolute path); hashes/sizes/count are the frozen acceptance
+# values checked against whatever path is actually given.
+membership_byte_size = 14578797
+membership_sha256 = "6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692"
+report_byte_size = 13036977
+report_sha256 = "b8b5872a4cc5061c562de871ec4500876fcdb72afcab069b21ab2bb44cb3e186"
+expected_component_count = 173465
+
+[assignment]
+# The frozen deterministic objective (docs/tasks/002c_partition_assignment_and_audit.md,
+# "Frozen assignment contract"; docs/reviews/002c_partition_assignment_reconciliation.md).
+# Never a CLI-overridable weight/order/seed/floor/objective.
+target_fractions = { train = 0.70, validation = 0.15, test = 0.15 }
+evaluation_floor = 30
+balance_deviation_flag_pct = 3.0
+row_dimension_weight = 244
+protein_class_dimension_weight = 1
+max_repair_passes = 5000
+row_fraction_repair_limit_pct = 3.0
+
+[legacy_diagnostic]
+# Exact submitted-notebook fold-reproduction contract (docs/tasks/002c_partition_assignment_and_audit.md,
+# "Former-split diagnostic"). These four package versions are pinned and
+# verified against the real installed isolated environment before any real
+# execution; a resolved mismatch is a hard stop, never a silent substitution.
+python_version = "3.12"
+numpy_version = "2.0.2"
+scipy_version = "1.16.1"
+scikit_learn_version = "1.6.1"
+iterative_stratification_version = "0.1.9"
+n_splits = 5
+shuffle = true
+random_state = 42
+fold_index = 0
+
+[audit]
+# Preserved Task 002B-style resource gates (docs/tasks/002c_partition_assignment_and_audit.md,
+# "002C-3"), reused unchanged for the 002C directed MMseqs2 audit stages.
+max_threads = 4
+timeout_seconds = 43200
+max_new_disk_gib = 50.0
+min_free_disk_gib = 80.0
+min_installed_ram_gib = 16.0
+min_available_memory_gib_before_launch = 10.0
+resource_poll_interval_seconds = 5.0
+probe_sample_size = 2000
+probe_max_peak_memory_gib = 10.0
+probe_min_available_memory_gib_before_next_stage = 10.0
+
+[binary]
+mmseqs_sha256 = "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed635"

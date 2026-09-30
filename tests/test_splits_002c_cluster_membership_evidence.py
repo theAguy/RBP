@@ -45,6 +45,113 @@ def _write_membership(path: Path, rows: list[tuple[str, str]]) -> None:
     path.write_text("".join(f"{rep}\t{mem}\n" for rep, mem in rows))
 
 
+def _build_tiny_cluster_evidence_root_and_config(
+    tmp: Path, *, widths: tuple[int, ...] = (500, 251, 101), sample_count: int = 5,
+):
+    """Builds a tiny, schema-correct synthetic Task 002B return bundle and a
+    matching config binding: ``RETURN_MANIFEST.json``'s ``selected_stages``/
+    ``membership_summary`` shape and ``RETURN_INVENTORY.json``'s flat
+    list-of-``{path,byte_size,sha256}``-entries shape mirror the real
+    accepted return exactly (correction review C2 -- an outer-hash-only
+    placeholder like ``{"tiny": "manifest"}`` can no longer satisfy the
+    shared verifier's semantic cross-check). Returns ``(config,
+    cluster_evidence_root, evidence_by_width)``, where ``evidence_by_width``
+    exposes each width's real file paths/hashes/sizes/generation digest for
+    mutation-based regressions.
+    """
+    root = tmp / "cluster_evidence_root"
+    (root / "memberships").mkdir(parents=True)
+    (root / "selected_records").mkdir(parents=True)
+
+    cluster_membership: dict[int, ClusterMembershipFileExpectation] = {}
+    selected_stages: dict[str, dict] = {}
+    inventory_entries: list[dict] = []
+    evidence_by_width: dict[int, dict] = {}
+
+    for width in widths:
+        membership_relative_path = f"memberships/cluster_{width}.membership.tsv"
+        membership_path = root / membership_relative_path
+        _write_membership(membership_path, [(f"row_{i}", f"row_{i}") for i in range(sample_count)])
+        membership_sha = _sha256_bytes(membership_path.read_bytes())
+        membership_size = membership_path.stat().st_size
+
+        generation_digest = f"gen-{width}"
+        selected_record_relative_path = f"selected_records/cluster_{width}.json"
+        record_path = root / selected_record_relative_path
+        record_path.write_text(json.dumps({
+            "stage": "cluster", "executed": True, "width": width, "sample_count": sample_count,
+            "generation_digest": generation_digest,
+            "artifacts": [{"path": "membership.tsv", "sha256": membership_sha, "size": membership_size}],
+            "tool_provenance": [
+                {
+                    "tool": "mmseqs_cluster",
+                    "command_text": (
+                        "/Users/collaborator/abs/mmseqs cluster /abs/db /abs/clu /abs/tmp "
+                        "--min-seq-id 0.90 -c 0.80 --threads 4"
+                    ),
+                },
+            ],
+        }))
+        selected_record_sha = _sha256_bytes(record_path.read_bytes())
+        selected_record_size = record_path.stat().st_size
+
+        cluster_membership[width] = ClusterMembershipFileExpectation(
+            membership_relative_path=membership_relative_path, membership_byte_size=membership_size,
+            membership_sha256=membership_sha, selected_record_relative_path=selected_record_relative_path,
+            selected_record_byte_size=selected_record_size, selected_record_sha256=selected_record_sha,
+            expected_generation_digest=generation_digest, expected_member_count=sample_count,
+            expected_cluster_count=sample_count, expected_largest_cluster_size=1,
+            evidence_kind="connected_component_membership",
+        )
+        selected_stages[f"cluster_{width}"] = {
+            "stage": "cluster", "executed": True, "width": width, "generation_digest": generation_digest,
+            "returned_membership_path": membership_relative_path,
+            "membership_summary": {
+                "member_count": sample_count, "cluster_count": sample_count, "largest_cluster_size": 1,
+            },
+        }
+        inventory_entries.append(
+            {"path": membership_relative_path, "byte_size": membership_size, "sha256": membership_sha}
+        )
+        inventory_entries.append(
+            {"path": selected_record_relative_path, "byte_size": selected_record_size, "sha256": selected_record_sha}
+        )
+        evidence_by_width[width] = {
+            "membership_path": membership_path, "selected_record_path": record_path,
+            "membership_sha256": membership_sha, "membership_byte_size": membership_size,
+            "selected_record_sha256": selected_record_sha, "selected_record_byte_size": selected_record_size,
+            "generation_digest": generation_digest,
+        }
+
+    return_manifest_path = root / "RETURN_MANIFEST.json"
+    return_manifest_path.write_text(json.dumps({"selected_stages": selected_stages}))
+    return_inventory_path = root / "RETURN_INVENTORY.json"
+    return_inventory_path.write_text(json.dumps(inventory_entries))
+
+    legacy_edges = LegacyClusterEvidenceConfig(
+        return_manifest=ReturnBundleFileExpectation(
+            relative_path="RETURN_MANIFEST.json", byte_size=return_manifest_path.stat().st_size,
+            sha256=_sha256_bytes(return_manifest_path.read_bytes()),
+        ),
+        return_inventory=ReturnBundleFileExpectation(
+            relative_path="RETURN_INVENTORY.json", byte_size=return_inventory_path.stat().st_size,
+            sha256=_sha256_bytes(return_inventory_path.read_bytes()),
+        ),
+        cluster_membership=cluster_membership,
+    )
+
+    from rbpbench.splits.config_002c import load_config_002c
+
+    full_config_path = Path(__file__).resolve().parent.parent / "configs" / "splits" / "sequence_partitions_002c_v1.toml"
+    base_config = load_config_002c(full_config_path)
+    config = dataclasses.replace(
+        base_config, protected_widths=tuple(widths),
+        dataset=dataclasses.replace(base_config.dataset, expected_row_count=sample_count),
+        legacy_edges=legacy_edges,
+    )
+    return config, root, evidence_by_width
+
+
 class ClusterBoundaryReportTests(unittest.TestCase):
     """Item 1/2/9: a transitive A-B-C cluster is reported as cluster
     co-membership -- never labeled a direct A-C match -- with exact
@@ -343,70 +450,8 @@ class SanitizedManifestTests(unittest.TestCase):
     """
 
     def _build_tiny_config_and_root(self, tmp: Path):
-        root = tmp / "cluster_evidence_root"
-        (root / "memberships").mkdir(parents=True)
-        (root / "selected_records").mkdir(parents=True)
-
-        return_manifest_path = root / "RETURN_MANIFEST.json"
-        return_manifest_path.write_text(json.dumps({"tiny": "manifest"}))
-        return_inventory_path = root / "RETURN_INVENTORY.json"
-        return_inventory_path.write_text(json.dumps({"tiny": "inventory"}))
-
-        cluster_membership = {}
-        for width in (500, 251, 101):
-            membership_path = root / "memberships" / f"cluster_{width}.membership.tsv"
-            _write_membership(membership_path, [(f"row_{i}", f"row_{i}") for i in range(5)])
-            membership_sha = _sha256_bytes(membership_path.read_bytes())
-            membership_size = membership_path.stat().st_size
-
-            record_path = root / "selected_records" / f"cluster_{width}.json"
-            record_path.write_text(json.dumps({
-                "stage": "cluster", "executed": True, "width": width, "sample_count": 5,
-                "generation_digest": f"gen-{width}",
-                "artifacts": [{"path": "membership.tsv", "sha256": membership_sha, "size": membership_size}],
-                "tool_provenance": [
-                    {
-                        "tool": "mmseqs_cluster",
-                        "command_text": (
-                            f"/Users/collaborator/abs/mmseqs cluster /abs/db /abs/clu /abs/tmp "
-                            f"--min-seq-id 0.90 -c 0.80 --threads 4"
-                        ),
-                    },
-                ],
-            }))
-
-            cluster_membership[width] = ClusterMembershipFileExpectation(
-                membership_relative_path=f"memberships/cluster_{width}.membership.tsv",
-                membership_byte_size=membership_size, membership_sha256=membership_sha,
-                selected_record_relative_path=f"selected_records/cluster_{width}.json",
-                selected_record_byte_size=record_path.stat().st_size,
-                selected_record_sha256=_sha256_bytes(record_path.read_bytes()),
-                expected_generation_digest=f"gen-{width}", expected_member_count=5, expected_cluster_count=5,
-                expected_largest_cluster_size=1, evidence_kind="connected_component_membership",
-            )
-
-        legacy_edges = LegacyClusterEvidenceConfig(
-            return_manifest=ReturnBundleFileExpectation(
-                relative_path="RETURN_MANIFEST.json", byte_size=return_manifest_path.stat().st_size,
-                sha256=_sha256_bytes(return_manifest_path.read_bytes()),
-            ),
-            return_inventory=ReturnBundleFileExpectation(
-                relative_path="RETURN_INVENTORY.json", byte_size=return_inventory_path.stat().st_size,
-                sha256=_sha256_bytes(return_inventory_path.read_bytes()),
-            ),
-            cluster_membership=cluster_membership,
-        )
-
-        from rbpbench.splits.config_002c import load_config_002c
-
-        full_config_path = Path(__file__).resolve().parent.parent / "configs" / "splits" / "sequence_partitions_002c_v1.toml"
-        base_config = load_config_002c(full_config_path)
-        tiny_config = dataclasses.replace(
-            base_config, protected_widths=(500, 251, 101),
-            dataset=dataclasses.replace(base_config.dataset, expected_row_count=5),
-            legacy_edges=legacy_edges,
-        )
-        return tiny_config, root
+        config, root, _evidence_by_width = _build_tiny_cluster_evidence_root_and_config(tmp)
+        return config, root
 
     def test_manifest_has_no_row_level_or_absolute_path_content(self):
         with TemporaryDirectory() as tmp:
@@ -429,35 +474,44 @@ class SanitizedManifestTests(unittest.TestCase):
 
 
 class CurrentLegacyClusterEvidenceRevalidationTests(unittest.TestCase):
-    """Item 6: a changed pinned membership/selected-record hash, size, or
-    generation digest invalidates both the stage fingerprint and
-    finalization's current-evidence revalidation.
+    """Item 6 / correction review C1: finalization's current-evidence
+    revalidation re-hashes the LIVE cluster-evidence files at the exact
+    portable return root the accepted ``legacy_diagnostic`` record itself
+    recorded (:func:`rbpbench.splits.cluster_membership_evidence.verify_live_cluster_evidence`)
+    -- neither a live file mutated after acceptance (config unchanged) nor a
+    config edit made after acceptance (live files unchanged) can leave
+    ``finalize`` apparently current. Configured expected strings alone are
+    never proof of live currency.
     """
 
-    def _config_with_one_width(self, *, membership_sha256: str, selected_record_sha256: str, generation_digest: str):
-        entry = ClusterMembershipFileExpectation(
-            membership_relative_path="memberships/cluster_500.membership.tsv", membership_byte_size=10,
-            membership_sha256=membership_sha256, selected_record_relative_path="selected_records/cluster_500.json",
-            selected_record_byte_size=20, selected_record_sha256=selected_record_sha256,
-            expected_generation_digest=generation_digest, expected_member_count=5, expected_cluster_count=5,
-            expected_largest_cluster_size=1, evidence_kind="connected_component_membership",
-        )
+    def _accept(self, config, root, evidence_by_width) -> dict:
+        """Builds a ``legacy_diagnostic``-shaped accepted record exactly as
+        :func:`rbpbench.splits.runner_002c.stage_legacy_diagnostic` would,
+        by running the SAME shared verifier the real stage uses.
+        """
+        live = cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+        return {
+            "cluster_evidence_root": str(root.resolve()),
+            "cluster_evidence": live["cluster_evidence"],
+            "return_metadata_evidence": {
+                "return_manifest_sha256": live["return_manifest_sha256"],
+                "return_manifest_byte_size": live["return_manifest_byte_size"],
+                "return_inventory_sha256": live["return_inventory_sha256"],
+                "return_inventory_byte_size": live["return_inventory_byte_size"],
+            },
+        }
+
+    def test_fingerprint_changes_when_a_cluster_membership_hash_changes(self):
         from rbpbench.splits.config_002c import load_config_002c
 
         full_config_path = Path(__file__).resolve().parent.parent / "configs" / "splits" / "sequence_partitions_002c_v1.toml"
-        base_config = load_config_002c(full_config_path)
-        legacy_edges = LegacyClusterEvidenceConfig(
-            return_manifest=base_config.legacy_edges.return_manifest,
-            return_inventory=base_config.legacy_edges.return_inventory,
-            cluster_membership={500: entry},
-        )
-        return dataclasses.replace(base_config, protected_widths=(500,), legacy_edges=legacy_edges)
-
-    def test_fingerprint_changes_when_a_cluster_membership_hash_changes(self):
         common = dict(
-            config=self._config_with_one_width(membership_sha256="a" * 64, selected_record_sha256="b" * 64, generation_digest="gen"),
-            csv_sha256="csv", assign_stage_fingerprint="asg", assign_generation_digest="asg-gen",
-            decode_generation_digest="dec-gen", exact_rc_evidence={},
+            config=load_config_002c(full_config_path), csv_sha256="csv", assign_stage_fingerprint="asg",
+            assign_generation_digest="asg-gen", decode_generation_digest="dec-gen", exact_rc_evidence={},
+            return_metadata_evidence={
+                "return_manifest_sha256": "rm", "return_manifest_byte_size": 1,
+                "return_inventory_sha256": "ri", "return_inventory_byte_size": 2,
+            },
         )
         cluster_evidence_a = {
             "500": {
@@ -472,35 +526,323 @@ class CurrentLegacyClusterEvidenceRevalidationTests(unittest.TestCase):
         fp_b = r002c.legacy_diagnostic_fingerprint(cluster_evidence=cluster_evidence_b, **common)
         self.assertNotEqual(fp_a, fp_b)
 
-    def test_finalize_revalidation_rejects_a_stale_membership_hash(self):
-        config = self._config_with_one_width(membership_sha256="a" * 64, selected_record_sha256="b" * 64, generation_digest="gen")
-        legacy_record = {
-            "cluster_evidence": {
-                "500": {
-                    "membership_sha256": "STALE", "membership_byte_size": 10, "selected_record_sha256": "b" * 64,
-                    "selected_record_byte_size": 20, "generation_digest": "gen",
-                }
-            }
-        }
-        with self.assertRaises(r002c.StaleLegacyEvidenceError):
-            r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
+    def test_fingerprint_changes_when_return_metadata_changes(self):
+        """Correction review C1: the two small return-metadata files were
+        previously absent from the fingerprint entirely.
+        """
+        from rbpbench.splits.config_002c import load_config_002c
+
+        full_config_path = Path(__file__).resolve().parent.parent / "configs" / "splits" / "sequence_partitions_002c_v1.toml"
+        common = dict(
+            config=load_config_002c(full_config_path), csv_sha256="csv", assign_stage_fingerprint="asg",
+            assign_generation_digest="asg-gen", decode_generation_digest="dec-gen", exact_rc_evidence={},
+            cluster_evidence={},
+        )
+        fp_a = r002c.legacy_diagnostic_fingerprint(
+            return_metadata_evidence={
+                "return_manifest_sha256": "rm-a", "return_manifest_byte_size": 1,
+                "return_inventory_sha256": "ri", "return_inventory_byte_size": 2,
+            },
+            **common,
+        )
+        fp_b = r002c.legacy_diagnostic_fingerprint(
+            return_metadata_evidence={
+                "return_manifest_sha256": "rm-b", "return_manifest_byte_size": 1,
+                "return_inventory_sha256": "ri", "return_inventory_byte_size": 2,
+            },
+            **common,
+        )
+        self.assertNotEqual(fp_a, fp_b)
 
     def test_finalize_revalidation_accepts_a_current_binding(self):
-        config = self._config_with_one_width(membership_sha256="a" * 64, selected_record_sha256="b" * 64, generation_digest="gen")
-        legacy_record = {
-            "cluster_evidence": {
-                "500": {
-                    "membership_sha256": "a" * 64, "membership_byte_size": 10, "selected_record_sha256": "b" * 64,
-                    "selected_record_byte_size": 20, "generation_digest": "gen",
-                }
-            }
-        }
-        r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)  # must not raise
+        with TemporaryDirectory() as tmp:
+            config, root, evidence_by_width = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            legacy_record = self._accept(config, root, evidence_by_width)
+            r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)  # must not raise
+
+    def test_finalize_revalidation_rejects_a_missing_cluster_evidence_root(self):
+        with TemporaryDirectory() as tmp:
+            config, root, evidence_by_width = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            legacy_record = self._accept(config, root, evidence_by_width)
+            del legacy_record["cluster_evidence_root"]
+            with self.assertRaises(r002c.StaleLegacyEvidenceError):
+                r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
 
     def test_finalize_revalidation_rejects_a_missing_binding(self):
-        config = self._config_with_one_width(membership_sha256="a" * 64, selected_record_sha256="b" * 64, generation_digest="gen")
-        with self.assertRaises(r002c.StaleLegacyEvidenceError):
-            r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record={"cluster_evidence": {}})
+        with TemporaryDirectory() as tmp:
+            config, root, evidence_by_width = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            legacy_record = self._accept(config, root, evidence_by_width)
+            legacy_record["cluster_evidence"] = {}
+            with self.assertRaises(r002c.StaleLegacyEvidenceError):
+                r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
+
+    def test_finalize_revalidation_rejects_a_live_membership_mutation(self):
+        """C1 regression: first accept, then mutate the LIVE membership TSV
+        without re-pinning config -- finalize must refuse, never trust the
+        unchanged configured expectation.
+        """
+        with TemporaryDirectory() as tmp:
+            config, root, evidence_by_width = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            legacy_record = self._accept(config, root, evidence_by_width)
+
+            membership_path = evidence_by_width[500]["membership_path"]
+            membership_path.write_text(membership_path.read_text() + "row_extra\trow_extra\n")
+
+            with self.assertRaises(r002c.StaleLegacyEvidenceError):
+                r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
+
+    def test_finalize_revalidation_rejects_a_live_selected_record_mutation(self):
+        with TemporaryDirectory() as tmp:
+            config, root, evidence_by_width = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            legacy_record = self._accept(config, root, evidence_by_width)
+
+            selected_record_path = evidence_by_width[251]["selected_record_path"]
+            selected_record_path.write_text(selected_record_path.read_text() + " ")
+
+            with self.assertRaises(r002c.StaleLegacyEvidenceError):
+                r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
+
+    def test_finalize_revalidation_rejects_a_live_return_manifest_mutation(self):
+        with TemporaryDirectory() as tmp:
+            config, root, evidence_by_width = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            legacy_record = self._accept(config, root, evidence_by_width)
+
+            return_manifest_path = root / "RETURN_MANIFEST.json"
+            return_manifest_path.write_text(return_manifest_path.read_text() + " ")
+
+            with self.assertRaises(r002c.StaleLegacyEvidenceError):
+                r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
+
+    def test_finalize_revalidation_rejects_a_live_return_inventory_mutation(self):
+        with TemporaryDirectory() as tmp:
+            config, root, evidence_by_width = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            legacy_record = self._accept(config, root, evidence_by_width)
+
+            return_inventory_path = root / "RETURN_INVENTORY.json"
+            return_inventory_path.write_text(return_inventory_path.read_text() + " ")
+
+            with self.assertRaises(r002c.StaleLegacyEvidenceError):
+                r002c._verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
+
+    def test_finalize_revalidation_rejects_a_stale_recorded_binding_after_config_re_pin(self):
+        """The other direction: config is edited (and correctly re-pinned)
+        to a NEW live membership after acceptance, but the accepted record
+        still holds the OLD binding -- configured expected strings alone
+        (which now agree with the NEW live file) are never proof that the
+        ACCEPTED record itself is still current.
+        """
+        with TemporaryDirectory() as tmp:
+            config, root, evidence_by_width = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            legacy_record = self._accept(config, root, evidence_by_width)
+
+            # Re-cluster width 101 within the SAME canonical universe: merge
+            # row_1 into row_0's cluster (member count unchanged at 5;
+            # cluster count drops 5 -> 4; largest cluster grows 1 -> 2).
+            membership_path = evidence_by_width[101]["membership_path"]
+            _write_membership(
+                membership_path,
+                [("row_0", "row_0"), ("row_0", "row_1"), ("row_2", "row_2"), ("row_3", "row_3"), ("row_4", "row_4")],
+            )
+            new_sha = _sha256_bytes(membership_path.read_bytes())
+            new_size = membership_path.stat().st_size
+
+            selected_record_path = evidence_by_width[101]["selected_record_path"]
+            selected_record_path.write_text(json.dumps({
+                "stage": "cluster", "executed": True, "width": 101, "sample_count": 5,
+                "generation_digest": evidence_by_width[101]["generation_digest"],
+                "artifacts": [{"path": "membership.tsv", "sha256": new_sha, "size": new_size}],
+            }))
+            new_record_sha = _sha256_bytes(selected_record_path.read_bytes())
+            new_record_size = selected_record_path.stat().st_size
+
+            new_entry = dataclasses.replace(
+                config.legacy_edges.cluster_membership[101],
+                membership_byte_size=new_size, membership_sha256=new_sha,
+                selected_record_byte_size=new_record_size, selected_record_sha256=new_record_sha,
+                expected_cluster_count=4, expected_largest_cluster_size=2,
+            )
+            cluster_membership = dict(config.legacy_edges.cluster_membership)
+            cluster_membership[101] = new_entry
+
+            # RETURN_MANIFEST/RETURN_INVENTORY must also agree with the new
+            # membership for the shared verifier to succeed against the
+            # re-pinned config -- rebuild them the same way the fixture
+            # builder does.
+            manifest_raw = json.loads((root / "RETURN_MANIFEST.json").read_text())
+            manifest_raw["selected_stages"]["cluster_101"]["generation_digest"] = evidence_by_width[101]["generation_digest"]
+            manifest_raw["selected_stages"]["cluster_101"]["membership_summary"] = {
+                "member_count": 5, "cluster_count": 4, "largest_cluster_size": 2,
+            }
+            (root / "RETURN_MANIFEST.json").write_text(json.dumps(manifest_raw))
+            inventory_raw = json.loads((root / "RETURN_INVENTORY.json").read_text())
+            for entry in inventory_raw:
+                if entry["path"] == "memberships/cluster_101.membership.tsv":
+                    entry["byte_size"], entry["sha256"] = new_size, new_sha
+                if entry["path"] == "selected_records/cluster_101.json":
+                    entry["byte_size"], entry["sha256"] = new_record_size, new_record_sha
+            (root / "RETURN_INVENTORY.json").write_text(json.dumps(inventory_raw))
+            new_return_manifest_sha = _sha256_bytes((root / "RETURN_MANIFEST.json").read_bytes())
+            new_return_manifest_size = (root / "RETURN_MANIFEST.json").stat().st_size
+            new_return_inventory_sha = _sha256_bytes((root / "RETURN_INVENTORY.json").read_bytes())
+            new_return_inventory_size = (root / "RETURN_INVENTORY.json").stat().st_size
+
+            new_config = dataclasses.replace(
+                config,
+                legacy_edges=LegacyClusterEvidenceConfig(
+                    return_manifest=ReturnBundleFileExpectation(
+                        relative_path="RETURN_MANIFEST.json", byte_size=new_return_manifest_size,
+                        sha256=new_return_manifest_sha,
+                    ),
+                    return_inventory=ReturnBundleFileExpectation(
+                        relative_path="RETURN_INVENTORY.json", byte_size=new_return_inventory_size,
+                        sha256=new_return_inventory_sha,
+                    ),
+                    cluster_membership=cluster_membership,
+                ),
+            )
+
+            # The NEW config's live re-verification succeeds on its own --
+            # only the comparison against the STALE accepted record catches
+            # the drift.
+            cme.verify_live_cluster_evidence(config=new_config, cluster_evidence_root=root)
+            with self.assertRaises(r002c.StaleLegacyEvidenceError):
+                r002c._verify_current_legacy_cluster_evidence(config=new_config, legacy_record=legacy_record)
+
+
+class LiveClusterEvidenceSemanticCrossCheckTests(unittest.TestCase):
+    """Correction review C2: ``RETURN_MANIFEST.json``/``RETURN_INVENTORY.json``
+    must be semantically cross-checked against the selected records and
+    membership files -- a syntactically valid, CORRECTLY re-pinned (the
+    outer hash/size check alone would pass) but internally inconsistent
+    return manifest/inventory must still be rejected.
+    """
+
+    def _repin_return_manifest(self, config, root):
+        path = root / "RETURN_MANIFEST.json"
+        sha = _sha256_bytes(path.read_bytes())
+        size = path.stat().st_size
+        return dataclasses.replace(
+            config,
+            legacy_edges=LegacyClusterEvidenceConfig(
+                return_manifest=ReturnBundleFileExpectation(relative_path="RETURN_MANIFEST.json", byte_size=size, sha256=sha),
+                return_inventory=config.legacy_edges.return_inventory,
+                cluster_membership=config.legacy_edges.cluster_membership,
+            ),
+        )
+
+    def _repin_return_inventory(self, config, root):
+        path = root / "RETURN_INVENTORY.json"
+        sha = _sha256_bytes(path.read_bytes())
+        size = path.stat().st_size
+        return dataclasses.replace(
+            config,
+            legacy_edges=LegacyClusterEvidenceConfig(
+                return_manifest=config.legacy_edges.return_manifest,
+                return_inventory=ReturnBundleFileExpectation(relative_path="RETURN_INVENTORY.json", byte_size=size, sha256=sha),
+                cluster_membership=config.legacy_edges.cluster_membership,
+            ),
+        )
+
+    def test_wrong_generation_digest_in_return_manifest_is_rejected_despite_correct_outer_hash(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            manifest_path = root / "RETURN_MANIFEST.json"
+            manifest_raw = json.loads(manifest_path.read_text())
+            manifest_raw["selected_stages"]["cluster_500"]["generation_digest"] = "wrong-digest"
+            manifest_path.write_text(json.dumps(manifest_raw))
+            config = self._repin_return_manifest(config, root)  # outer hash now correctly matches the corrupted file
+            with self.assertRaises(cme.ClusterEvidenceError):
+                cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+
+    def test_wrong_member_count_in_return_manifest_is_rejected_despite_correct_outer_hash(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            manifest_path = root / "RETURN_MANIFEST.json"
+            manifest_raw = json.loads(manifest_path.read_text())
+            manifest_raw["selected_stages"]["cluster_500"]["membership_summary"]["member_count"] = 999
+            manifest_path.write_text(json.dumps(manifest_raw))
+            config = self._repin_return_manifest(config, root)
+            with self.assertRaises(cme.ClusterEvidenceError):
+                cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+
+    def test_wrong_returned_membership_path_in_return_manifest_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            manifest_path = root / "RETURN_MANIFEST.json"
+            manifest_raw = json.loads(manifest_path.read_text())
+            manifest_raw["selected_stages"]["cluster_500"]["returned_membership_path"] = (
+                "memberships/cluster_251.membership.tsv"
+            )
+            manifest_path.write_text(json.dumps(manifest_raw))
+            config = self._repin_return_manifest(config, root)
+            with self.assertRaises(cme.ClusterEvidenceError):
+                cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+
+    def test_not_executed_in_return_manifest_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            manifest_path = root / "RETURN_MANIFEST.json"
+            manifest_raw = json.loads(manifest_path.read_text())
+            manifest_raw["selected_stages"]["cluster_500"]["executed"] = False
+            manifest_path.write_text(json.dumps(manifest_raw))
+            config = self._repin_return_manifest(config, root)
+            with self.assertRaises(cme.ClusterEvidenceError):
+                cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+
+    def test_missing_cluster_stage_in_return_manifest_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            manifest_path = root / "RETURN_MANIFEST.json"
+            manifest_raw = json.loads(manifest_path.read_text())
+            del manifest_raw["selected_stages"]["cluster_500"]
+            manifest_path.write_text(json.dumps(manifest_raw))
+            config = self._repin_return_manifest(config, root)
+            with self.assertRaises(cme.ClusterEvidenceError):
+                cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+
+    def test_missing_membership_entry_in_return_inventory_is_rejected_despite_correct_outer_hash(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            inventory_path = root / "RETURN_INVENTORY.json"
+            inventory_raw = json.loads(inventory_path.read_text())
+            inventory_raw = [e for e in inventory_raw if e["path"] != "memberships/cluster_500.membership.tsv"]
+            inventory_path.write_text(json.dumps(inventory_raw))
+            config = self._repin_return_inventory(config, root)
+            with self.assertRaises(cme.ClusterEvidenceError):
+                cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+
+    def test_duplicate_entry_in_return_inventory_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            inventory_path = root / "RETURN_INVENTORY.json"
+            inventory_raw = json.loads(inventory_path.read_text())
+            duplicate = next(e for e in inventory_raw if e["path"] == "memberships/cluster_500.membership.tsv")
+            inventory_raw.append(dict(duplicate))
+            inventory_path.write_text(json.dumps(inventory_raw))
+            config = self._repin_return_inventory(config, root)
+            with self.assertRaises(cme.ClusterEvidenceError):
+                cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+
+    def test_contradictory_hash_in_return_inventory_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            inventory_path = root / "RETURN_INVENTORY.json"
+            inventory_raw = json.loads(inventory_path.read_text())
+            for entry in inventory_raw:
+                if entry["path"] == "memberships/cluster_500.membership.tsv":
+                    entry["sha256"] = "f" * 64
+            inventory_path.write_text(json.dumps(inventory_raw))
+            config = self._repin_return_inventory(config, root)
+            with self.assertRaises(cme.ClusterEvidenceError):
+                cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+
+    def test_well_formed_evidence_is_accepted(self):
+        with TemporaryDirectory() as tmp:
+            config, root, _evidence = _build_tiny_cluster_evidence_root_and_config(Path(tmp))
+            live = cme.verify_live_cluster_evidence(config=config, cluster_evidence_root=root)
+            self.assertEqual(set(live["cluster_evidence"]), {"500", "251", "101"})
+            for width in (500, 251, 101):
+                self.assertEqual(live["cluster_membership_by_width"][width]["row_0"], "row_0")
 
 
 class LegacyDiagnosticDryRunTests(unittest.TestCase):

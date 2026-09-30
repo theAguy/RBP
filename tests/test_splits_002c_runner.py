@@ -85,28 +85,76 @@ _SEQUENCES_BY_WIDTH: dict[int, dict[str, str]] = {
 }
 
 
-def _write_config(path: Path, *, mmseqs_sha256: str) -> None:
+def _write_config(
+    path: Path,
+    *,
+    mmseqs_sha256: str,
+    csv_sha256: str,
+    csv_byte_size: int,
+    membership_sha256: str,
+    membership_byte_size: int,
+    report_sha256: str,
+    report_byte_size: int,
+    audit_json_sha256: str,
+    proteins_tsv_sha256: str,
+    decode_manifest_sha256: str,
+    return_manifest_sha256: str,
+    return_manifest_byte_size: int,
+    return_inventory_sha256: str,
+    return_inventory_byte_size: int,
+    cluster_membership_evidence: dict[int, dict],
+) -> None:
+    """Writes the complete tiny TOML config in ONE pass with every hash/size
+    already substituted (correction review C3): earlier versions of this
+    fixture wrote static zero placeholders and patched them in afterwards
+    with broad, unanchored ``str.replace`` calls, which could silently
+    collide across sections sharing a suffix (e.g. ``manifest_sha256``
+    matching inside ``return_manifest_sha256``, or the bare
+    ``membership_sha256``/``membership_byte_size`` placeholder repeating
+    identically across ``[components_002b]`` and every per-width
+    ``[legacy_edges.cluster_membership.<width>]`` table) and silently pin an
+    unrelated hash. Building the text in one shot from real values makes
+    that whole class of collision structurally impossible.
+    """
+    widths_toml = "\n".join(
+        f"""
+[legacy_edges.cluster_membership.{width}]
+membership_relative_path = "memberships/cluster_{width}.membership.tsv"
+membership_byte_size = {evidence['membership_size']}
+membership_sha256 = "{evidence['membership_sha256']}"
+selected_record_relative_path = "selected_records/cluster_{width}.json"
+selected_record_byte_size = {evidence['selected_record_size']}
+selected_record_sha256 = "{evidence['selected_record_sha256']}"
+expected_generation_digest = "{evidence['generation_digest']}"
+expected_member_count = {_SAMPLE_COUNT}
+expected_cluster_count = {_SAMPLE_COUNT}
+expected_largest_cluster_size = 1
+evidence_kind = "connected_component_membership"
+"""
+        for width, evidence in cluster_membership_evidence.items()
+    )
+
     path.write_text(f"""
 seed = 20260925
 protected_widths = [500, 251, 101]
 
 [dataset]
 csv_filename = "tiny.csv"
-csv_sha256 = "{'0' * 64}"
-csv_byte_size = 0
+csv_sha256 = "{csv_sha256}"
+csv_byte_size = {csv_byte_size}
 expected_row_count = {_SAMPLE_COUNT}
 audit_json_path = "tiny_dataset_audit.json"
-audit_json_sha256 = "{'0' * 64}"
+audit_json_sha256 = "{audit_json_sha256}"
 proteins_tsv_path = "tiny_proteins.tsv"
-proteins_tsv_sha256 = "{'0' * 64}"
+proteins_tsv_sha256 = "{proteins_tsv_sha256}"
 protein_id_min = 1
 protein_id_max = 122
 
 [components_002b]
-membership_byte_size = 0
-membership_sha256 = "{'0' * 64}"
-report_byte_size = 0
-report_sha256 = "{'0' * 64}"
+membership_byte_size = {membership_byte_size}
+membership_sha256 = "{membership_sha256}"
+report_byte_size = {report_byte_size}
+report_sha256 = "{report_sha256}"
 expected_component_count = {_SAMPLE_COUNT}
 
 [assignment]
@@ -147,55 +195,16 @@ mmseqs_sha256 = "{mmseqs_sha256}"
 
 [decode_002b2]
 manifest_path = "tiny_decode_manifest.json"
-manifest_sha256 = "{'0' * 64}"
+manifest_sha256 = "{decode_manifest_sha256}"
 
 [legacy_edges]
 return_manifest_relative_path = "RETURN_MANIFEST.json"
-return_manifest_byte_size = 0
-return_manifest_sha256 = "{'0' * 64}"
+return_manifest_byte_size = {return_manifest_byte_size}
+return_manifest_sha256 = "{return_manifest_sha256}"
 return_inventory_relative_path = "RETURN_INVENTORY.json"
-return_inventory_byte_size = 0
-return_inventory_sha256 = "{'0' * 64}"
-
-[legacy_edges.cluster_membership.500]
-membership_relative_path = "memberships/cluster_500.membership.tsv"
-membership_byte_size = 0
-membership_sha256 = "{'0' * 64}"
-selected_record_relative_path = "selected_records/cluster_500.json"
-selected_record_byte_size = 0
-selected_record_sha256 = "{'0' * 64}"
-expected_generation_digest = "PENDING"
-expected_member_count = {_SAMPLE_COUNT}
-expected_cluster_count = {_SAMPLE_COUNT}
-expected_largest_cluster_size = 1
-evidence_kind = "connected_component_membership"
-
-[legacy_edges.cluster_membership.251]
-membership_relative_path = "memberships/cluster_251.membership.tsv"
-membership_byte_size = 0
-membership_sha256 = "{'0' * 64}"
-selected_record_relative_path = "selected_records/cluster_251.json"
-selected_record_byte_size = 0
-selected_record_sha256 = "{'0' * 64}"
-expected_generation_digest = "PENDING"
-expected_member_count = {_SAMPLE_COUNT}
-expected_cluster_count = {_SAMPLE_COUNT}
-expected_largest_cluster_size = 1
-evidence_kind = "connected_component_membership"
-
-[legacy_edges.cluster_membership.101]
-membership_relative_path = "memberships/cluster_101.membership.tsv"
-membership_byte_size = 0
-membership_sha256 = "{'0' * 64}"
-selected_record_relative_path = "selected_records/cluster_101.json"
-selected_record_byte_size = 0
-selected_record_sha256 = "{'0' * 64}"
-expected_generation_digest = "PENDING"
-expected_member_count = {_SAMPLE_COUNT}
-expected_cluster_count = {_SAMPLE_COUNT}
-expected_largest_cluster_size = 1
-evidence_kind = "connected_component_membership"
-""")
+return_inventory_byte_size = {return_inventory_byte_size}
+return_inventory_sha256 = "{return_inventory_sha256}"
+{widths_toml}""")
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -250,27 +259,6 @@ class _Fixture:
         binary = splits_commands.resolve_mmseqs_binary_provenance(mmseqs_bin)
         assert binary.sha256, "mmseqs binary must be resolvable for real-binary fixture tests"
 
-        _write_config(self.config_path, mmseqs_sha256=binary.sha256)
-        # Patch in the real tiny file hashes/sizes (the static template
-        # above uses placeholder zeros -- overwritten here so every fixture
-        # invocation binds to THIS run's actual tiny files, never a stale
-        # hard-coded value).
-        text = self.config_path.read_text()
-        text = text.replace('csv_sha256 = "' + "0" * 64 + '"', f'csv_sha256 = "{csv_sha256}"')
-        text = text.replace("csv_byte_size = 0", f"csv_byte_size = {csv_size}")
-        text = text.replace(
-            'membership_sha256 = "' + "0" * 64 + '"', f'membership_sha256 = "{membership_sha256}"'
-        )
-        text = text.replace("membership_byte_size = 0", f"membership_byte_size = {membership_size}")
-        text = text.replace('report_sha256 = "' + "0" * 64 + '"', f'report_sha256 = "{report_sha256}"')
-        text = text.replace("report_byte_size = 0", f"report_byte_size = {report_size}")
-        text = text.replace(
-            'audit_json_sha256 = "' + "0" * 64 + '"', f'audit_json_sha256 = "{audit_json_sha256}"'
-        )
-        text = text.replace(
-            'proteins_tsv_sha256 = "' + "0" * 64 + '"', f'proteins_tsv_sha256 = "{proteins_tsv_sha256}"'
-        )
-
         self.decode_fasta_dir.mkdir(parents=True, exist_ok=True)
         fasta_evidence: dict[int, tuple[str, int, str]] = {}
         for width in _PROTECTED_WIDTHS:
@@ -306,48 +294,73 @@ class _Fixture:
         # evidence -- RETURN_MANIFEST.json/RETURN_INVENTORY.json plus, per
         # width, a tiny 20-singleton-cluster membership TSV (every row is
         # its own cluster: representative == member) and its selected
-        # record -- laid out exactly like the real accepted return, under a
-        # portable root never a hard-coded collaborator absolute path.
+        # record -- laid out exactly like the real accepted return (same
+        # ``selected_stages``/``membership_summary`` and flat-list-of-entries
+        # shapes the real RETURN_MANIFEST.json/RETURN_INVENTORY.json use, per
+        # correction review C2), under a portable root never a hard-coded
+        # collaborator absolute path.
         (self.cluster_evidence_root / "memberships").mkdir(parents=True, exist_ok=True)
         (self.cluster_evidence_root / "selected_records").mkdir(parents=True, exist_ok=True)
 
-        return_manifest_path = self.cluster_evidence_root / "RETURN_MANIFEST.json"
-        return_manifest_path.write_text(json.dumps({"tiny": "fixture-return-manifest"}))
-        return_manifest_size = return_manifest_path.stat().st_size
-        return_manifest_sha256 = _sha256_bytes(return_manifest_path.read_bytes())
-
-        return_inventory_path = self.cluster_evidence_root / "RETURN_INVENTORY.json"
-        return_inventory_path.write_text(json.dumps({"tiny": "fixture-return-inventory"}))
-        return_inventory_size = return_inventory_path.stat().st_size
-        return_inventory_sha256 = _sha256_bytes(return_inventory_path.read_bytes())
-
         cluster_membership_evidence: dict[int, dict] = {}
+        selected_stages: dict[str, dict] = {}
+        inventory_entries: list[dict] = []
         for width in _PROTECTED_WIDTHS:
-            membership_path = self.cluster_evidence_root / "memberships" / f"cluster_{width}.membership.tsv"
-            with membership_path.open("w") as handle:
+            cluster_membership_relative_path = f"memberships/cluster_{width}.membership.tsv"
+            cluster_membership_path = self.cluster_evidence_root / cluster_membership_relative_path
+            with cluster_membership_path.open("w") as handle:
                 for i in range(_SAMPLE_COUNT):
                     handle.write(f"row_{i}\trow_{i}\n")
-            membership_size = membership_path.stat().st_size
-            membership_sha256 = _sha256_bytes(membership_path.read_bytes())
+            cluster_membership_size = cluster_membership_path.stat().st_size
+            cluster_membership_sha256 = _sha256_bytes(cluster_membership_path.read_bytes())
 
             generation_digest = f"tiny-cluster-generation-digest-{width}"
-            selected_record_path = self.cluster_evidence_root / "selected_records" / f"cluster_{width}.json"
+            selected_record_relative_path = f"selected_records/cluster_{width}.json"
+            selected_record_path = self.cluster_evidence_root / selected_record_relative_path
             selected_record_path.write_text(json.dumps({
                 "stage": "cluster",
                 "executed": True,
                 "width": width,
                 "sample_count": _SAMPLE_COUNT,
                 "generation_digest": generation_digest,
-                "artifacts": [{"path": "membership.tsv", "sha256": membership_sha256, "size": membership_size}],
+                "artifacts": [
+                    {"path": "membership.tsv", "sha256": cluster_membership_sha256, "size": cluster_membership_size}
+                ],
             }))
             selected_record_size = selected_record_path.stat().st_size
             selected_record_sha256 = _sha256_bytes(selected_record_path.read_bytes())
 
             cluster_membership_evidence[width] = {
-                "membership_size": membership_size, "membership_sha256": membership_sha256,
+                "membership_size": cluster_membership_size, "membership_sha256": cluster_membership_sha256,
                 "selected_record_size": selected_record_size, "selected_record_sha256": selected_record_sha256,
                 "generation_digest": generation_digest,
             }
+            selected_stages[f"cluster_{width}"] = {
+                "stage": "cluster", "executed": True, "width": width, "generation_digest": generation_digest,
+                "returned_membership_path": cluster_membership_relative_path,
+                "membership_summary": {
+                    "member_count": _SAMPLE_COUNT, "cluster_count": _SAMPLE_COUNT, "largest_cluster_size": 1,
+                },
+            }
+            inventory_entries.append(
+                {
+                    "path": cluster_membership_relative_path, "byte_size": cluster_membership_size,
+                    "sha256": cluster_membership_sha256,
+                }
+            )
+            inventory_entries.append(
+                {"path": selected_record_relative_path, "byte_size": selected_record_size, "sha256": selected_record_sha256}
+            )
+
+        return_manifest_path = self.cluster_evidence_root / "RETURN_MANIFEST.json"
+        return_manifest_path.write_text(json.dumps({"selected_stages": selected_stages}))
+        return_manifest_size = return_manifest_path.stat().st_size
+        return_manifest_sha256 = _sha256_bytes(return_manifest_path.read_bytes())
+
+        return_inventory_path = self.cluster_evidence_root / "RETURN_INVENTORY.json"
+        return_inventory_path.write_text(json.dumps(inventory_entries))
+        return_inventory_size = return_inventory_path.stat().st_size
+        return_inventory_sha256 = _sha256_bytes(return_inventory_path.read_bytes())
 
         decode_manifest = {
             "checkpoint": "002B-2",
@@ -363,38 +376,18 @@ class _Fixture:
         self.decode_manifest_path.write_text(json.dumps(decode_manifest))
         decode_manifest_sha256 = _sha256_bytes(self.decode_manifest_path.read_bytes())
 
-        text = text.replace(
-            'manifest_sha256 = "' + "0" * 64 + '"', f'manifest_sha256 = "{decode_manifest_sha256}"'
+        _write_config(
+            self.config_path,
+            mmseqs_sha256=binary.sha256,
+            csv_sha256=csv_sha256, csv_byte_size=csv_size,
+            membership_sha256=membership_sha256, membership_byte_size=membership_size,
+            report_sha256=report_sha256, report_byte_size=report_size,
+            audit_json_sha256=audit_json_sha256, proteins_tsv_sha256=proteins_tsv_sha256,
+            decode_manifest_sha256=decode_manifest_sha256,
+            return_manifest_sha256=return_manifest_sha256, return_manifest_byte_size=return_manifest_size,
+            return_inventory_sha256=return_inventory_sha256, return_inventory_byte_size=return_inventory_size,
+            cluster_membership_evidence=cluster_membership_evidence,
         )
-
-        text = text.replace("return_manifest_byte_size = 0", f"return_manifest_byte_size = {return_manifest_size}")
-        text = text.replace(
-            'return_manifest_sha256 = "' + "0" * 64 + '"', f'return_manifest_sha256 = "{return_manifest_sha256}"'
-        )
-        text = text.replace("return_inventory_byte_size = 0", f"return_inventory_byte_size = {return_inventory_size}")
-        text = text.replace(
-            'return_inventory_sha256 = "' + "0" * 64 + '"', f'return_inventory_sha256 = "{return_inventory_sha256}"'
-        )
-        for width in _PROTECTED_WIDTHS:
-            evidence = cluster_membership_evidence[width]
-            text = text.replace(
-                f'membership_relative_path = "memberships/cluster_{width}.membership.tsv"\n'
-                f'membership_byte_size = 0\nmembership_sha256 = "{"0" * 64}"',
-                f'membership_relative_path = "memberships/cluster_{width}.membership.tsv"\n'
-                f'membership_byte_size = {evidence["membership_size"]}\n'
-                f'membership_sha256 = "{evidence["membership_sha256"]}"',
-            )
-            text = text.replace(
-                f'selected_record_relative_path = "selected_records/cluster_{width}.json"\n'
-                f'selected_record_byte_size = 0\nselected_record_sha256 = "{"0" * 64}"',
-                f'selected_record_relative_path = "selected_records/cluster_{width}.json"\n'
-                f'selected_record_byte_size = {evidence["selected_record_size"]}\n'
-                f'selected_record_sha256 = "{evidence["selected_record_sha256"]}"',
-            )
-            text = text.replace(
-                'expected_generation_digest = "PENDING"', f'expected_generation_digest = "{evidence["generation_digest"]}"', 1
-            )
-        self.config_path.write_text(text)
 
         self.config = load_config_002c(self.config_path)
 

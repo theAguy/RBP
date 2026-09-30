@@ -31,7 +31,6 @@ from typing import Sequence
 
 from rbpbench.splits import cluster_membership_evidence as splits_cluster_evidence
 from rbpbench.splits.config_002c import SplitsConfig002C, load_config_002c
-from rbpbench.splits.legacy_edges import canonical_sample_ids
 
 MANIFEST_SCHEMA = "sequence_legacy_cluster_evidence_002c2a_v1"
 
@@ -89,54 +88,25 @@ def _transcribed_commands_from_selected_record(record: dict) -> list[str]:
 def validate_and_build_manifest(*, config: SplitsConfig002C, cluster_evidence_root: Path) -> dict:
     """Runs the complete dedicated evidence-validation operation and
     returns the sanitized manifest dict (not yet written to disk).
-    """
-    cluster_evidence_root = Path(cluster_evidence_root).resolve()
-    canonical_ids = canonical_sample_ids(config.dataset.expected_row_count)
 
+    Correction review C1/C2: delegates every hash/size revalidation AND the
+    semantic cross-check of ``RETURN_MANIFEST.json``/``RETURN_INVENTORY.json``
+    against the selected records and membership files to the one shared
+    verifier (:func:`rbpbench.splits.cluster_membership_evidence.verify_live_cluster_evidence`),
+    so this checkpoint and the ``rbp-splits-002c`` runner's ``legacy_diagnostic``
+    stage can never silently diverge on what "verified" means.
+    """
+    live = splits_cluster_evidence.verify_live_cluster_evidence(
+        config=config, cluster_evidence_root=Path(cluster_evidence_root),
+    )
     return_manifest_expected = config.legacy_edges.return_manifest
-    return_manifest_path = _resolve_pinned_child(
-        cluster_evidence_root, return_manifest_expected.relative_path, label="RETURN_MANIFEST.json"
-    )
-    splits_cluster_evidence.verify_frozen_sized_file(
-        return_manifest_path, expected_sha256=return_manifest_expected.sha256,
-        expected_byte_size=return_manifest_expected.byte_size, label="RETURN_MANIFEST.json",
-    )
     return_inventory_expected = config.legacy_edges.return_inventory
-    return_inventory_path = _resolve_pinned_child(
-        cluster_evidence_root, return_inventory_expected.relative_path, label="RETURN_INVENTORY.json"
-    )
-    splits_cluster_evidence.verify_frozen_sized_file(
-        return_inventory_path, expected_sha256=return_inventory_expected.sha256,
-        expected_byte_size=return_inventory_expected.byte_size, label="RETURN_INVENTORY.json",
-    )
 
     per_width: dict[str, dict] = {}
     for width in config.protected_widths:
         expected = config.legacy_edges.cluster_membership[width]
-
-        membership_path = _resolve_pinned_child(
-            cluster_evidence_root, expected.membership_relative_path, label=f"cluster membership width {width}"
-        )
-        selected_record_path = _resolve_pinned_child(
-            cluster_evidence_root, expected.selected_record_relative_path, label=f"cluster selected record width {width}"
-        )
-
-        selected_record = splits_cluster_evidence.verify_selected_record(
-            selected_record_path, expected_sha256=expected.selected_record_sha256,
-            expected_byte_size=expected.selected_record_byte_size, expected_width=width,
-            expected_generation_digest=expected.expected_generation_digest,
-            expected_member_count=expected.expected_member_count,
-            membership_sha256=expected.membership_sha256, membership_byte_size=expected.membership_byte_size,
-            label=f"cluster selected record width {width}",
-        )
-        membership = splits_cluster_evidence.load_and_verify_cluster_membership(
-            membership_path, expected_sha256=expected.membership_sha256,
-            expected_byte_size=expected.membership_byte_size, canonical_ids=canonical_ids,
-            expected_member_count=expected.expected_member_count,
-            expected_cluster_count=expected.expected_cluster_count,
-            expected_largest_cluster_size=expected.expected_largest_cluster_size,
-            label=f"cluster membership width {width}",
-        )
+        selected_record = live["per_width"][width]["selected_record"]
+        membership = live["cluster_membership_by_width"][width]
         summary = splits_cluster_evidence.summarize_membership(membership)
 
         per_width[str(width)] = {

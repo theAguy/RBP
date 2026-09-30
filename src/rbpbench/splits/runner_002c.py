@@ -53,10 +53,28 @@ immediately before EVERY individual MMseqs2 subprocess launch inside a
 directed audit, not merely once before the whole four-command attempt (F3).
 A shared current-assignment validator re-hashes and re-fingerprints the
 accepted ``assign`` record's five frozen inputs before every downstream real
-stage/finalization, and the six legacy-diagnostic edge files are bound to
-explicit, pinned ``(width, evidence kind, size, hash)`` provenance with
-every endpoint reconciled against the closed canonical sample universe
-(F4, :mod:`rbpbench.splits.legacy_edges`).
+stage/finalization, and the three per-width legacy-diagnostic exact/RC edge
+files are bound to explicit, pinned ``(width, evidence kind, size, hash)``
+provenance with every endpoint reconciled against the closed canonical
+sample universe (F4, :mod:`rbpbench.splits.legacy_edges`).
+
+Task 002C-2A correction (docs/tasks/002c2a_legacy_cluster_evidence.md,
+docs/handoffs/002c2a_legacy_cluster_evidence_claude_handoff.md): the
+impossible ``[legacy_edges.similarity_edges]`` placeholder is replaced by a
+per-width accepted connected-component CLUSTER-MEMBERSHIP evidence contract
+(:mod:`rbpbench.splits.cluster_membership_evidence`), bound to the accepted
+Task 002B return's ``RETURN_MANIFEST.json``/``RETURN_INVENTORY.json`` plus,
+per width, the accepted ``mmseqs createtsv`` membership TSV and its selected
+record -- resolved only as pinned children beneath an explicit, portable
+Task 002B return root (never a hard-coded collaborator absolute path), with
+traversal/symlink escapes refused. A membership row is cluster
+co-membership, direct or transitive under connected-component clustering,
+never a direct pairwise similarity edge; ``legacy_diagnostic``'s report now
+carries ``cluster_boundary_by_width`` (never the retired
+``directly_edge_matched_by_width`` alias), and ``finalize`` additionally
+revalidates the accepted ``legacy_diagnostic`` record's cluster-membership
+evidence bindings are still current
+(:func:`_verify_current_legacy_cluster_evidence`).
 """
 
 from __future__ import annotations
@@ -76,6 +94,7 @@ from rbpbench.coordinates.provenance import peak_rss_kib_of_children
 from rbpbench.data.audit import sha256_file
 from rbpbench.splits import assignment
 from rbpbench.splits import audit as splits_audit
+from rbpbench.splits import cluster_membership_evidence as splits_cluster_evidence
 from rbpbench.splits import commands as splits_commands
 from rbpbench.splits import exact_audit as splits_exact_audit
 from rbpbench.splits import guarded_exec
@@ -153,6 +172,17 @@ class StaleAssignmentInputError(InputValidationError):
     """
 
 
+class StaleLegacyEvidenceError(InputValidationError):
+    """The currently-accepted ``legacy_diagnostic`` record's cluster-
+    membership evidence bindings (membership/selected-record hash/size,
+    generation digest) no longer match the config's pinned expectations
+    (Task 002C-2A). Checked before ``finalize`` promotes -- never
+    ``--dry-run`` -- so a config edit to any pinned legacy_edges value after
+    ``legacy_diagnostic`` accepted can never leave finalization apparently
+    current.
+    """
+
+
 class DecodeManifestError(InputValidationError):
     """The pinned, already committed, sanitized Task 002B-2 decode-evidence
     manifest failed hash verification, was missing a required field, or a
@@ -185,6 +215,26 @@ def _repo_root(config_path: Path, explicit: Path | None) -> Path:
     if explicit is not None:
         return Path(explicit).resolve()
     return Path(config_path).resolve().parent.parent.parent
+
+
+def _resolve_pinned_child(root: Path, relative_path: str, *, label: str) -> Path:
+    """Resolves ``relative_path`` as a pinned child beneath ``root`` --
+    never the collaborator's original absolute path
+    (docs/handoffs/002c2a_legacy_cluster_evidence_claude_handoff.md:
+    "the legacy-diagnostic CLI must accept an explicit portable Task 002B
+    return root ... and resolve only the pinned children beneath it").
+    Rejects a ``..`` traversal or a symlink that resolves outside ``root``.
+    """
+    resolved_root = Path(root).resolve()
+    candidate = resolved_root / relative_path
+    resolved_candidate = candidate.resolve()
+    try:
+        resolved_candidate.relative_to(resolved_root)
+    except ValueError:
+        raise InputValidationError(
+            f"{label}: relative path {relative_path!r} resolves outside the authorized root {resolved_root}"
+        ) from None
+    return resolved_candidate
 
 
 def _verify_frozen_file(path: Path, *, expected_sha256: str, label: str) -> str:
@@ -711,18 +761,63 @@ def legacy_diagnostic_fingerprint(
     assign_stage_fingerprint: str,
     assign_generation_digest: str,
     decode_generation_digest: str,
-    edges_evidence: dict[str, dict],
+    exact_rc_evidence: dict[str, dict],
+    cluster_evidence: dict[str, dict],
 ) -> str:
-    # F4: bind EACH edge file's own (key, size, hash) triple, sorted by key
-    # -- never a flat, bare-hash list sorted on its own values, which loses
-    # which file a hash belongs to.
-    edges_terms = tuple(
-        (key, entry["byte_size"], entry["sha256"]) for key, entry in sorted(edges_evidence.items())
+    # F4: bind EACH exact/RC edge file's own (key, size, hash) triple,
+    # sorted by key -- never a flat, bare-hash list sorted on its own
+    # values, which loses which file a hash belongs to.
+    exact_rc_terms = tuple(
+        (key, entry["byte_size"], entry["sha256"]) for key, entry in sorted(exact_rc_evidence.items())
+    )
+    # Task 002C-2A: bind EACH width's cluster-membership evidence -- both
+    # its own membership hash/size AND its selected record's hash/size AND
+    # its accepted generation digest -- into the same stage fingerprint.
+    cluster_terms = tuple(
+        (
+            key, entry["membership_sha256"], entry["membership_byte_size"],
+            entry["selected_record_sha256"], entry["selected_record_byte_size"], entry["generation_digest"],
+        )
+        for key, entry in sorted(cluster_evidence.items())
     )
     return content_fingerprint(
         "legacy_diagnostic", config.content_hash, csv_sha256, assign_stage_fingerprint, assign_generation_digest,
-        decode_generation_digest, *edges_terms,
+        decode_generation_digest, *exact_rc_terms, *cluster_terms,
     )
+
+
+def _verify_current_legacy_cluster_evidence(*, config: SplitsConfig002C, legacy_record: dict) -> None:
+    """Mirrors :func:`_verify_current_assignment` for the accepted
+    ``legacy_diagnostic`` record's cluster-membership evidence bindings
+    (Task 002C-2A "finalization's current-evidence revalidation"): a config
+    edit to any pinned membership/selected-record hash, size, or generation
+    digest after ``legacy_diagnostic`` accepted can never leave ``finalize``
+    apparently current.
+    """
+    problems: list[str] = []
+    recorded = legacy_record.get("cluster_evidence", {})
+    for width in config.protected_widths:
+        expected = config.legacy_edges.cluster_membership.get(width)
+        entry = recorded.get(str(width))
+        if expected is None or entry is None:
+            problems.append(f"width {width}: legacy_diagnostic record has no cluster_evidence binding")
+            continue
+        if entry.get("membership_sha256") != expected.membership_sha256:
+            problems.append(f"width {width}: recorded membership_sha256 no longer matches the config's pinned value")
+        if entry.get("membership_byte_size") != expected.membership_byte_size:
+            problems.append(f"width {width}: recorded membership_byte_size no longer matches the config's pinned value")
+        if entry.get("selected_record_sha256") != expected.selected_record_sha256:
+            problems.append(
+                f"width {width}: recorded selected_record_sha256 no longer matches the config's pinned value"
+            )
+        if entry.get("selected_record_byte_size") != expected.selected_record_byte_size:
+            problems.append(
+                f"width {width}: recorded selected_record_byte_size no longer matches the config's pinned value"
+            )
+        if entry.get("generation_digest") != expected.expected_generation_digest:
+            problems.append(f"width {width}: recorded generation_digest no longer matches the config's pinned value")
+    if problems:
+        raise StaleLegacyEvidenceError("current legacy cluster evidence validation failed: " + "; ".join(problems))
 
 
 def stage_legacy_diagnostic(
@@ -731,7 +826,8 @@ def stage_legacy_diagnostic(
     csv_path: Path,
     output_dir: Path,
     assign_record: dict,
-    similarity_edges_dir: Path,
+    exact_rc_edges_dir: Path,
+    cluster_evidence_root: Path,
     decode_manifest_path: Path,
     dry_run: bool = False,
 ) -> dict:
@@ -785,33 +881,14 @@ def stage_legacy_diagnostic(
 
     # C6/F4: hash-bound, provenance-pinned, endpoint-reconciled evidence is
     # REQUIRED for all three protected widths -- a missing, foreign-endpoint,
-    # or unbound (hash not matching its pinned provenance) edges/exact-RC
-    # file is a hard failure, never a silently narrower diagnostic, and a
-    # bare operator-authored JSON (even an empty list) can no longer qualify
-    # merely because its own current hash is recorded.
-    similarity_edges_by_width: dict[int, list[tuple[str, str]]] = {}
+    # or unbound (hash not matching its pinned provenance) file is a hard
+    # failure, never a silently narrower diagnostic, and a bare file can
+    # never qualify merely because its own current hash is recorded.
     exact_rc_edges_by_width: dict[int, list[tuple[str, str]]] = {}
-    edges_evidence: dict[str, dict] = {}
+    exact_rc_evidence: dict[str, dict] = {}
     edges_provenance: dict[str, str] = {}
     for width in config.protected_widths:
-        edges_path = Path(similarity_edges_dir) / f"edges_{width}.json"
-        exact_rc_path = Path(similarity_edges_dir) / f"exact_rc_edges_{width}.json"
-
-        similarity_expected = config.legacy_edges.similarity_edges.get(width)
-        if similarity_expected is None:
-            raise InputValidationError(f"config has no pinned legacy_edges.similarity_edges entry for width {width}")
-        try:
-            similarity_edges_by_width[width] = splits_legacy_edges.verify_and_parse_edges(
-                edges_path, expected_sha256=similarity_expected.sha256, expected_byte_size=similarity_expected.byte_size,
-                canonical_ids=canonical_ids, label=f"similarity edges width {width}",
-            )
-        except splits_legacy_edges.EdgeProvenanceError as exc:
-            raise InputValidationError(str(exc)) from exc
-        edges_evidence[f"{width}_similarity"] = splits_legacy_edges.bind_edge_evidence(
-            width=width, evidence_kind="similarity", path=edges_path, sha256=similarity_expected.sha256,
-            byte_size=similarity_expected.byte_size,
-        )
-
+        exact_rc_path = Path(exact_rc_edges_dir) / f"exact_rc_edges_{width}.json"
         duplicate_expected = duplicate_edges_evidence.get(width)
         if duplicate_expected is None:
             raise DecodeManifestError(f"decode evidence manifest has no accepted duplicate_edges entry for width {width}")
@@ -822,22 +899,91 @@ def stage_legacy_diagnostic(
             )
         except splits_legacy_edges.EdgeProvenanceError as exc:
             raise InputValidationError(str(exc)) from exc
-        edges_evidence[f"{width}_exact_rc"] = splits_legacy_edges.bind_edge_evidence(
+        exact_rc_evidence[f"{width}_exact_rc"] = splits_legacy_edges.bind_edge_evidence(
             width=width, evidence_kind="exact_rc", path=exact_rc_path, sha256=duplicate_expected.sha256,
             byte_size=duplicate_expected.byte_size,
         )
-
-        edges_provenance[f"edges_{width}_path"] = str(edges_path)
-        edges_provenance[f"edges_{width}_sha256"] = similarity_expected.sha256
         edges_provenance[f"exact_rc_edges_{width}_path"] = str(exact_rc_path)
         edges_provenance[f"exact_rc_edges_{width}_sha256"] = duplicate_expected.sha256
+
+    # Task 002C-2A: bind the accepted Task 002B return's cluster-membership
+    # evidence -- resolved ONLY as pinned children beneath the portable
+    # return root, never a hard-coded collaborator absolute path, and never
+    # outside it (traversal/symlink-escape refusal).
+    cluster_evidence_root = Path(cluster_evidence_root).resolve()
+    return_manifest_expected = config.legacy_edges.return_manifest
+    return_manifest_path = _resolve_pinned_child(
+        cluster_evidence_root, return_manifest_expected.relative_path, label="RETURN_MANIFEST.json"
+    )
+    splits_cluster_evidence.verify_frozen_sized_file(
+        return_manifest_path, expected_sha256=return_manifest_expected.sha256,
+        expected_byte_size=return_manifest_expected.byte_size, label="RETURN_MANIFEST.json",
+    )
+    return_inventory_expected = config.legacy_edges.return_inventory
+    return_inventory_path = _resolve_pinned_child(
+        cluster_evidence_root, return_inventory_expected.relative_path, label="RETURN_INVENTORY.json"
+    )
+    splits_cluster_evidence.verify_frozen_sized_file(
+        return_inventory_path, expected_sha256=return_inventory_expected.sha256,
+        expected_byte_size=return_inventory_expected.byte_size, label="RETURN_INVENTORY.json",
+    )
+
+    cluster_membership_by_width: dict[int, dict[str, str]] = {}
+    cluster_evidence: dict[str, dict] = {}
+    cluster_evidence_provenance: dict[str, object] = {
+        "return_manifest_path": str(return_manifest_path), "return_manifest_sha256": return_manifest_expected.sha256,
+        "return_inventory_path": str(return_inventory_path), "return_inventory_sha256": return_inventory_expected.sha256,
+    }
+    for width in config.protected_widths:
+        expected = config.legacy_edges.cluster_membership.get(width)
+        if expected is None:
+            raise InputValidationError(f"config has no pinned legacy_edges.cluster_membership entry for width {width}")
+
+        membership_path = _resolve_pinned_child(
+            cluster_evidence_root, expected.membership_relative_path, label=f"cluster membership width {width}"
+        )
+        selected_record_path = _resolve_pinned_child(
+            cluster_evidence_root, expected.selected_record_relative_path, label=f"cluster selected record width {width}"
+        )
+
+        try:
+            splits_cluster_evidence.verify_selected_record(
+                selected_record_path, expected_sha256=expected.selected_record_sha256,
+                expected_byte_size=expected.selected_record_byte_size, expected_width=width,
+                expected_generation_digest=expected.expected_generation_digest,
+                expected_member_count=expected.expected_member_count,
+                membership_sha256=expected.membership_sha256, membership_byte_size=expected.membership_byte_size,
+                label=f"cluster selected record width {width}",
+            )
+            membership = splits_cluster_evidence.load_and_verify_cluster_membership(
+                membership_path, expected_sha256=expected.membership_sha256,
+                expected_byte_size=expected.membership_byte_size, canonical_ids=canonical_ids,
+                expected_member_count=expected.expected_member_count,
+                expected_cluster_count=expected.expected_cluster_count,
+                expected_largest_cluster_size=expected.expected_largest_cluster_size,
+                label=f"cluster membership width {width}",
+            )
+        except splits_cluster_evidence.ClusterEvidenceError as exc:
+            raise InputValidationError(str(exc)) from exc
+
+        cluster_membership_by_width[width] = membership
+        cluster_evidence[str(width)] = splits_cluster_evidence.bind_cluster_membership_evidence(
+            width=width, membership_path=membership_path, membership_sha256=expected.membership_sha256,
+            membership_byte_size=expected.membership_byte_size, selected_record_path=selected_record_path,
+            selected_record_sha256=expected.selected_record_sha256,
+            selected_record_byte_size=expected.selected_record_byte_size,
+            generation_digest=expected.expected_generation_digest, member_count=expected.expected_member_count,
+            cluster_count=expected.expected_cluster_count, largest_cluster_size=expected.expected_largest_cluster_size,
+        )
+        cluster_evidence_provenance[f"{width}_membership_path"] = str(membership_path)
+        cluster_evidence_provenance[f"{width}_selected_record_path"] = str(selected_record_path)
 
     report = splits_legacy_diagnostic.build_leakage_diagnostic_report(
         legacy_result=fold_result,
         sample_ids_by_index=sample_ids_by_index,
         sample_to_component=sample_to_component,
         sample_to_partition=sample_to_partition,
-        similarity_edges_by_width=similarity_edges_by_width,
+        cluster_membership_by_width=cluster_membership_by_width,
         exact_rc_edges_by_width=exact_rc_edges_by_width,
     )
 
@@ -845,7 +991,10 @@ def stage_legacy_diagnostic(
     generation_dir = splits_commands.new_generation_dir(base_dir, prefix="legacy_diagnostic")
     try:
         manifest_path = generation_dir / "legacy_diagnostic_report.json"
-        restart.atomic_write_json(manifest_path, {**report, "edges_provenance": edges_provenance})
+        restart.atomic_write_json(
+            manifest_path,
+            {**report, "edges_provenance": edges_provenance, "cluster_evidence_provenance": cluster_evidence_provenance},
+        )
 
         artifacts = restart.inventory_generation(generation_dir)
         generation_digest = content_fingerprint(
@@ -854,7 +1003,7 @@ def stage_legacy_diagnostic(
         stage_fp = legacy_diagnostic_fingerprint(
             config=config, csv_sha256=csv_sha256, assign_stage_fingerprint=assign_record["stage_fingerprint"],
             assign_generation_digest=assign_record["generation_digest"], decode_generation_digest=decode_generation_digest,
-            edges_evidence=edges_evidence,
+            exact_rc_evidence=exact_rc_evidence, cluster_evidence=cluster_evidence,
         )
         record = {
             "stage": "legacy_diagnostic",
@@ -871,8 +1020,16 @@ def stage_legacy_diagnostic(
             "report": report,
             "edges_provenance": edges_provenance,
             # F4: explicit (width, evidence kind, size, hash) bindings for
-            # all six edge files, never a flat sorted-away hash list.
-            "edges_evidence": edges_evidence,
+            # all three exact/RC edge files, never a flat sorted-away hash
+            # list.
+            "exact_rc_evidence": exact_rc_evidence,
+            # Task 002C-2A: explicit (width, membership hash/size, selected-
+            # record hash/size, generation digest) bindings for all three
+            # accepted cluster-membership files -- into the stage
+            # fingerprint, this selection record, and report provenance
+            # (finalization's own current-evidence revalidation is
+            # :func:`_verify_current_legacy_cluster_evidence`).
+            "cluster_evidence": cluster_evidence,
             "upstream": {
                 "assign_stage_fingerprint": assign_record["stage_fingerprint"],
                 "assign_generation_digest": assign_record["generation_digest"],
@@ -1421,6 +1578,9 @@ def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool 
     _verify_current_assignment(config=config, assign_record=assign_record)
 
     legacy_record = restart.require_accepted(output_dir, "legacy_diagnostic")
+    # Task 002C-2A: the accepted legacy_diagnostic record's cluster-
+    # membership evidence bindings must still be current before finalization.
+    _verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
     exact_audit_records = {
         width: restart.require_accepted(output_dir, f"exact_audit_{width}") for width in config.protected_widths
     }
@@ -1599,7 +1759,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proteins-tsv", type=Path, default=None)
     parser.add_argument("--decode-fasta-dir", type=Path, default=None)
     parser.add_argument("--decode-manifest", type=Path, default=None)
-    parser.add_argument("--similarity-edges-dir", type=Path, default=None)
+    parser.add_argument("--exact-rc-edges-dir", type=Path, default=None)
+    parser.add_argument("--cluster-evidence-root", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--mmseqs-bin", default="mmseqs")
     parser.add_argument("--dry-run", action="store_true")
@@ -1627,8 +1788,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.stage in MMSEQS_STAGES and not args.authorize_mmseqs and not args.dry_run:
         raise AuthorizationError(f"stage {args.stage!r} launches MMseqs2 and requires --authorize-mmseqs")
 
-    if args.stage == "legacy_diagnostic" and args.similarity_edges_dir is None and not args.dry_run:
-        raise StageValidationError("stage 'legacy_diagnostic' requires --similarity-edges-dir")
+    if args.stage == "legacy_diagnostic" and not args.dry_run:
+        if args.exact_rc_edges_dir is None:
+            raise StageValidationError("stage 'legacy_diagnostic' requires --exact-rc-edges-dir")
+        if args.cluster_evidence_root is None:
+            raise StageValidationError("stage 'legacy_diagnostic' requires --cluster-evidence-root")
 
     config = load_config_002c(args.config)
     output_dir = args.output_dir
@@ -1674,37 +1838,47 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.dry_run:
             result = stage_legacy_diagnostic(
                 config=config, csv_path=args.csv, output_dir=output_dir, assign_record={},
-                similarity_edges_dir=args.similarity_edges_dir, decode_manifest_path=decode_manifest_path, dry_run=True,
+                exact_rc_edges_dir=args.exact_rc_edges_dir, cluster_evidence_root=args.cluster_evidence_root,
+                decode_manifest_path=decode_manifest_path, dry_run=True,
             )
         else:
             assign_record = restart.require_accepted(output_dir, "assign")
             _verify_current_assignment(config=config, assign_record=assign_record)
             csv_sha256 = sha256_file(Path(args.csv)) if args.csv and Path(args.csv).is_file() else "MISSING"
             decode_generation_digest = "MISSING"
-            edges_evidence: dict[str, dict] = {}
+            exact_rc_evidence: dict[str, dict] = {}
             if decode_manifest_path.is_file():
                 decode_generation_digest, _fasta_evidence, duplicate_edges_evidence = _load_decode_manifest(
                     decode_manifest_path, expected_sha256=config.decode_002b2.manifest_sha256
                 )
                 for width in config.protected_widths:
-                    similarity_expected = config.legacy_edges.similarity_edges.get(width)
-                    edges_path = Path(args.similarity_edges_dir) / f"edges_{width}.json"
-                    if similarity_expected is not None:
-                        edges_evidence[f"{width}_similarity"] = splits_legacy_edges.bind_edge_evidence(
-                            width=width, evidence_kind="similarity", path=edges_path,
-                            sha256=similarity_expected.sha256, byte_size=similarity_expected.byte_size,
-                        )
                     duplicate_expected = duplicate_edges_evidence.get(width)
-                    exact_rc_path = Path(args.similarity_edges_dir) / f"exact_rc_edges_{width}.json"
-                    if duplicate_expected is not None:
-                        edges_evidence[f"{width}_exact_rc"] = splits_legacy_edges.bind_edge_evidence(
+                    exact_rc_path = Path(args.exact_rc_edges_dir) / f"exact_rc_edges_{width}.json" if args.exact_rc_edges_dir else None
+                    if duplicate_expected is not None and exact_rc_path is not None:
+                        exact_rc_evidence[f"{width}_exact_rc"] = splits_legacy_edges.bind_edge_evidence(
                             width=width, evidence_kind="exact_rc", path=exact_rc_path,
                             sha256=duplicate_expected.sha256, byte_size=duplicate_expected.byte_size,
                         )
+            cluster_evidence: dict[str, dict] = {}
+            for width in config.protected_widths:
+                expected = config.legacy_edges.cluster_membership.get(width)
+                if expected is None or args.cluster_evidence_root is None:
+                    continue
+                cluster_evidence[str(width)] = splits_cluster_evidence.bind_cluster_membership_evidence(
+                    width=width,
+                    membership_path=Path(args.cluster_evidence_root) / expected.membership_relative_path,
+                    membership_sha256=expected.membership_sha256, membership_byte_size=expected.membership_byte_size,
+                    selected_record_path=Path(args.cluster_evidence_root) / expected.selected_record_relative_path,
+                    selected_record_sha256=expected.selected_record_sha256,
+                    selected_record_byte_size=expected.selected_record_byte_size,
+                    generation_digest=expected.expected_generation_digest, member_count=expected.expected_member_count,
+                    cluster_count=expected.expected_cluster_count, largest_cluster_size=expected.expected_largest_cluster_size,
+                )
             current_fp = legacy_diagnostic_fingerprint(
                 config=config, csv_sha256=csv_sha256, assign_stage_fingerprint=assign_record["stage_fingerprint"],
                 assign_generation_digest=assign_record["generation_digest"],
-                decode_generation_digest=decode_generation_digest, edges_evidence=edges_evidence,
+                decode_generation_digest=decode_generation_digest, exact_rc_evidence=exact_rc_evidence,
+                cluster_evidence=cluster_evidence,
             )
             prior = None if args.force else restart.load_accepted(output_dir, "legacy_diagnostic")
             if prior is not None and prior.get("stage_fingerprint") == current_fp:
@@ -1712,7 +1886,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             else:
                 result = stage_legacy_diagnostic(
                     config=config, csv_path=args.csv, output_dir=output_dir, assign_record=assign_record,
-                    similarity_edges_dir=args.similarity_edges_dir, decode_manifest_path=decode_manifest_path,
+                    exact_rc_edges_dir=args.exact_rc_edges_dir, cluster_evidence_root=args.cluster_evidence_root,
+                    decode_manifest_path=decode_manifest_path,
                 )
 
     elif args.stage == "exact_audit":

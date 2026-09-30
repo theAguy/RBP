@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from rbpbench.coordinates.hashing import content_fingerprint
+from rbpbench.splits import cluster_membership_evidence as splits_cluster_evidence
 
 N_SPLITS = 5
 SHUFFLE = True
@@ -220,7 +221,7 @@ def build_leakage_diagnostic_report(
     sample_ids_by_index: Sequence[str],
     sample_to_component: Mapping[str, str],
     sample_to_partition: Mapping[str, str] | None = None,
-    similarity_edges_by_width: Mapping[int, Sequence[tuple[str, str]]] | None = None,
+    cluster_membership_by_width: Mapping[int, Mapping[str, str]] | None = None,
     exact_rc_edges_by_width: Mapping[int, Sequence[tuple[str, str]]] | None = None,
 ) -> dict:
     """Compares the legacy fold's holdout against the new whole-component
@@ -229,8 +230,15 @@ def build_leakage_diagnostic_report(
     leakage results require denominators"). Contains only IDs, component/
     partition identities, counts, and rates -- never a sequence or a model
     result.
+
+    ``cluster_membership_by_width`` maps each protected width to its
+    accepted ``{member: representative}`` connected-component membership
+    (:mod:`rbpbench.splits.cluster_membership_evidence`); the resulting
+    ``cluster_boundary_by_width`` entry reports cluster CO-MEMBERSHIP
+    boundary crossings, never a direct pairwise similarity edge
+    (docs/tasks/002c2a_legacy_cluster_evidence.md).
     """
-    similarity_edges_by_width = similarity_edges_by_width or {}
+    cluster_membership_by_width = cluster_membership_by_width or {}
     exact_rc_edges_by_width = exact_rc_edges_by_width or {}
 
     holdout_ids = {sample_ids_by_index[i] for i in legacy_result.holdout_indices}
@@ -260,23 +268,14 @@ def build_leakage_diagnostic_report(
                 len(crossing_train_rows) / len(train_ids) if train_ids else 0.0
             ),
         },
-        "directly_edge_matched_by_width": {},
+        "cluster_boundary_by_width": {},
         "exact_rc_by_width": {},
     }
 
-    for width, edges in similarity_edges_by_width.items():
-        matched_holdout = set()
-        for a, b in edges:
-            if a in holdout_ids and b in train_ids:
-                matched_holdout.add(a)
-            elif b in holdout_ids and a in train_ids:
-                matched_holdout.add(b)
-        report["directly_edge_matched_by_width"][str(width)] = {
-            "matched_holdout_row_count": len(matched_holdout),
-            "matched_holdout_row_rate_over_holdout_rows": (
-                len(matched_holdout) / len(holdout_ids) if holdout_ids else 0.0
-            ),
-        }
+    for width, membership in cluster_membership_by_width.items():
+        report["cluster_boundary_by_width"][str(width)] = splits_cluster_evidence.cluster_boundary_report(
+            width=width, membership=membership, holdout_ids=holdout_ids, train_ids=train_ids,
+        )
 
     for width, edges in exact_rc_edges_by_width.items():
         affected_holdout = set()

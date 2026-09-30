@@ -1,0 +1,75 @@
+{
+  "checkpoint": "002C-2A",
+  "cluster_membership_by_width": {
+    "101": {
+      "accepted_mmseqs_commands": [
+        "mmseqs cluster --min-seq-id 0.90 -c 0.95 --cov-mode 0 --max-seqs 361180 --alignment-mode 3 -e 1000 --mask 0 -s 7.5 --cluster-mode 1 --single-step-clustering 1 --threads 4",
+        "mmseqs createdb --dbtype 2 --threads 4",
+        "mmseqs createtsv --threads 4"
+      ],
+      "cluster_count": 296182,
+      "evidence_kind": "connected_component_membership",
+      "generation_digest": "d94437d807c5ade3e31cca96459dd076aa71ec6dc2cda0d8f437d6f351a5b6c0",
+      "largest_cluster_size": 35,
+      "member_count": 361180,
+      "membership_byte_size": 7723490,
+      "membership_relative_path": "memberships/cluster_101.membership.tsv",
+      "membership_sha256": "82cd719c0bba1ccb54f0ee18a8cb103159e6712b19479772d60cfc66d86c65d3",
+      "reconciled": true,
+      "selected_record_byte_size": 28183,
+      "selected_record_relative_path": "selected_records/cluster_101.json",
+      "selected_record_sha256": "8d16becd9de7a4411ce17d9f4a5ff77f49292090e73b6e68ea556a20dc78bd56"
+    },
+    "251": {
+      "accepted_mmseqs_commands": [
+        "mmseqs cluster --min-seq-id 0.90 -c 0.95 --cov-mode 0 --max-seqs 361180 --alignment-mode 3 -e 1000 --mask 0 -s 7.5 --cluster-mode 1 --single-step-clustering 1 --threads 4",
+        "mmseqs createdb --dbtype 2 --threads 4",
+        "mmseqs createtsv --threads 4"
+      ],
+      "cluster_count": 259288,
+      "evidence_kind": "connected_component_membership",
+      "generation_digest": "e673e8c11821dbb9e19f62f374078fa6fc210cff86c31bb74d9460b15a9b1096",
+      "largest_cluster_size": 65,
+      "member_count": 361180,
+      "membership_byte_size": 7723215,
+      "membership_relative_path": "memberships/cluster_251.membership.tsv",
+      "membership_sha256": "c9298e7f18645668eece836ab64a108eb14a558019af045616bf823cb234ddee",
+      "reconciled": true,
+      "selected_record_byte_size": 28082,
+      "selected_record_relative_path": "selected_records/cluster_251.json",
+      "selected_record_sha256": "6dc4317f02dd5bd2bec4ae608beb77b5971676439e8b3c8bcd0ad889fbc41f03"
+    },
+    "500": {
+      "accepted_mmseqs_commands": [
+        "mmseqs cluster --min-seq-id 0.90 -c 0.80 --cov-mode 0 --max-seqs 361180 --alignment-mode 3 -e 1000 --mask 0 -s 7.5 --cluster-mode 1 --single-step-clustering 1 --threads 4",
+        "mmseqs createdb --dbtype 2 --threads 4",
+        "mmseqs createtsv --threads 4"
+      ],
+      "cluster_count": 174190,
+      "evidence_kind": "connected_component_membership",
+      "generation_digest": "c17b88f6c2c9e631821719265cc0fcc17f1989a649a11cdad53ae42d425053e7",
+      "largest_cluster_size": 231,
+      "member_count": 361180,
+      "membership_byte_size": 7717239,
+      "membership_relative_path": "memberships/cluster_500.membership.tsv",
+      "membership_sha256": "5e70b99f82b02002bda1143c7c7216615f10befd34ada7ef67e608f4b2417ed8",
+      "reconciled": true,
+      "selected_record_byte_size": 28224,
+      "selected_record_relative_path": "selected_records/cluster_500.json",
+      "selected_record_sha256": "2a94a2f0982744a46c1342e61d0877f4ce0c9d29611b126d4179e8d81038fc62"
+    }
+  },
+  "direct_edge_limitation_statement": "Cluster co-membership under the frozen per-width MMseqs2 connected-component clustering (--cluster-mode 1) may be direct or transitive; it is NOT a retained direct pairwise similarity-alignment edge list, and a representative/member TSV row must never be described or consumed as a direct alignment.",
+  "evidence_kind": "connected_component_membership",
+  "return_inventory": {
+    "byte_size": 5510,
+    "relative_path": "RETURN_INVENTORY.json",
+    "sha256": "f117a29b8100bf09cc80f36051b0c6794401e65d57de841068be27f2aa788767"
+  },
+  "return_manifest": {
+    "byte_size": 11390,
+    "relative_path": "RETURN_MANIFEST.json",
+    "sha256": "c5936acaf768ec68edd67eecb714bd3ebbdaebc47ccca230832604520d85681a"
+  },
+  "schema": "sequence_legacy_cluster_evidence_002c2a_v1"
+}

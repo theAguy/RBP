@@ -1,8 +1,9 @@
 # Task 002C — Component-level partition assignment and leakage audit
 
 **Status:** checkpoint 002C-1 accepted; Task 002C-2A's correction and binding
-of retained legacy-clustering evidence is in planning review, while real
-assignment remains unauthorized
+of the retained legacy-clustering cluster-membership evidence is implemented
+and pending its own separate review, while real Task 002C-2 assignment
+remains unauthorized
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 
@@ -106,14 +107,6 @@ membership and identical scientific summaries.
 
 ## Former-split diagnostic
 
-> **Evidence correction pending:** the accepted Task 002B return retained
-> per-width connected-component cluster memberships, not the internal
-> alignment-result databases needed to substantiate the direct-edge claim
-> below. `docs/tasks/002c2a_legacy_cluster_evidence.md` proposes replacing it
-> with an accurately named per-width cluster-boundary diagnostic before any
-> real legacy diagnostic runs. The historical requirement below is not
-> authorized for execution as written.
-
 Reproduce the submitted notebook's first fold exactly:
 
 - `iterative-stratification==0.1.9`;
@@ -129,9 +122,17 @@ sets. Compare the legacy split with the accepted components using at least:
   rate over components represented in the legacy holdout;
 - training and holdout rows belonging to crossing components, each reported
   against its own partition-row denominator;
-- holdout rows with at least one directly recorded Task 002B similarity edge
-  to a training row, by protected width, reported as a count and a rate over
-  all legacy holdout rows; and
+- the per-width cluster-boundary diagnostic (Task 002C-2A,
+  `docs/tasks/002c2a_legacy_cluster_evidence.md`), from the accepted Task
+  002B per-width connected-component cluster-membership tables: total
+  cluster count; clusters represented in the legacy holdout; clusters
+  containing at least one legacy-train and one legacy-holdout row
+  ("crossing clusters"); the crossing-cluster rate over clusters
+  represented in holdout; and legacy-train/legacy-holdout rows in a
+  crossing cluster, each reported as a count and a rate over all rows of
+  its own partition. Cluster co-membership is direct or transitive under
+  the frozen per-width connected-component clustering relation -- it is
+  never reported as a direct pairwise alignment for every affected row; and
 - exact/reverse-complement cross-boundary violations, including the number and
   rate of affected legacy holdout rows (plus raw violating-pair counts).
 
@@ -146,8 +147,8 @@ Extend the split pipeline with explicit, single-stage invocations for:
 
 - `assign` — load an accepted component artifact, stream labels, assign whole
   components, and create transactional candidate membership/report artifacts;
-- `legacy_diagnostic` — reproduce the old fold and measure its component/edge
-  crossings without changing the new assignment;
+- `legacy_diagnostic` — reproduce the old fold and measure its
+  component/cluster-boundary crossings without changing the new assignment;
 - `exact_audit` — independently regenerate canonical exact/reverse-complement
   hashes at 500/251/101 nt and fail on a cross-partition collision;
 - `audit_probe` and `audit_search` — fresh MMseqs2 search generations, scoped

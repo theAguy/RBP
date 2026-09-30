@@ -27,7 +27,23 @@ class LoadConfig002CTests(unittest.TestCase):
         self.assertEqual(config.binary.mmseqs_sha256, "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed635")
         self.assertEqual(config.decode_002b2.manifest_path, "manifests/sequence_decode_002b2.json")
         self.assertEqual(len(config.decode_002b2.manifest_sha256), 64)
-        self.assertEqual(set(config.legacy_edges.similarity_edges), {500, 251, 101})
+        self.assertEqual(set(config.legacy_edges.cluster_membership), {500, 251, 101})
+        self.assertEqual(config.legacy_edges.return_manifest.relative_path, "RETURN_MANIFEST.json")
+        self.assertEqual(len(config.legacy_edges.return_manifest.sha256), 64)
+        self.assertEqual(config.legacy_edges.return_inventory.relative_path, "RETURN_INVENTORY.json")
+        self.assertEqual(len(config.legacy_edges.return_inventory.sha256), 64)
+        for width, expected_member_count, expected_cluster_count, expected_largest_cluster_size in (
+            (500, 361180, 174190, 231),
+            (251, 361180, 259288, 65),
+            (101, 361180, 296182, 35),
+        ):
+            entry = config.legacy_edges.cluster_membership[width]
+            self.assertEqual(entry.expected_member_count, expected_member_count)
+            self.assertEqual(entry.expected_cluster_count, expected_cluster_count)
+            self.assertEqual(entry.expected_largest_cluster_size, expected_largest_cluster_size)
+            self.assertEqual(entry.evidence_kind, "connected_component_membership")
+            self.assertEqual(len(entry.membership_sha256), 64)
+            self.assertEqual(len(entry.selected_record_sha256), 64)
 
     def test_content_hash_is_stable_across_loads(self):
         first = load_config_002c(_CONFIG_PATH)

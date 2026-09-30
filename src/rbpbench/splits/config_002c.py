@@ -127,23 +127,58 @@ class Decode002BExpectations:
 
 
 @dataclass(frozen=True)
-class LegacyEdgeFileExpectation:
+class ReturnBundleFileExpectation:
+    """Pinned provenance for one small file at the root of the accepted
+    Task 002B return bundle (``RETURN_MANIFEST.json``/``RETURN_INVENTORY.json``),
+    resolved only as a pinned child beneath the portable return root -- never
+    a hard-coded collaborator absolute path
+    (docs/handoffs/002c2a_legacy_cluster_evidence_claude_handoff.md).
+    """
+
+    relative_path: str
     byte_size: int
     sha256: str
 
 
 @dataclass(frozen=True)
-class LegacyEdgesConfig:
-    """Pinned per-width provenance for the six legacy-diagnostic edge files
-    (F4). ``exact_rc_edges_<width>.json`` is never pinned here -- it is
-    auto-extracted from the decode-evidence manifest's own accepted
-    duplicate-edge artifacts (see :class:`Decode002BExpectations`); only
-    ``edges_<width>.json`` (the Task 002B similarity/cluster edges, for
-    which no sanitized per-width manifest is committed yet) is pinned
-    directly, exactly like ``dataset_audit.json``/``proteins.tsv``.
+class ClusterMembershipFileExpectation:
+    """Pinned per-width provenance for one accepted Task 002B connected-
+    component cluster-membership TSV (``mmseqs createtsv`` output) and its
+    own selected record, resolved only as pinned children beneath the
+    portable Task 002B return root. A membership row is cluster
+    co-membership -- direct or transitive -- never a direct pairwise
+    similarity edge (docs/tasks/002c2a_legacy_cluster_evidence.md).
     """
 
-    similarity_edges: dict[int, LegacyEdgeFileExpectation]
+    membership_relative_path: str
+    membership_byte_size: int
+    membership_sha256: str
+    selected_record_relative_path: str
+    selected_record_byte_size: int
+    selected_record_sha256: str
+    expected_generation_digest: str
+    expected_member_count: int
+    expected_cluster_count: int
+    expected_largest_cluster_size: int
+    evidence_kind: str
+
+
+@dataclass(frozen=True)
+class LegacyClusterEvidenceConfig:
+    """Pinned provenance for the legacy-diagnostic's accepted cluster-
+    membership evidence (Task 002C-2A correction, replacing the retired
+    ``[legacy_edges.similarity_edges]`` impossible placeholder). Binds the
+    accepted Task 002B return's ``RETURN_MANIFEST.json``/``RETURN_INVENTORY.json``
+    plus, per protected width, the accepted membership TSV and its selected
+    record. ``exact_rc_edges_<width>.json`` is never pinned here -- it is
+    still auto-extracted from the decode-evidence manifest's own accepted
+    duplicate-edge artifacts (see :class:`Decode002BExpectations`) and stays
+    independently bound, unchanged.
+    """
+
+    return_manifest: ReturnBundleFileExpectation
+    return_inventory: ReturnBundleFileExpectation
+    cluster_membership: dict[int, ClusterMembershipFileExpectation]
 
 
 @dataclass(frozen=True)
@@ -157,7 +192,7 @@ class SplitsConfig002C:
     audit: AuditResourceConfig
     binary: BinaryExpectations002C
     decode_002b2: Decode002BExpectations
-    legacy_edges: LegacyEdgesConfig
+    legacy_edges: LegacyClusterEvidenceConfig
     source_path: str
     content_hash: str
 
@@ -295,11 +330,33 @@ def load_config_002c(path: Path) -> SplitsConfig002C:
             manifest_path=decode_002b2_raw["manifest_path"],
             manifest_sha256=decode_002b2_raw["manifest_sha256"],
         ),
-        legacy_edges=LegacyEdgesConfig(
-            similarity_edges={
-                int(width): LegacyEdgeFileExpectation(byte_size=entry["byte_size"], sha256=entry["sha256"])
-                for width, entry in legacy_edges_raw["similarity_edges"].items()
-            }
+        legacy_edges=LegacyClusterEvidenceConfig(
+            return_manifest=ReturnBundleFileExpectation(
+                relative_path=legacy_edges_raw["return_manifest_relative_path"],
+                byte_size=legacy_edges_raw["return_manifest_byte_size"],
+                sha256=legacy_edges_raw["return_manifest_sha256"],
+            ),
+            return_inventory=ReturnBundleFileExpectation(
+                relative_path=legacy_edges_raw["return_inventory_relative_path"],
+                byte_size=legacy_edges_raw["return_inventory_byte_size"],
+                sha256=legacy_edges_raw["return_inventory_sha256"],
+            ),
+            cluster_membership={
+                int(width): ClusterMembershipFileExpectation(
+                    membership_relative_path=entry["membership_relative_path"],
+                    membership_byte_size=entry["membership_byte_size"],
+                    membership_sha256=entry["membership_sha256"],
+                    selected_record_relative_path=entry["selected_record_relative_path"],
+                    selected_record_byte_size=entry["selected_record_byte_size"],
+                    selected_record_sha256=entry["selected_record_sha256"],
+                    expected_generation_digest=entry["expected_generation_digest"],
+                    expected_member_count=entry["expected_member_count"],
+                    expected_cluster_count=entry["expected_cluster_count"],
+                    expected_largest_cluster_size=entry["expected_largest_cluster_size"],
+                    evidence_kind=entry["evidence_kind"],
+                )
+                for width, entry in legacy_edges_raw["cluster_membership"].items()
+            },
         ),
         source_path=str(path),
         content_hash=content_fingerprint("splits_config_002c_v1", raw_text),
@@ -318,8 +375,9 @@ __all__ = [
     "AuditResourceConfig",
     "BinaryExpectations002C",
     "Decode002BExpectations",
-    "LegacyEdgeFileExpectation",
-    "LegacyEdgesConfig",
+    "ReturnBundleFileExpectation",
+    "ClusterMembershipFileExpectation",
+    "LegacyClusterEvidenceConfig",
     "SplitsConfig002C",
     "validate_frozen_invariants",
     "load_config_002c",

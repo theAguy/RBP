@@ -183,7 +183,13 @@ the real binary in `tests/test_splits_real_binaries.py`).
   separately reviewed checkpoint (`docs/tasks/002b_real_sequence_grouping.md`).
 - **002C** — after 002B acceptance, assign whole components, run the fresh
   independent cross-partition audits, and freeze the membership file and
-  manifest.
+  manifest. Its `legacy_diagnostic` stage's former-split diagnostic pins
+  `rbpbench.splits.cluster_membership_evidence` to the accepted Task 002B
+  per-width `mmseqs createtsv` connected-component cluster-membership TSVs
+  (Task 002C-2A, `docs/tasks/002c2a_legacy_cluster_evidence.md`): a
+  membership row is cluster co-membership, direct or transitive, never a
+  direct pairwise similarity edge, and the diagnostic reports per-width
+  `cluster_boundary_by_width` counts/rates accordingly.
 
 Each checkpoint requires its own executor handoff and review; this
 implementation does not silently continue into a later checkpoint.

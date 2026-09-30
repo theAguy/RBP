@@ -142,12 +142,18 @@ class LeakageDiagnosticReportTests(unittest.TestCase):
             sample_to_component[f"row_{i}"] = "compA" if i < 10 else "compB"
         sample_to_partition = {f"row_{i}": ("train" if i < 14 else "validation") for i in range(20)}
 
+        # A transitive A-B-C cluster at width 500: row_0 (representative) --
+        # row_1 -- row_3, all in the same connected-component cluster, but
+        # row_0/row_3 were never directly aligned -- the diagnostic must
+        # report cluster CO-MEMBERSHIP, never label row_0/row_3 a direct
+        # match (docs/tasks/002c2a_legacy_cluster_evidence.md).
+        cluster_membership_500 = {"row_0": "row_0", "row_1": "row_0", "row_3": "row_0"}
         report = build_leakage_diagnostic_report(
             legacy_result=result,
             sample_ids_by_index=sample_ids_by_index,
             sample_to_component=sample_to_component,
             sample_to_partition=sample_to_partition,
-            similarity_edges_by_width={500: [("row_0", "row_3")]},
+            cluster_membership_by_width={500: cluster_membership_500},
             exact_rc_edges_by_width={500: [("row_1", "row_4")]},
         )
 
@@ -160,10 +166,26 @@ class LeakageDiagnosticReportTests(unittest.TestCase):
         ):
             self.assertIn(key, crossing)
 
-        self.assertIn("500", report["directly_edge_matched_by_width"])
-        matched = report["directly_edge_matched_by_width"]["500"]
-        self.assertIn("matched_holdout_row_count", matched)
-        self.assertIn("matched_holdout_row_rate_over_holdout_rows", matched)
+        self.assertNotIn("directly_edge_matched_by_width", report)
+        self.assertIn("500", report["cluster_boundary_by_width"])
+        boundary = report["cluster_boundary_by_width"]["500"]
+        for key in (
+            "total_cluster_count", "clusters_represented_in_holdout", "crossing_cluster_count",
+            "crossing_cluster_rate_over_holdout_clusters", "train_rows_in_crossing_clusters_count",
+            "train_rows_in_crossing_clusters_rate_over_train_rows", "holdout_rows_in_crossing_clusters_count",
+            "holdout_rows_in_crossing_clusters_rate_over_holdout_rows", "relationship_note",
+        ):
+            self.assertIn(key, boundary)
+        # row_0/row_1 are legacy-train (indices 0, 1 < 14 fold-0 train
+        # membership is not guaranteed, so assert via the actual fold
+        # result rather than a hard-coded split); the cluster is a crossing
+        # cluster iff it has at least one member on each side.
+        holdout_ids = {sample_ids_by_index[i] for i in result.holdout_indices}
+        train_ids = {sample_ids_by_index[i] for i in result.train_indices}
+        cluster_ids = {"row_0", "row_1", "row_3"}
+        expected_crossing = bool(cluster_ids & holdout_ids) and bool(cluster_ids & train_ids)
+        self.assertEqual(boundary["crossing_cluster_count"] == 1, expected_crossing)
+        self.assertIn("direct or transitive", boundary["relationship_note"])
 
         self.assertIn("500", report["exact_rc_by_width"])
         exact_rc = report["exact_rc_by_width"]["500"]

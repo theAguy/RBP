@@ -13,9 +13,12 @@ sequences per protected width (guaranteeing no accidental exact/
 reverse-complement collision and satisfying the strict per-width FASTA
 validation added by the C1-C7 correction pass), a tiny 20-row CSV, a tiny
 20-singleton-component membership file, a matching tiny component-report
-JSON, tiny dataset-audit/proteins-table stand-ins, and tiny per-width
-similarity/exact-RC edge files. No real CSV, accepted Task 002B artifact,
-or real MMseqs2 execution over real sequences is ever touched.
+JSON, tiny dataset-audit/proteins-table stand-ins, tiny per-width exact-RC
+edge files, and a tiny per-width 20-singleton-cluster membership TSV/
+selected-record layout (Task 002C-2A,
+:mod:`rbpbench.splits.cluster_membership_evidence`) mirroring the accepted
+Task 002B return's shape. No real CSV, accepted Task 002B artifact, or real
+MMseqs2 execution over real sequences is ever touched.
 """
 
 from __future__ import annotations
@@ -146,10 +149,52 @@ mmseqs_sha256 = "{mmseqs_sha256}"
 manifest_path = "tiny_decode_manifest.json"
 manifest_sha256 = "{'0' * 64}"
 
-[legacy_edges.similarity_edges]
-500 = {{ byte_size = 0, sha256 = "{'0' * 64}" }}
-251 = {{ byte_size = 0, sha256 = "{'0' * 64}" }}
-101 = {{ byte_size = 0, sha256 = "{'0' * 64}" }}
+[legacy_edges]
+return_manifest_relative_path = "RETURN_MANIFEST.json"
+return_manifest_byte_size = 0
+return_manifest_sha256 = "{'0' * 64}"
+return_inventory_relative_path = "RETURN_INVENTORY.json"
+return_inventory_byte_size = 0
+return_inventory_sha256 = "{'0' * 64}"
+
+[legacy_edges.cluster_membership.500]
+membership_relative_path = "memberships/cluster_500.membership.tsv"
+membership_byte_size = 0
+membership_sha256 = "{'0' * 64}"
+selected_record_relative_path = "selected_records/cluster_500.json"
+selected_record_byte_size = 0
+selected_record_sha256 = "{'0' * 64}"
+expected_generation_digest = "PENDING"
+expected_member_count = {_SAMPLE_COUNT}
+expected_cluster_count = {_SAMPLE_COUNT}
+expected_largest_cluster_size = 1
+evidence_kind = "connected_component_membership"
+
+[legacy_edges.cluster_membership.251]
+membership_relative_path = "memberships/cluster_251.membership.tsv"
+membership_byte_size = 0
+membership_sha256 = "{'0' * 64}"
+selected_record_relative_path = "selected_records/cluster_251.json"
+selected_record_byte_size = 0
+selected_record_sha256 = "{'0' * 64}"
+expected_generation_digest = "PENDING"
+expected_member_count = {_SAMPLE_COUNT}
+expected_cluster_count = {_SAMPLE_COUNT}
+expected_largest_cluster_size = 1
+evidence_kind = "connected_component_membership"
+
+[legacy_edges.cluster_membership.101]
+membership_relative_path = "memberships/cluster_101.membership.tsv"
+membership_byte_size = 0
+membership_sha256 = "{'0' * 64}"
+selected_record_relative_path = "selected_records/cluster_101.json"
+selected_record_byte_size = 0
+selected_record_sha256 = "{'0' * 64}"
+expected_generation_digest = "PENDING"
+expected_member_count = {_SAMPLE_COUNT}
+expected_cluster_count = {_SAMPLE_COUNT}
+expected_largest_cluster_size = 1
+evidence_kind = "connected_component_membership"
 """)
 
 
@@ -167,7 +212,8 @@ class _Fixture:
         self.audit_json_path = root / "tiny_dataset_audit.json"
         self.proteins_tsv_path = root / "tiny_proteins.tsv"
         self.decode_fasta_dir = root / "decode"
-        self.similarity_edges_dir = root / "similarity_edges"
+        self.exact_rc_edges_dir = root / "exact_rc_edges"
+        self.cluster_evidence_root = root / "cluster_evidence_root"
         self.decode_manifest_path = root / "tiny_decode_manifest.json"
         self.config_path = root / "sequence_partitions_002c_v1_fixture.toml"
         self.mmseqs_bin = mmseqs_bin
@@ -239,9 +285,8 @@ class _Fixture:
                 _sha256_bytes(fasta_path.read_bytes()),
             )
 
-        self.similarity_edges_dir.mkdir(parents=True, exist_ok=True)
+        self.exact_rc_edges_dir.mkdir(parents=True, exist_ok=True)
         duplicate_edges_evidence: dict[int, tuple[str, int, str]] = {}
-        similarity_edges_evidence: dict[int, tuple[int, str]] = {}
         for width_index, width in enumerate(_PROTECTED_WIDTHS):
             # Distinct, non-empty, in-universe content per width (rather
             # than a uniform "[]" for all three) so a width-swapped file is
@@ -249,17 +294,60 @@ class _Fixture:
             # LegacyEdgeProvenanceTests.test_width_swapped_exact_rc_edges_is_rejected.
             a, b = f"row_{2 * width_index}", f"row_{2 * width_index + 1}"
 
-            similarity_path = self.similarity_edges_dir / f"edges_{width}.json"
-            similarity_path.write_text(json.dumps([[a, b]]))
-            similarity_edges_evidence[width] = (similarity_path.stat().st_size, _sha256_bytes(similarity_path.read_bytes()))
-
-            exact_rc_path = self.similarity_edges_dir / f"exact_rc_edges_{width}.json"
+            exact_rc_path = self.exact_rc_edges_dir / f"exact_rc_edges_{width}.json"
             exact_rc_path.write_text(json.dumps([[a, b]]))
             duplicate_edges_evidence[width] = (
                 f"decode/generations/decode_tiny/duplicate_edges_{width}.json",
                 exact_rc_path.stat().st_size,
                 _sha256_bytes(exact_rc_path.read_bytes()),
             )
+
+        # Task 002C-2A: the accepted Task 002B return's cluster-MEMBERSHIP
+        # evidence -- RETURN_MANIFEST.json/RETURN_INVENTORY.json plus, per
+        # width, a tiny 20-singleton-cluster membership TSV (every row is
+        # its own cluster: representative == member) and its selected
+        # record -- laid out exactly like the real accepted return, under a
+        # portable root never a hard-coded collaborator absolute path.
+        (self.cluster_evidence_root / "memberships").mkdir(parents=True, exist_ok=True)
+        (self.cluster_evidence_root / "selected_records").mkdir(parents=True, exist_ok=True)
+
+        return_manifest_path = self.cluster_evidence_root / "RETURN_MANIFEST.json"
+        return_manifest_path.write_text(json.dumps({"tiny": "fixture-return-manifest"}))
+        return_manifest_size = return_manifest_path.stat().st_size
+        return_manifest_sha256 = _sha256_bytes(return_manifest_path.read_bytes())
+
+        return_inventory_path = self.cluster_evidence_root / "RETURN_INVENTORY.json"
+        return_inventory_path.write_text(json.dumps({"tiny": "fixture-return-inventory"}))
+        return_inventory_size = return_inventory_path.stat().st_size
+        return_inventory_sha256 = _sha256_bytes(return_inventory_path.read_bytes())
+
+        cluster_membership_evidence: dict[int, dict] = {}
+        for width in _PROTECTED_WIDTHS:
+            membership_path = self.cluster_evidence_root / "memberships" / f"cluster_{width}.membership.tsv"
+            with membership_path.open("w") as handle:
+                for i in range(_SAMPLE_COUNT):
+                    handle.write(f"row_{i}\trow_{i}\n")
+            membership_size = membership_path.stat().st_size
+            membership_sha256 = _sha256_bytes(membership_path.read_bytes())
+
+            generation_digest = f"tiny-cluster-generation-digest-{width}"
+            selected_record_path = self.cluster_evidence_root / "selected_records" / f"cluster_{width}.json"
+            selected_record_path.write_text(json.dumps({
+                "stage": "cluster",
+                "executed": True,
+                "width": width,
+                "sample_count": _SAMPLE_COUNT,
+                "generation_digest": generation_digest,
+                "artifacts": [{"path": "membership.tsv", "sha256": membership_sha256, "size": membership_size}],
+            }))
+            selected_record_size = selected_record_path.stat().st_size
+            selected_record_sha256 = _sha256_bytes(selected_record_path.read_bytes())
+
+            cluster_membership_evidence[width] = {
+                "membership_size": membership_size, "membership_sha256": membership_sha256,
+                "selected_record_size": selected_record_size, "selected_record_sha256": selected_record_sha256,
+                "generation_digest": generation_digest,
+            }
 
         decode_manifest = {
             "checkpoint": "002B-2",
@@ -278,10 +366,33 @@ class _Fixture:
         text = text.replace(
             'manifest_sha256 = "' + "0" * 64 + '"', f'manifest_sha256 = "{decode_manifest_sha256}"'
         )
+
+        text = text.replace("return_manifest_byte_size = 0", f"return_manifest_byte_size = {return_manifest_size}")
+        text = text.replace(
+            'return_manifest_sha256 = "' + "0" * 64 + '"', f'return_manifest_sha256 = "{return_manifest_sha256}"'
+        )
+        text = text.replace("return_inventory_byte_size = 0", f"return_inventory_byte_size = {return_inventory_size}")
+        text = text.replace(
+            'return_inventory_sha256 = "' + "0" * 64 + '"', f'return_inventory_sha256 = "{return_inventory_sha256}"'
+        )
         for width in _PROTECTED_WIDTHS:
-            size, sha = similarity_edges_evidence[width]
+            evidence = cluster_membership_evidence[width]
             text = text.replace(
-                f'{width} = {{ byte_size = 0, sha256 = "{"0" * 64}" }}', f'{width} = {{ byte_size = {size}, sha256 = "{sha}" }}'
+                f'membership_relative_path = "memberships/cluster_{width}.membership.tsv"\n'
+                f'membership_byte_size = 0\nmembership_sha256 = "{"0" * 64}"',
+                f'membership_relative_path = "memberships/cluster_{width}.membership.tsv"\n'
+                f'membership_byte_size = {evidence["membership_size"]}\n'
+                f'membership_sha256 = "{evidence["membership_sha256"]}"',
+            )
+            text = text.replace(
+                f'selected_record_relative_path = "selected_records/cluster_{width}.json"\n'
+                f'selected_record_byte_size = 0\nselected_record_sha256 = "{"0" * 64}"',
+                f'selected_record_relative_path = "selected_records/cluster_{width}.json"\n'
+                f'selected_record_byte_size = {evidence["selected_record_size"]}\n'
+                f'selected_record_sha256 = "{evidence["selected_record_sha256"]}"',
+            )
+            text = text.replace(
+                'expected_generation_digest = "PENDING"', f'expected_generation_digest = "{evidence["generation_digest"]}"', 1
             )
         self.config_path.write_text(text)
 
@@ -301,7 +412,8 @@ class _Fixture:
     def legacy_diagnostic(self, *, assign_record: dict) -> dict:
         return r002c.stage_legacy_diagnostic(
             config=self.config, csv_path=self.csv_path, output_dir=self.output_dir, assign_record=assign_record,
-            similarity_edges_dir=self.similarity_edges_dir, decode_manifest_path=self.decode_manifest_path,
+            exact_rc_edges_dir=self.exact_rc_edges_dir, cluster_evidence_root=self.cluster_evidence_root,
+            decode_manifest_path=self.decode_manifest_path,
         )
 
     def exact_audit(self, *, width: int, assign_record: dict, decode_fasta_dir: Path | None = None) -> dict:
@@ -823,7 +935,7 @@ class DirectionAndWidthValidationTests(unittest.TestCase):
                 "--target-partition", "validation", "--config", "/does/not/exist.toml",
             ])
 
-    def test_legacy_diagnostic_without_similarity_edges_dir_raises_via_cli(self):
+    def test_legacy_diagnostic_without_exact_rc_edges_dir_raises_via_cli(self):
         with self.assertRaises(r002c.StageValidationError):
             r002c.main(["--stage", "legacy_diagnostic", "--config", "/does/not/exist.toml"])
 
@@ -840,11 +952,11 @@ class DirectionAndWidthValidationTests(unittest.TestCase):
 
 
 class LegacyDiagnosticCompletenessTests(unittest.TestCase):
-    def test_missing_edges_file_for_one_width_is_rejected(self):
+    def test_missing_cluster_membership_file_for_one_width_is_rejected(self):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            (fx.similarity_edges_dir / "edges_101.json").unlink()
+            (fx.cluster_evidence_root / "memberships" / "cluster_101.membership.tsv").unlink()
             with self.assertRaises(r002c.InputValidationError):
                 fx.legacy_diagnostic(assign_record=assign_record)
 
@@ -852,50 +964,53 @@ class LegacyDiagnosticCompletenessTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            (fx.similarity_edges_dir / "exact_rc_edges_251.json").unlink()
+            (fx.exact_rc_edges_dir / "exact_rc_edges_251.json").unlink()
             with self.assertRaises(r002c.InputValidationError):
                 fx.legacy_diagnostic(assign_record=assign_record)
 
-    def test_complete_edges_produce_a_full_embedded_report(self):
+    def test_complete_evidence_produces_a_full_embedded_report(self):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
             record = fx.legacy_diagnostic(assign_record=assign_record)
             self.assertIn("report", record)
             for width in _PROTECTED_WIDTHS:
-                self.assertIn(str(width), record["report"]["directly_edge_matched_by_width"])
+                self.assertIn(str(width), record["report"]["cluster_boundary_by_width"])
                 self.assertIn(str(width), record["report"]["exact_rc_by_width"])
+                self.assertNotIn("directly_edge_matched_by_width", record["report"])
 
 
 class LegacyEdgeProvenanceTests(unittest.TestCase):
-    """F4 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md):
-    every legacy-diagnostic edge file is bound to explicit, pinned
-    ``(width, evidence kind, size, hash)`` provenance with every endpoint
-    reconciled against the closed canonical sample universe -- a bare
-    operator-authored JSON, even an empty list, no longer qualifies merely
-    because its own current hash is recorded.
+    """F4 (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md)
+    plus its Task 002C-2A correction: every legacy-diagnostic evidence file
+    -- the three exact/RC edge files AND the three accepted cluster-
+    membership TSVs/selected records -- is bound to explicit, pinned
+    provenance with every endpoint reconciled against the closed canonical
+    sample universe -- a bare file no longer qualifies merely because its
+    own current hash is recorded.
     """
 
-    def test_foreign_endpoint_in_similarity_edges_is_rejected(self):
+    def test_foreign_member_in_cluster_membership_is_rejected(self):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            edges_path = fx.similarity_edges_dir / "edges_500.json"
-            edges_path.write_text(json.dumps([["row_0", "row_99999"]]))
-            self._repin_similarity(fx, 500, edges_path)
+            membership_path = fx.cluster_evidence_root / "memberships" / "cluster_500.membership.tsv"
+            lines = [f"row_{i}\trow_{i}\n" for i in range(_SAMPLE_COUNT)] + ["row_99999\trow_99999\n"]
+            membership_path.write_text("".join(lines))
+            self._repin_cluster(fx, 500, membership_path=membership_path)
             with self.assertRaises(r002c.InputValidationError):
                 fx.legacy_diagnostic(assign_record=assign_record)
 
-    def test_manually_unbound_similarity_edges_hash_is_rejected(self):
-        # A bare operator-authored JSON -- even a structurally valid, fully
-        # in-universe empty list -- must not qualify merely because its OWN
-        # current hash is recorded: it must match the config's PINNED
-        # expectation, which this test deliberately leaves stale.
+    def test_manually_unbound_cluster_membership_hash_is_rejected(self):
+        # A bare file -- even one that would otherwise parse and reconcile
+        # cleanly -- must not qualify merely because its OWN current hash is
+        # recorded: it must match the config's PINNED expectation, which
+        # this test deliberately leaves stale.
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            edges_path = fx.similarity_edges_dir / "edges_500.json"
-            edges_path.write_text(json.dumps([["row_5", "row_6"]]))  # content changed, config NOT re-pinned
+            membership_path = fx.cluster_evidence_root / "memberships" / "cluster_500.membership.tsv"
+            membership_path.write_text("row_0\trow_0\n")  # content changed, config NOT re-pinned
             with self.assertRaises(r002c.InputValidationError):
                 fx.legacy_diagnostic(assign_record=assign_record)
 
@@ -906,27 +1021,36 @@ class LegacyEdgeProvenanceTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            width_251_content = (fx.similarity_edges_dir / "exact_rc_edges_251.json").read_bytes()
-            (fx.similarity_edges_dir / "exact_rc_edges_500.json").write_bytes(width_251_content)
+            width_251_content = (fx.exact_rc_edges_dir / "exact_rc_edges_251.json").read_bytes()
+            (fx.exact_rc_edges_dir / "exact_rc_edges_500.json").write_bytes(width_251_content)
             with self.assertRaises(r002c.InputValidationError):
                 fx.legacy_diagnostic(assign_record=assign_record)
 
     @staticmethod
-    def _repin_similarity(fx, width: int, edges_path: Path) -> None:
-        """Test-only helper: re-pins the config's similarity-edges
-        expectation for ``width`` to whatever ``edges_path`` currently
-        contains, isolating the foreign-endpoint check from the (already
-        separately covered) pinned-hash check.
+    def _repin_cluster(fx, width: int, *, membership_path: Path) -> None:
+        """Test-only helper: re-pins the config's cluster-membership hash/
+        size expectation for ``width`` to whatever ``membership_path``
+        currently contains, isolating the foreign-member check from the
+        (already separately covered) pinned-hash check.
         """
         import dataclasses
 
-        new_size = edges_path.stat().st_size
-        new_sha = _sha256_bytes(edges_path.read_bytes())
-        similarity = dict(fx.config.legacy_edges.similarity_edges)
-        from rbpbench.splits.config_002c import LegacyEdgeFileExpectation, LegacyEdgesConfig
+        new_size = membership_path.stat().st_size
+        new_sha = _sha256_bytes(membership_path.read_bytes())
+        from rbpbench.splits.config_002c import LegacyClusterEvidenceConfig
 
-        similarity[width] = LegacyEdgeFileExpectation(byte_size=new_size, sha256=new_sha)
-        fx.config = dataclasses.replace(fx.config, legacy_edges=LegacyEdgesConfig(similarity_edges=similarity))
+        cluster_membership = dict(fx.config.legacy_edges.cluster_membership)
+        cluster_membership[width] = dataclasses.replace(
+            cluster_membership[width], membership_byte_size=new_size, membership_sha256=new_sha
+        )
+        fx.config = dataclasses.replace(
+            fx.config,
+            legacy_edges=LegacyClusterEvidenceConfig(
+                return_manifest=fx.config.legacy_edges.return_manifest,
+                return_inventory=fx.config.legacy_edges.return_inventory,
+                cluster_membership=cluster_membership,
+            ),
+        )
 
 
 class CurrentAssignmentValidatorTests(unittest.TestCase):

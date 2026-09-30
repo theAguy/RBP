@@ -99,16 +99,62 @@ mmseqs_sha256 = "44afaca1d6d8a4c7709177782aa37203cd52651563c778d75f9ae2ee98bed63
 manifest_path = "manifests/sequence_decode_002b2.json"
 manifest_sha256 = "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3"
 
-[legacy_edges.similarity_edges]
-# Pinned per-width provenance for the Task 002B similarity/cluster edges
-# ("edges_<width>.json") consumed by legacy_diagnostic (F4). No sanitized
-# per-width cluster-edge manifest is committed yet -- producing one would
-# require opening the real, ignored Task 002B cluster generation directory,
-# out of scope for this bounded correction. The all-zero placeholder hashes
-# below can never be satisfied by any real or fixture file, so a real
-# invocation fails closed by construction until a Task 002B executor
-# replaces them with the real accepted per-width cluster-edge SHA-256/size
-# (mirroring how every other frozen hash in this file was filled in).
-500 = { byte_size = 0, sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
-251 = { byte_size = 0, sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
-101 = { byte_size = 0, sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+[legacy_edges]
+# Pinned provenance for the legacy-diagnostic's accepted per-width
+# connected-component CLUSTER-MEMBERSHIP evidence (Task 002C-2A correction,
+# docs/tasks/002c2a_legacy_cluster_evidence.md,
+# docs/handoffs/002c2a_legacy_cluster_evidence_claude_handoff.md), replacing
+# the retired impossible "[legacy_edges.similarity_edges]" direct-edge
+# placeholder. A membership TSV row is cluster CO-MEMBERSHIP under
+# `--cluster-mode 1` (connected components) -- direct or transitive -- never
+# a direct pairwise similarity edge. All paths below are relative to the
+# accepted Task 002B return root
+# ("artifacts/teammate_run_results/20260928T091014Z_87391_arm64/"), supplied
+# explicitly on the 002C CLI (never a hard-coded collaborator absolute
+# path); every relative path is resolved only as a pinned child beneath
+# that root, with traversal/symlink-escape refused.
+return_manifest_relative_path = "RETURN_MANIFEST.json"
+return_manifest_byte_size = 11390
+return_manifest_sha256 = "c5936acaf768ec68edd67eecb714bd3ebbdaebc47ccca230832604520d85681a"
+return_inventory_relative_path = "RETURN_INVENTORY.json"
+return_inventory_byte_size = 5510
+return_inventory_sha256 = "f117a29b8100bf09cc80f36051b0c6794401e65d57de841068be27f2aa788767"
+
+[legacy_edges.cluster_membership.500]
+membership_relative_path = "memberships/cluster_500.membership.tsv"
+membership_byte_size = 7717239
+membership_sha256 = "5e70b99f82b02002bda1143c7c7216615f10befd34ada7ef67e608f4b2417ed8"
+selected_record_relative_path = "selected_records/cluster_500.json"
+selected_record_byte_size = 28224
+selected_record_sha256 = "2a94a2f0982744a46c1342e61d0877f4ce0c9d29611b126d4179e8d81038fc62"
+expected_generation_digest = "c17b88f6c2c9e631821719265cc0fcc17f1989a649a11cdad53ae42d425053e7"
+expected_member_count = 361180
+expected_cluster_count = 174190
+expected_largest_cluster_size = 231
+evidence_kind = "connected_component_membership"
+
+[legacy_edges.cluster_membership.251]
+membership_relative_path = "memberships/cluster_251.membership.tsv"
+membership_byte_size = 7723215
+membership_sha256 = "c9298e7f18645668eece836ab64a108eb14a558019af045616bf823cb234ddee"
+selected_record_relative_path = "selected_records/cluster_251.json"
+selected_record_byte_size = 28082
+selected_record_sha256 = "6dc4317f02dd5bd2bec4ae608beb77b5971676439e8b3c8bcd0ad889fbc41f03"
+expected_generation_digest = "e673e8c11821dbb9e19f62f374078fa6fc210cff86c31bb74d9460b15a9b1096"
+expected_member_count = 361180
+expected_cluster_count = 259288
+expected_largest_cluster_size = 65
+evidence_kind = "connected_component_membership"
+
+[legacy_edges.cluster_membership.101]
+membership_relative_path = "memberships/cluster_101.membership.tsv"
+membership_byte_size = 7723490
+membership_sha256 = "82cd719c0bba1ccb54f0ee18a8cb103159e6712b19479772d60cfc66d86c65d3"
+selected_record_relative_path = "selected_records/cluster_101.json"
+selected_record_byte_size = 28183
+selected_record_sha256 = "8d16becd9de7a4411ce17d9f4a5ff77f49292090e73b6e68ea556a20dc78bd56"
+expected_generation_digest = "d94437d807c5ade3e31cca96459dd076aa71ec6dc2cda0d8f437d6f351a5b6c0"
+expected_member_count = 361180
+expected_cluster_count = 296182
+expected_largest_cluster_size = 35
+evidence_kind = "connected_component_membership"

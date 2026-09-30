@@ -4,8 +4,8 @@
 investigation and comparison of the former teammate's 122-protein RBP model.
 
 **Last updated:** 2026-09-30  
-**Current stage:** Task 002C-2C, legacy-split and exact/reverse-complement
-leakage diagnostics for the accepted component assignment
+**Current stage:** Task 002C-3, fresh MMseqs2 cross-partition similarity audits
+for the accepted component assignment
 
 **Model comparison status:** not started; the benchmark split must be frozen
 first
@@ -338,11 +338,22 @@ After assignment is accepted:
 - Use the result only as a diagnostic; never reuse the old split for the new
   comparison.
 
+**Accepted result:** the former fold contains 26,765 final components spanning
+both train and holdout, 51.6% of all components represented in holdout. A total
+of 45,937 of 72,236 holdout rows (63.6%) and 120,760 of 288,944 training rows
+(41.8%) belong to crossing components. The former fold is therefore not
+leakage-safe under the frozen grouping definition, although this diagnostic
+does not quantify the resulting effect on model performance.
+
 ### 12.2 Independent exact/reverse-complement audit
 
 - Rebuild canonical exact/RC identities independently of MMseqs2.
 - Require zero exact or reverse-complement relationships across the new
   train/validation/test boundaries at 500, 251, and 101 nt.
+
+**Accepted result:** zero cross-partition violations at every width. The 500-
+and 251-nt data contain no exact/RC duplicate group; the two size-two 101-nt
+groups are both contained wholly within validation.
 
 ### 12.3 Fresh near-similarity audit
 
@@ -456,11 +467,9 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Run the legacy split and exact/RC diagnostics locally.
-2. Review and accept those diagnostic results without changing assignment.
-3. Probe and, if safe, run the fresh MMseqs2 cross-partition audits.
-4. Freeze the final partition.
-5. Begin simple baselines only after the split is locked.
+1. Probe and, if safe, run the fresh MMseqs2 cross-partition audits.
+2. Freeze the final partition.
+3. Begin simple baselines only after the split is locked.
 
 ## 19. Claims we can and cannot make today
 
@@ -473,10 +482,17 @@ We can say:
 - no giant sequence component makes the dataset obviously unusable; and
 - the accepted similarity evidence is reproducible and hash-bound.
 
-We cannot yet say:
+We can now also say:
 
-- how much leakage occurred in the former teammate's exact fold;
-- whether the former model's reported performance is inflated;
+- the former row-level fold is not leakage-safe under the frozen sequence
+  relation; and
+- the new component assignment contains no exact/reverse-complement leakage at
+  the protected widths.
+
+We still cannot say:
+
+- how many performance points the former split's leakage contributed;
+- whether, or by how much, the former model's reported performance is inflated;
 - whether the former model is better than DeepRiPe, Multi-resBind, or
   PrismNet-seq; or
 - which loss/window/architecture choice explains any future advantage.

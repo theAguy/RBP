@@ -1,7 +1,8 @@
 # Task 002C — Component-level partition assignment and leakage audit
 
-**Status:** planning review reconciled; checkpoint 002C-1 synthetic-only
-implementation is authorized, while real assignment remains unauthorized
+**Status:** checkpoint 002C-1 accepted; Task 002C-2A's correction and binding
+of retained legacy-clustering evidence is in planning review, while real
+assignment remains unauthorized
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 
@@ -104,6 +105,14 @@ Two executions over reordered inputs must yield byte-identical decompressed
 membership and identical scientific summaries.
 
 ## Former-split diagnostic
+
+> **Evidence correction pending:** the accepted Task 002B return retained
+> per-width connected-component cluster memberships, not the internal
+> alignment-result databases needed to substantiate the direct-edge claim
+> below. `docs/tasks/002c2a_legacy_cluster_evidence.md` proposes replacing it
+> with an accurately named per-width cluster-boundary diagnostic before any
+> real legacy diagnostic runs. The historical requirement below is not
+> authorized for execution as written.
 
 Reproduce the submitted notebook's first fold exactly:
 

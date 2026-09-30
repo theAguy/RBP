@@ -170,7 +170,8 @@ class LegacyClusterEvidenceConfig:
     ``[legacy_edges.similarity_edges]`` impossible placeholder). Binds the
     accepted Task 002B return's ``RETURN_MANIFEST.json``/``RETURN_INVENTORY.json``
     plus, per protected width, the accepted membership TSV and its selected
-    record. ``exact_rc_edges_<width>.json`` is never pinned here -- it is
+    record. The accepted ``duplicate_edges_<width>.json`` exact/RC edge
+    artifact is never pinned here -- it is
     still auto-extracted from the decode-evidence manifest's own accepted
     duplicate-edge artifacts (see :class:`Decode002BExpectations`) and stays
     independently bound, unchanged.

@@ -347,6 +347,23 @@ def _verify_decode_fasta(fasta_path: Path, *, width: int, fasta_evidence: dict[i
     return actual_sha256
 
 
+def _resolve_duplicate_edges_path(exact_rc_edges_dir: Path, duplicate_expected: DecodeFastaEvidence) -> Path:
+    """Resolves a protected width's accepted exact/reverse-complement
+    duplicate-edge artifact inside the explicitly caller-supplied
+    decode-artifact directory, using the BASENAME recorded in the accepted
+    decode manifest itself (``duplicate_edges_<width>.json``) rather than a
+    hardcoded, invented filename
+    (docs/reviews/002c2c_non_mmseqs_diagnostics_reconciliation.md, "Required
+    bounded correction"). The manifest-bound exact size and SHA-256 are still
+    enforced by the caller before parsing; this only fixes file discovery.
+
+    Shared by both ``stage_legacy_diagnostic`` and the CLI restart-skip
+    fingerprint precomputation so the two occurrences can never drift back
+    out of sync.
+    """
+    return Path(exact_rc_edges_dir) / Path(duplicate_expected.path).name
+
+
 def _verify_current_assignment(*, config: SplitsConfig002C, assign_record: dict) -> None:
     """F4: the shared current-assignment validator, called before every
     downstream real stage/finalization (never ``--dry-run``). Re-hashes all
@@ -935,10 +952,10 @@ def stage_legacy_diagnostic(
     exact_rc_evidence: dict[str, dict] = {}
     edges_provenance: dict[str, str] = {}
     for width in config.protected_widths:
-        exact_rc_path = Path(exact_rc_edges_dir) / f"exact_rc_edges_{width}.json"
         duplicate_expected = duplicate_edges_evidence.get(width)
         if duplicate_expected is None:
             raise DecodeManifestError(f"decode evidence manifest has no accepted duplicate_edges entry for width {width}")
+        exact_rc_path = _resolve_duplicate_edges_path(exact_rc_edges_dir, duplicate_expected)
         try:
             exact_rc_edges_by_width[width] = splits_legacy_edges.verify_and_parse_edges(
                 exact_rc_path, expected_sha256=duplicate_expected.sha256, expected_byte_size=duplicate_expected.byte_size,
@@ -1872,7 +1889,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
                 for width in config.protected_widths:
                     duplicate_expected = duplicate_edges_evidence.get(width)
-                    exact_rc_path = Path(args.exact_rc_edges_dir) / f"exact_rc_edges_{width}.json" if args.exact_rc_edges_dir else None
+                    exact_rc_path = (
+                        _resolve_duplicate_edges_path(args.exact_rc_edges_dir, duplicate_expected)
+                        if args.exact_rc_edges_dir is not None and duplicate_expected is not None
+                        else None
+                    )
                     if duplicate_expected is not None and exact_rc_path is not None:
                         exact_rc_evidence[f"{width}_exact_rc"] = splits_legacy_edges.bind_edge_evidence(
                             width=width, evidence_kind="exact_rc", path=exact_rc_path,

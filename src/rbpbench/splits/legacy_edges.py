@@ -2,15 +2,16 @@
 edge evidence (docs/reviews/002c1_partition_orchestration_final_acceptance_correction.md,
 F4): every one of the six per-width edge files ``legacy_diagnostic``
 consumes -- ``edges_<width>.json`` (Task 002B similarity/cluster edges) and
-``exact_rc_edges_<width>.json`` (Task 002B decode exact/reverse-complement
-duplicate edges) -- must be bound to explicit, pinned
+the accepted ``duplicate_edges_<width>.json`` (Task 002B decode
+exact/reverse-complement duplicate edges; docs/reviews/002c2c_non_mmseqs_diagnostics_reconciliation.md,
+"Required bounded correction") -- must be bound to explicit, pinned
 ``(width, evidence kind, size, hash)`` provenance and have every parsed
 endpoint reconciled against the closed canonical ``row_0..row_{N-1}``
 sample universe before use. A bare, operator-authored JSON file (even an
 empty list) can no longer qualify merely because ITS OWN current hash
 happens to be recorded.
 
-``exact_rc_edges_<width>.json`` is never hand-authored: its pinned
+``duplicate_edges_<width>.json`` is never hand-authored: its pinned
 expectation is auto-extracted from the already committed, sanitized
 ``manifests/sequence_decode_002b2.json`` (the same accepted Task 002B
 decode-duplicate-edge artifacts F2 binds the decode FASTAs to), never a

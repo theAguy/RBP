@@ -282,7 +282,11 @@ class _Fixture:
             # LegacyEdgeProvenanceTests.test_width_swapped_exact_rc_edges_is_rejected.
             a, b = f"row_{2 * width_index}", f"row_{2 * width_index + 1}"
 
-            exact_rc_path = self.exact_rc_edges_dir / f"exact_rc_edges_{width}.json"
+            # Real accepted filename contract (docs/reviews/002c2c_non_mmseqs_diagnostics_reconciliation.md,
+            # "Required bounded correction"): the accepted decode manifest
+            # and live decode generation use ``duplicate_edges_<width>.json``,
+            # never the invented ``exact_rc_edges_<width>.json``.
+            exact_rc_path = self.exact_rc_edges_dir / f"duplicate_edges_{width}.json"
             exact_rc_path.write_text(json.dumps([[a, b]]))
             duplicate_edges_evidence[width] = (
                 f"decode/generations/decode_tiny/duplicate_edges_{width}.json",
@@ -957,7 +961,7 @@ class LegacyDiagnosticCompletenessTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            (fx.exact_rc_edges_dir / "exact_rc_edges_251.json").unlink()
+            (fx.exact_rc_edges_dir / "duplicate_edges_251.json").unlink()
             with self.assertRaises(r002c.InputValidationError):
                 fx.legacy_diagnostic(assign_record=assign_record)
 
@@ -1014,10 +1018,47 @@ class LegacyEdgeProvenanceTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
-            width_251_content = (fx.exact_rc_edges_dir / "exact_rc_edges_251.json").read_bytes()
-            (fx.exact_rc_edges_dir / "exact_rc_edges_500.json").write_bytes(width_251_content)
+            width_251_content = (fx.exact_rc_edges_dir / "duplicate_edges_251.json").read_bytes()
+            (fx.exact_rc_edges_dir / "duplicate_edges_500.json").write_bytes(width_251_content)
             with self.assertRaises(r002c.InputValidationError):
                 fx.legacy_diagnostic(assign_record=assign_record)
+
+    def test_invented_legacy_filename_is_rejected_as_missing(self):
+        # Regression for docs/reviews/002c2c_non_mmseqs_diagnostics_reconciliation.md,
+        # "Required bounded correction": the runner must resolve the
+        # manifest-recorded ``duplicate_edges_<width>.json`` basename, never
+        # the invented ``exact_rc_edges_<width>.json`` the pre-correction
+        # code hardcoded. Renaming the real, correctly hashed width-500
+        # artifact to the invented legacy name (and leaving no
+        # ``duplicate_edges_500.json`` behind) must be rejected as missing,
+        # proving the old hardcoded name is no longer consulted at all.
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            real_path = fx.exact_rc_edges_dir / "duplicate_edges_500.json"
+            invented_path = fx.exact_rc_edges_dir / "exact_rc_edges_500.json"
+            real_path.rename(invented_path)
+            with self.assertRaises(r002c.InputValidationError) as ctx:
+                fx.legacy_diagnostic(assign_record=assign_record)
+            self.assertIn("not found", str(ctx.exception))
+
+    def test_correctly_hashed_file_under_invented_basename_cannot_substitute(self):
+        # Even a byte-for-byte, correctly hashed/sized copy of the accepted
+        # width-500 content fails to qualify when filed under any basename
+        # other than the manifest-recorded ``duplicate_edges_500.json`` --
+        # resolution is by pinned basename, never a hash scan of the
+        # directory that could let a renamed or hand-authored file silently
+        # substitute for the manifest-recorded artifact.
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            assign_record = fx.assign()
+            real_path = fx.exact_rc_edges_dir / "duplicate_edges_500.json"
+            content = real_path.read_bytes()
+            real_path.unlink()
+            (fx.exact_rc_edges_dir / "some_other_invented_name_500.json").write_bytes(content)
+            with self.assertRaises(r002c.InputValidationError) as ctx:
+                fx.legacy_diagnostic(assign_record=assign_record)
+            self.assertIn("not found", str(ctx.exception))
 
     @staticmethod
     def _repin_cluster(fx, width: int, *, membership_path: Path) -> None:

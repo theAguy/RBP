@@ -10,19 +10,20 @@ The work has four separate scientific questions:
 3. What do the positive-class weight and unknown-as-negative penalty contribute?
 4. Does the submitted model benefit from its 500-nt input window?
 
-The current scientific and implementation plan is
-[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Historical plans
-and review messages under [`docs/archive/`](docs/archive/) are retained for
-provenance but are not authoritative specifications.
+The plain-language end-to-end status and workflow are in
+[`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md). The authoritative
+implementation plan is [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
+Historical plans and review messages under [`docs/archive/`](docs/archive/)
+are retained for provenance but are not authoritative specifications.
 
 ## Current stage
 
-Repository bootstrap and data auditing are complete. Coordinate recovery was
-stopped safely when the required splice-aware human-genome index exceeded the
-available host memory. It is deferred rather than required for the model
-comparison. The next work is the reviewed sequence-clustering fallback for
-leakage-safe train/validation/test partitions, followed by trivial baselines
-and the development pilot.
+Repository bootstrap, data auditing, and full sequence-similarity grouping are
+complete. Coordinate recovery was stopped safely when the required splice-aware
+human-genome index exceeded the available host memory and is not required for
+the core comparison. Component-level train/validation/test assignment and
+independent leakage audits are now in progress; model and baseline work has not
+started.
 
 ## Quick start
 

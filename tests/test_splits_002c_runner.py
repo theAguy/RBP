@@ -742,21 +742,27 @@ class MemoryGateEnforcementTests(unittest.TestCase):
             fx = _build_fixture(Path(tmp))
             assign_record = fx.assign()
 
-            real_check = r002c.guarded_exec.check_available_memory_before_launch_or_fail
+            real_installed_check = r002c.guarded_exec.check_installed_ram_or_fail
+            real_available_check = r002c.guarded_exec.check_available_memory_before_launch_or_fail
             call_count = {"n": 0}
 
             def _fail_on_second_call(**kwargs):
                 call_count["n"] += 1
                 if call_count["n"] == 2:
                     raise r002c.guarded_exec.ResourceGateExceededError("simulated low memory before the 2nd command")
-                return real_check(**kwargs)
+                return 100.0
 
+            # Keep this synthetic regression independent of the review host's
+            # ability to expose physical RAM. Dedicated tests above retain the
+            # real fail-closed installed/available-memory behavior.
+            r002c.guarded_exec.check_installed_ram_or_fail = lambda **_kwargs: 16.0
             r002c.guarded_exec.check_available_memory_before_launch_or_fail = _fail_on_second_call
             try:
                 with self.assertRaises(r002c.guarded_exec.ResourceGateExceededError):
                     fx.audit_probe(width=500, assign_record=assign_record)
             finally:
-                r002c.guarded_exec.check_available_memory_before_launch_or_fail = real_check
+                r002c.guarded_exec.check_installed_ram_or_fail = real_installed_check
+                r002c.guarded_exec.check_available_memory_before_launch_or_fail = real_available_check
 
             # Exactly 2 launch-time checks ran (createdb(query) succeeded,
             # createdb(target) refused) -- the search/createtsv commands

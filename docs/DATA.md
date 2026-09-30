@@ -7,8 +7,10 @@ Expected local filename: `dataset_K562_multilabel_with_NEGs.csv`.
 - One row per 500-nt RNA window.
 - `sequence`: 2,000 binary characters, four one-hot values per nucleotide in
   A/C/G/T order.
-- `labels`: semicolon-separated signed integers in the range 1–122.
-- `+k`: known positive for protein `k`.
+- `labels`: semicolon-separated integers in the range 1–122.
+- `k` (unsigned): known positive for protein `k`.
+- `+k`: accepted as a backward-compatible spelling of the same known
+  positive; the frozen real CSV contains no explicit-plus tokens.
 - `-k`: known negative for protein `k`.
 - absent `k`: unknown, not a negative.
 

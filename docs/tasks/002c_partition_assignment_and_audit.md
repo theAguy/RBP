@@ -63,7 +63,9 @@ below and then execute once through the reviewed runner.
 
 ### Label interpretation
 
-- `+k` contributes one known positive to protein `k`.
+- unsigned `k` contributes one known positive to protein `k`; an explicit
+  `+k` is accepted as a backward-compatible spelling of the same known
+  positive (the frozen real CSV contains no explicit-plus tokens).
 - `-k` contributes one known negative to protein `k`.
 - an absent protein is unknown and contributes nothing.
 - all 122 positive and 122 known-negative dimensions are balanced separately.

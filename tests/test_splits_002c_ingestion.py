@@ -256,25 +256,60 @@ class ParseSignedLabelsTests(unittest.TestCase):
         with self.assertRaises(LabelParseError):
             parse_signed_labels("+1", protein_id_min=2, protein_id_max=122)
 
-    def test_missing_sign_is_rejected(self):
-        with self.assertRaises(LabelParseError):
-            parse_signed_labels("5")
+    def test_unsigned_token_is_a_known_positive(self):
+        self.assertEqual(parse_signed_labels("5"), {5: 1})
 
     def test_malformed_id_is_rejected(self):
         with self.assertRaises(LabelParseError):
             parse_signed_labels("+5a")
 
+    def test_unsigned_malformed_id_is_rejected(self):
+        with self.assertRaises(LabelParseError):
+            parse_signed_labels("5a")
+
     def test_repeated_same_sign_is_rejected(self):
         with self.assertRaises(LabelParseError):
             parse_signed_labels("+1;+1")
+
+    def test_unsigned_repeated_positive_is_rejected(self):
+        with self.assertRaises(LabelParseError):
+            parse_signed_labels("1;1")
+
+    def test_unsigned_and_explicit_plus_repeat_is_rejected(self):
+        with self.assertRaises(LabelParseError):
+            parse_signed_labels("1;+1")
 
     def test_contradictory_signs_are_rejected(self):
         with self.assertRaises(LabelParseError):
             parse_signed_labels("+1;-1")
 
+    def test_unsigned_and_negative_contradiction_is_rejected(self):
+        with self.assertRaises(LabelParseError):
+            parse_signed_labels("1;-1")
+
     def test_empty_token_is_rejected(self):
         with self.assertRaises(LabelParseError):
             parse_signed_labels("+1;;+2")
+
+    # Real-CSV regression forms (docs/handoffs/002c2b_real_assignment_claude_handoff.md
+    # correction; Task 002C-2B bounded label-encoding correction).
+    def test_real_form_unsigned_single_positive(self):
+        self.assertEqual(parse_signed_labels("7"), {7: 1})
+
+    def test_real_form_single_negative(self):
+        self.assertEqual(parse_signed_labels("-18"), {18: -1})
+
+    def test_real_form_multi_unsigned_positive(self):
+        self.assertEqual(parse_signed_labels("101;110;121"), {101: 1, 110: 1, 121: 1})
+
+    def test_real_form_unsigned_positive_91(self):
+        self.assertEqual(parse_signed_labels("91"), {91: 1})
+
+    def test_real_form_multi_negative(self):
+        self.assertEqual(parse_signed_labels("-88;-3"), {88: -1, 3: -1})
+
+    def test_real_form_mixed_unsigned_positive_and_negative(self):
+        self.assertEqual(parse_signed_labels("7;-18;91;-88;-3"), {7: 1, 18: -1, 91: 1, 88: -1, 3: -1})
 
 
 class StreamComponentLabelAggregatesTests(unittest.TestCase):

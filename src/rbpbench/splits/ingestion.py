@@ -224,12 +224,15 @@ def parse_signed_labels(raw_field: str, *, protein_id_min: int = 1, protein_id_m
     """Parses a semicolon-separated signed-protein-ID field (docs/DATA.md)
     into ``{protein_id: +1 or -1}``.
 
-    Strict: every token must carry an explicit ``+``/``-`` sign; rejects an
+    An unsigned token (``k``) or an explicit ``+k`` is a known positive for
+    protein ``k``; ``+k`` is accepted only as a backward-compatible spelling
+    of the same positive -- the frozen real CSV contains no explicit-plus
+    tokens. A ``-k`` token is a known negative. Strict otherwise: rejects an
     ID of zero, a malformed or non-numeric ID, an ID outside
     ``[protein_id_min, protein_id_max]``, the same protein repeated with the
-    same sign, and a protein appearing as both ``+k`` and ``-k`` in one row.
-    A protein absent from the field is unknown -- it simply never appears
-    in the returned mapping, and never contributes to any count.
+    same sign, and a protein appearing as both a positive and ``-k`` in one
+    row. A protein absent from the field is unknown -- it simply never
+    appears in the returned mapping, and never contributes to any count.
     """
     raw_field = raw_field.strip()
     result: dict[int, int] = {}
@@ -239,10 +242,12 @@ def parse_signed_labels(raw_field: str, *, protein_id_min: int = 1, protein_id_m
         token = token.strip()
         if not token:
             raise LabelParseError(f"empty signed-ID token in labels field {raw_field!r}")
-        if token[0] not in "+-":
-            raise LabelParseError(f"signed-ID token {token!r} in {raw_field!r} is missing an explicit sign")
-        sign = 1 if token[0] == "+" else -1
-        digits = token[1:]
+        if token[0] in "+-":
+            sign = 1 if token[0] == "+" else -1
+            digits = token[1:]
+        else:
+            sign = 1
+            digits = token
         if not digits.isdigit():
             raise LabelParseError(f"malformed protein ID in token {token!r} (labels field {raw_field!r})")
         protein_id = int(digits)

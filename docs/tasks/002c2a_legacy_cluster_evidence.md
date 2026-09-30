@@ -122,7 +122,12 @@ Expected accepted summaries are:
 5. Bind the three membership files and their selected records into the legacy
    diagnostic fingerprint, selection record, provenance, and final report.
 6. Update the Task 002C plan and `docs/SPLITS.md` so all scientific claims use
-   the corrected terminology.
+   the corrected terminology. In the parent plan, explicitly replace the
+   obsolete bullet requiring "holdout rows with at least one directly recorded
+   Task 002B similarity edge" with the complete per-width cluster-boundary
+   metric list in this task. Remove the temporary evidence-correction warning
+   once the replacement is made, and update any later checkpoint/final-manifest
+   wording that could still imply the retired direct-edge requirement.
 7. Add synthetic regressions proving that a transitive A-B-C cluster is
    reported as cluster co-membership and never described as a direct A-C edge;
    also cover all reconciliation and stale-evidence failures.

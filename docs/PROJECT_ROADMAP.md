@@ -4,8 +4,9 @@
 investigation and comparison of the former teammate's 122-protein RBP model.
 
 **Last updated:** 2026-09-30  
-**Current stage:** Task 002C-2B, construction of the leakage-safe
-train/validation/test partition  
+**Current stage:** Task 002C-2C, legacy-split and exact/reverse-complement
+leakage diagnostics for the accepted component assignment
+
 **Model comparison status:** not started; the benchmark split must be frozen
 first
 
@@ -269,21 +270,26 @@ split. It performs the following steps:
 Labels influence balance only after similarity components are frozen. They can
 never create, merge, or split a similarity component.
 
-### Current Task 002C-2B status
+### Accepted Task 002C-2B result
 
-The first real assignment stopped on row 0 because the new parser incorrectly
-required an explicit plus sign. The correction now in progress makes unsigned
-positive tokens canonical while preserving all validation checks. No partial
-assignment was accepted and no later stage ran.
+The initial real assignment stopped safely because the new parser incorrectly
+required an explicit plus sign. The corrected parser reproduced all 361,180
+rows, 201,391 positives, and 173,532 negatives with no invalid labels.
 
-The immediate gates are:
+Primary and independent-repeat assignments then produced byte-identical
+membership and scientific summaries:
 
-1. focused parser/assignment tests pass;
-2. a complete CSV scan reproduces 361,180 rows, 201,391 positives, and 173,532
-   negatives with no malformed labels;
-3. the correction is committed separately;
-4. primary and repeat assignments both pass all balance and integrity checks;
-5. the sanitized assignment manifest is reviewed and accepted.
+| Partition | Rows | Fraction |
+|---|---:|---:|
+| Train | 246,465 | 68.2388% |
+| Validation | 57,391 | 15.8899% |
+| Test | 57,324 | 15.8713% |
+
+All 173,465 components remained intact. Validation and test each retained at
+least 101 known positives and 81 known negatives for every protein, comfortably
+above the frozen 30/30 floor. No repair move or swap was needed. The assignment
+is accepted as the sole candidate for finalization, but it is not yet the
+released benchmark split because the independent leakage audits remain.
 
 ## 11. The known-negative imbalance problem
 
@@ -450,14 +456,11 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Finish and test the unsigned-positive label-parser correction.
-2. Reconcile the corrected parser against the complete frozen CSV.
-3. Execute and independently repeat component-level assignment.
-4. Review and accept the assignment manifest.
-5. Run the legacy split and exact/RC diagnostics locally.
-6. Probe and, if safe, run the fresh MMseqs2 cross-partition audits.
-7. Freeze the final partition.
-8. Begin simple baselines only after the split is locked.
+1. Run the legacy split and exact/RC diagnostics locally.
+2. Review and accept those diagnostic results without changing assignment.
+3. Probe and, if safe, run the fresh MMseqs2 cross-partition audits.
+4. Freeze the final partition.
+5. Begin simple baselines only after the split is locked.
 
 ## 19. Claims we can and cannot make today
 

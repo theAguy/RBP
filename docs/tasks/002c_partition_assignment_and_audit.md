@@ -1,7 +1,8 @@
 # Task 002C — Component-level partition assignment and leakage audit
 
-**Status:** checkpoints 002C-1 and 002C-2A accepted; real Task 002C-2
-assignment remains unauthorized until its explicit checkpoint handoff
+**Status:** checkpoints 002C-1, 002C-2A, and 002C-2B accepted; the deterministic
+component assignment is frozen pending Task 002C-2C legacy/exact audits and
+Task 002C-3 fresh MMseqs2 cross-partition audits
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 

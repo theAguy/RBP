@@ -1,0 +1,221 @@
+{
+  "balance_report": {
+    "deviations_above_3pp": {
+      "primary": [],
+      "repeat": []
+    },
+    "primary": {
+      "test": {
+        "achieved_fraction": 0.15871310703804198,
+        "deviation_percentage_points": 0.8713107038041984,
+        "flagged": false,
+        "target_fraction": 0.15
+      },
+      "train": {
+        "achieved_fraction": 0.6823882828506562,
+        "deviation_percentage_points": -1.761171714934373,
+        "flagged": false,
+        "target_fraction": 0.7
+      },
+      "validation": {
+        "achieved_fraction": 0.15889861011130185,
+        "deviation_percentage_points": 0.8898610111301858,
+        "flagged": false,
+        "target_fraction": 0.15
+      }
+    },
+    "repeat": {
+      "test": {
+        "achieved_fraction": 0.15871310703804198,
+        "deviation_percentage_points": 0.8713107038041984,
+        "flagged": false,
+        "target_fraction": 0.15
+      },
+      "train": {
+        "achieved_fraction": 0.6823882828506562,
+        "deviation_percentage_points": -1.761171714934373,
+        "flagged": false,
+        "target_fraction": 0.7
+      },
+      "validation": {
+        "achieved_fraction": 0.15889861011130185,
+        "deviation_percentage_points": 0.8898610111301858,
+        "flagged": false,
+        "target_fraction": 0.15
+      }
+    }
+  },
+  "boundary_evidence": {
+    "audit_probe_or_search_ran": false,
+    "baseline_or_model_ran": false,
+    "exact_audit_ran": false,
+    "finalize_ran": false,
+    "legacy_diagnostic_ran": false,
+    "mmseqs2_invoked": false,
+    "primary_output_root_selected_stages": [
+      "assign"
+    ],
+    "repeat_output_root_selected_stages": [
+      "assign"
+    ]
+  },
+  "checkpoint": "002C-2B",
+  "commands": {
+    "primary": "PYTHONPATH=src .venv-002c-legacy/bin/python3 -m rbpbench.splits.runner_002c --stage assign --config configs/splits/sequence_partitions_002c_v1.toml --repo-root . --csv dataset_K562_multilabel_with_NEGs.csv --component-membership artifacts/teammate_run_results/20260928T091014Z_87391_arm64/final_component_result/component_membership.tsv.gz --component-report artifacts/teammate_run_results/20260928T091014Z_87391_arm64/final_component_result/component_report.json --audit-json manifests/dataset_audit.json --proteins-tsv configs/proteins.tsv --output-dir artifacts/splits/sequence_partitions_002c_v1",
+    "repeat": "PYTHONPATH=src .venv-002c-legacy/bin/python3 -m rbpbench.splits.runner_002c --stage assign --config configs/splits/sequence_partitions_002c_v1.toml --repo-root . --csv dataset_K562_multilabel_with_NEGs.csv --component-membership artifacts/teammate_run_results/20260928T091014Z_87391_arm64/final_component_result/component_membership.tsv.gz --component-report artifacts/teammate_run_results/20260928T091014Z_87391_arm64/final_component_result/component_report.json --audit-json manifests/dataset_audit.json --proteins-tsv configs/proteins.tsv --output-dir artifacts/splits/sequence_partitions_002c_v1_repeat_002c2b"
+  },
+  "correction_commit": "a15fcfaf94510f95a9b11150ef9310518f811265",
+  "counts": {
+    "components_split_across_partitions": 0,
+    "partition_row_counts": {
+      "test": 57324,
+      "train": 246465,
+      "validation": 57391
+    },
+    "partitions": [
+      "train",
+      "validation",
+      "test"
+    ],
+    "total_canonical_ids": 361180,
+    "total_components": 173465
+  },
+  "environment": {
+    "numpy_version": "2.0.2",
+    "python_version": "3.12.13",
+    "scikit_learn_version": "1.6.1",
+    "scipy_version": "1.16.1",
+    "venv": ".venv-002c-legacy"
+  },
+  "execution_commit": "a15fcfaf94510f95a9b11150ef9310518f811265",
+  "handoff": "docs/handoffs/002c2b_real_assignment_claude_handoff.md",
+  "inputs": {
+    "component_membership": {
+      "byte_size": 14578797,
+      "path": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64/final_component_result/component_membership.tsv.gz",
+      "sha256": "6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692"
+    },
+    "component_report": {
+      "byte_size": 13036977,
+      "path": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64/final_component_result/component_report.json",
+      "sha256": "b8b5872a4cc5061c562de871ec4500876fcdb72afcab069b21ab2bb44cb3e186"
+    },
+    "dataset_audit_json": {
+      "byte_size": 27550,
+      "path": "manifests/dataset_audit.json",
+      "sha256": "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"
+    },
+    "dataset_csv": {
+      "byte_size": 724425277,
+      "path": "dataset_K562_multilabel_with_NEGs.csv",
+      "sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945"
+    },
+    "proteins_tsv": {
+      "byte_size": 1143,
+      "path": "configs/proteins.tsv",
+      "sha256": "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+    }
+  },
+  "minimum_count_report": {
+    "attaining_minimums": {
+      "test": {
+        "minimum_known_negative": {
+          "count": 81,
+          "protein_id": 53
+        },
+        "minimum_known_positive": {
+          "count": 101,
+          "protein_id": 93
+        }
+      },
+      "validation": {
+        "minimum_known_negative": {
+          "count": 81,
+          "protein_id": 53
+        },
+        "minimum_known_positive": {
+          "count": 101,
+          "protein_id": 93
+        }
+      }
+    },
+    "floor": 30,
+    "passed": true,
+    "violations": []
+  },
+  "repair_summary": {
+    "note": "Every protein/class dimension cleared the 30-known floor directly from the deterministic balancing objective; no repair pass was needed in either run.",
+    "primary_repair_step_count": 0,
+    "repeat_repair_step_count": 0
+  },
+  "reproducibility": {
+    "input_hashes_identical": true,
+    "primary_input_hashes": {
+      "audit_json_sha256": "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c",
+      "component_membership_sha256": "6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692",
+      "component_report_sha256": "b8b5872a4cc5061c562de871ec4500876fcdb72afcab069b21ab2bb44cb3e186",
+      "csv_sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945",
+      "proteins_tsv_sha256": "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+    },
+    "primary_repeat_decompressed_membership_byte_identical": true,
+    "primary_repeat_membership_gzip_byte_identical": true,
+    "primary_repeat_scientific_summary_identical": true,
+    "repeat_input_hashes": {
+      "audit_json_sha256": "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c",
+      "component_membership_sha256": "6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692",
+      "component_report_sha256": "b8b5872a4cc5061c562de871ec4500876fcdb72afcab069b21ab2bb44cb3e186",
+      "csv_sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945",
+      "proteins_tsv_sha256": "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+    }
+  },
+  "runs": {
+    "primary": {
+      "assign_manifest_byte_size": 202194,
+      "assign_manifest_relative_path": "artifacts/splits/sequence_partitions_002c_v1/assign/generations/assign_715118c8207d45a2/assign_manifest.json",
+      "assign_manifest_sha256": "f254703e7b8c01fa0d150f254bc15cfe36b7e9ff8c510b02caef00ba81bcb6eb",
+      "checkpoint_logs": {
+        "stderr_time": "artifacts/splits/checkpoint_logs/002c2b/primary_stderr_time_run2.log",
+        "stdout": "artifacts/splits/checkpoint_logs/002c2b/primary_stdout_run2.log"
+      },
+      "disk_after": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk1s2   932Gi   754Gi   156Gi    83%    3.9M  1.6G    0%   /System/Volumes/Data",
+      "disk_before": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk1s2   932Gi   754Gi   156Gi    83%    3.9M  1.6G    0%   /System/Volumes/Data",
+      "end_time_utc": "2026-09-30T08:42:44Z",
+      "generation_digest": "db06eb10c427b00633da852fa1d9b2f25020570f875eb4b6c6f9a8e4c446ccac",
+      "generation_dir": "artifacts/splits/sequence_partitions_002c_v1/assign/generations/assign_715118c8207d45a2",
+      "membership_byte_size": 14772841,
+      "membership_relative_path": "artifacts/splits/sequence_partitions_002c_v1/assign/generations/assign_715118c8207d45a2/membership.tsv.gz",
+      "membership_sha256": "ebca22489c85d4e6fe11b507c7ebd6ad0bd760246c1f96f1505f471aee278907",
+      "output_dir": "artifacts/splits/sequence_partitions_002c_v1",
+      "peak_memory_footprint_bytes": 344879104,
+      "peak_rss_bytes": 381911040,
+      "stage_fingerprint": "78f6a384edd9849ee09df2b72ebde9ff6a4b82e01d4b7f1bb50eeb15ed64410b",
+      "start_time_utc": "2026-09-30T08:42:04Z",
+      "wall_time_seconds": 25.34
+    },
+    "repeat": {
+      "assign_manifest_byte_size": 202194,
+      "assign_manifest_relative_path": "artifacts/splits/sequence_partitions_002c_v1_repeat_002c2b/assign/generations/assign_4cdc11944ee542d0/assign_manifest.json",
+      "assign_manifest_sha256": "f254703e7b8c01fa0d150f254bc15cfe36b7e9ff8c510b02caef00ba81bcb6eb",
+      "checkpoint_logs": {
+        "stderr_time": "artifacts/splits/checkpoint_logs/002c2b/repeat_stderr_time.log",
+        "stdout": "artifacts/splits/checkpoint_logs/002c2b/repeat_stdout.log"
+      },
+      "disk_after": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk1s2   932Gi   754Gi   156Gi    83%    3.9M  1.6G    0%   /System/Volumes/Data",
+      "disk_before": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk1s2   932Gi   754Gi   156Gi    83%    3.9M  1.6G    0%   /System/Volumes/Data",
+      "end_time_utc": "2026-09-30T08:43:51Z",
+      "generation_digest": "29630d4e7bc2a35ed69615718446637bee470fa3495fb8fc94cc5ef18fcd0cc3",
+      "generation_dir": "artifacts/splits/sequence_partitions_002c_v1_repeat_002c2b/assign/generations/assign_4cdc11944ee542d0",
+      "membership_byte_size": 14772841,
+      "membership_relative_path": "artifacts/splits/sequence_partitions_002c_v1_repeat_002c2b/assign/generations/assign_4cdc11944ee542d0/membership.tsv.gz",
+      "membership_sha256": "ebca22489c85d4e6fe11b507c7ebd6ad0bd760246c1f96f1505f471aee278907",
+      "output_dir": "artifacts/splits/sequence_partitions_002c_v1_repeat_002c2b",
+      "peak_memory_footprint_bytes": 344899584,
+      "peak_rss_bytes": 381984768,
+      "stage_fingerprint": "78f6a384edd9849ee09df2b72ebde9ff6a4b82e01d4b7f1bb50eeb15ed64410b",
+      "start_time_utc": "2026-09-30T08:43:22Z",
+      "wall_time_seconds": 28.48
+    }
+  },
+  "schema_version": 1,
+  "status": "assignment_accepted"
+}

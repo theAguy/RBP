@@ -1,0 +1,362 @@
+{
+  "anomalies": [],
+  "boundary_evidence": {
+    "assignment_altered": false,
+    "audit_probe_or_search_ran": false,
+    "baseline_or_model_ran": false,
+    "exact_audit_ran": true,
+    "finalize_ran": false,
+    "legacy_diagnostic_ran": true,
+    "mmseqs2_invoked": false,
+    "output_root_selected_stages": [
+      "assign.json",
+      "exact_audit_101.json",
+      "exact_audit_251.json",
+      "exact_audit_500.json",
+      "legacy_diagnostic.json"
+    ]
+  },
+  "checkpoint": "002C-2C",
+  "commands": {
+    "exact_audit_101": "PYTHONPATH=src .venv-002c-legacy/bin/python3 -m rbpbench.splits.runner_002c --stage exact_audit --width 101 --config configs/splits/sequence_partitions_002c_v1.toml --repo-root . --output-dir artifacts/splits/sequence_partitions_002c_v1 --decode-manifest manifests/sequence_decode_002b2.json --decode-fasta-dir artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a",
+    "exact_audit_251": "PYTHONPATH=src .venv-002c-legacy/bin/python3 -m rbpbench.splits.runner_002c --stage exact_audit --width 251 --config configs/splits/sequence_partitions_002c_v1.toml --repo-root . --output-dir artifacts/splits/sequence_partitions_002c_v1 --decode-manifest manifests/sequence_decode_002b2.json --decode-fasta-dir artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a",
+    "exact_audit_500": "PYTHONPATH=src .venv-002c-legacy/bin/python3 -m rbpbench.splits.runner_002c --stage exact_audit --width 500 --config configs/splits/sequence_partitions_002c_v1.toml --repo-root . --output-dir artifacts/splits/sequence_partitions_002c_v1 --decode-manifest manifests/sequence_decode_002b2.json --decode-fasta-dir artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a",
+    "legacy_diagnostic": "PYTHONPATH=src .venv-002c-legacy/bin/python3 -m rbpbench.splits.runner_002c --stage legacy_diagnostic --config configs/splits/sequence_partitions_002c_v1.toml --repo-root . --csv dataset_K562_multilabel_with_NEGs.csv --output-dir artifacts/splits/sequence_partitions_002c_v1 --decode-manifest manifests/sequence_decode_002b2.json --exact-rc-edges-dir artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a --cluster-evidence-root artifacts/teammate_run_results/20260928T091014Z_87391_arm64"
+  },
+  "correction_commit": "43b271a3273fcc6e97dc7d7340c8060152c65331",
+  "environment": {
+    "iterative_stratification_version": "0.1.9",
+    "numpy_version": "2.0.2",
+    "python_version": "3.12.13",
+    "scikit_learn_version": "1.6.1",
+    "scipy_version": "1.16.1",
+    "venv": ".venv-002c-legacy"
+  },
+  "exact_rc_audit_by_width": {
+    "101": {
+      "affected_row_count": 0,
+      "affected_row_rate_over_rows": 0.0,
+      "duplicate_group_count": 2,
+      "max_duplicate_group_size": 2,
+      "passed": true,
+      "total_rows": 361180,
+      "violation_count": 0,
+      "violation_rate_over_rows": 0.0,
+      "width": 101
+    },
+    "251": {
+      "affected_row_count": 0,
+      "affected_row_rate_over_rows": 0.0,
+      "duplicate_group_count": 0,
+      "max_duplicate_group_size": 0,
+      "passed": true,
+      "total_rows": 361180,
+      "violation_count": 0,
+      "violation_rate_over_rows": 0.0,
+      "width": 251
+    },
+    "500": {
+      "affected_row_count": 0,
+      "affected_row_rate_over_rows": 0.0,
+      "duplicate_group_count": 0,
+      "max_duplicate_group_size": 0,
+      "passed": true,
+      "total_rows": 361180,
+      "violation_count": 0,
+      "violation_rate_over_rows": 0.0,
+      "width": 500
+    }
+  },
+  "execution_commit": null,
+  "execution_commit_note": "the commit that stages and commits this manifest file itself; see git log for manifests/sequence_non_mmseqs_audits_002c2c.json",
+  "handoff": "docs/handoffs/002c2c_non_mmseqs_diagnostics_claude_handoff.md",
+  "legacy_diagnostic_cluster_evidence": {
+    "101": {
+      "cluster_count": 296182,
+      "evidence_kind": "connected_component_membership",
+      "generation_digest": "d94437d807c5ade3e31cca96459dd076aa71ec6dc2cda0d8f437d6f351a5b6c0",
+      "largest_cluster_size": 35,
+      "member_count": 361180,
+      "membership_byte_size": 7723490,
+      "membership_path": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64/memberships/cluster_101.membership.tsv",
+      "membership_sha256": "82cd719c0bba1ccb54f0ee18a8cb103159e6712b19479772d60cfc66d86c65d3",
+      "selected_record_byte_size": 28183,
+      "selected_record_path": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64/selected_records/cluster_101.json",
+      "selected_record_sha256": "8d16becd9de7a4411ce17d9f4a5ff77f49292090e73b6e68ea556a20dc78bd56",
+      "width": 101
+    },
+    "251": {
+      "cluster_count": 259288,
+      "evidence_kind": "connected_component_membership",
+      "generation_digest": "e673e8c11821dbb9e19f62f374078fa6fc210cff86c31bb74d9460b15a9b1096",
+      "largest_cluster_size": 65,
+      "member_count": 361180,
+      "membership_byte_size": 7723215,
+      "membership_path": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64/memberships/cluster_251.membership.tsv",
+      "membership_sha256": "c9298e7f18645668eece836ab64a108eb14a558019af045616bf823cb234ddee",
+      "selected_record_byte_size": 28082,
+      "selected_record_path": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64/selected_records/cluster_251.json",
+      "selected_record_sha256": "6dc4317f02dd5bd2bec4ae608beb77b5971676439e8b3c8bcd0ad889fbc41f03",
+      "width": 251
+    },
+    "500": {
+      "cluster_count": 174190,
+      "evidence_kind": "connected_component_membership",
+      "generation_digest": "c17b88f6c2c9e631821719265cc0fcc17f1989a649a11cdad53ae42d425053e7",
+      "largest_cluster_size": 231,
+      "member_count": 361180,
+      "membership_byte_size": 7717239,
+      "membership_path": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64/memberships/cluster_500.membership.tsv",
+      "membership_sha256": "5e70b99f82b02002bda1143c7c7216615f10befd34ada7ef67e608f4b2417ed8",
+      "selected_record_byte_size": 28224,
+      "selected_record_path": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64/selected_records/cluster_500.json",
+      "selected_record_sha256": "2a94a2f0982744a46c1342e61d0877f4ce0c9d29611b126d4179e8d81038fc62",
+      "width": 500
+    }
+  },
+  "legacy_diagnostic_edges_provenance": {
+    "exact_rc_edges_101_path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/duplicate_edges_101.json",
+    "exact_rc_edges_101_sha256": "9e3e12c9ba46196b3bfc6f01034922438481b529880190fc29189823f3d64282",
+    "exact_rc_edges_251_path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/duplicate_edges_251.json",
+    "exact_rc_edges_251_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "exact_rc_edges_500_path": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a/duplicate_edges_500.json",
+    "exact_rc_edges_500_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  },
+  "legacy_diagnostic_report": {
+    "cluster_boundary_by_width": {
+      "101": {
+        "clusters_represented_in_holdout": 68090,
+        "crossing_cluster_count": 15271,
+        "crossing_cluster_rate_over_holdout_clusters": 0.22427669261271846,
+        "holdout_rows_in_crossing_clusters_count": 18324,
+        "holdout_rows_in_crossing_clusters_rate_over_holdout_rows": 0.2536685309264079,
+        "relationship_note": "cluster co-membership under the frozen per-width MMseqs2 connected-component clustering (--cluster-mode 1) may be direct or transitive; it does not establish a direct pairwise alignment for every affected row",
+        "total_cluster_count": 296182,
+        "train_rows_in_crossing_clusters_count": 30314,
+        "train_rows_in_crossing_clusters_rate_over_train_rows": 0.10491306273880059
+      },
+      "251": {
+        "clusters_represented_in_holdout": 64461,
+        "crossing_cluster_count": 20979,
+        "crossing_cluster_rate_over_holdout_clusters": 0.32545259924605574,
+        "holdout_rows_in_crossing_clusters_count": 27423,
+        "holdout_rows_in_crossing_clusters_rate_over_holdout_rows": 0.37963065507503185,
+        "relationship_note": "cluster co-membership under the frozen per-width MMseqs2 connected-component clustering (--cluster-mode 1) may be direct or transitive; it does not establish a direct pairwise alignment for every affected row",
+        "total_cluster_count": 259288,
+        "train_rows_in_crossing_clusters_count": 54010,
+        "train_rows_in_crossing_clusters_rate_over_train_rows": 0.18692203333517912
+      },
+      "500": {
+        "clusters_represented_in_holdout": 52210,
+        "crossing_cluster_count": 27087,
+        "crossing_cluster_rate_over_holdout_clusters": 0.5188086573453361,
+        "holdout_rows_in_crossing_clusters_count": 45894,
+        "holdout_rows_in_crossing_clusters_rate_over_holdout_rows": 0.6353341824021264,
+        "relationship_note": "cluster co-membership under the frozen per-width MMseqs2 connected-component clustering (--cluster-mode 1) may be direct or transitive; it does not establish a direct pairwise alignment for every affected row",
+        "total_cluster_count": 174190,
+        "train_rows_in_crossing_clusters_count": 119842,
+        "train_rows_in_crossing_clusters_rate_over_train_rows": 0.4147585691345036
+      }
+    },
+    "component_crossing": {
+      "components_represented_in_holdout": 51853,
+      "crossing_component_count": 26765,
+      "crossing_component_rate_over_holdout_components": 0.5161707133627755,
+      "crossing_holdout_row_count": 45937,
+      "crossing_holdout_row_rate_over_holdout_rows": 0.6359294534581096,
+      "crossing_train_row_count": 120760,
+      "crossing_train_row_rate_over_train_rows": 0.4179356553519021
+    },
+    "exact_rc_by_width": {
+      "101": {
+        "affected_holdout_row_count": 1,
+        "affected_holdout_row_rate_over_holdout_rows": 1.3843512929841077e-05,
+        "raw_violating_pair_count": 1
+      },
+      "251": {
+        "affected_holdout_row_count": 0,
+        "affected_holdout_row_rate_over_holdout_rows": 0.0,
+        "raw_violating_pair_count": 0
+      },
+      "500": {
+        "affected_holdout_row_count": 0,
+        "affected_holdout_row_rate_over_holdout_rows": 0.0,
+        "raw_violating_pair_count": 0
+      }
+    },
+    "legacy_fold": {
+      "dependency_versions": {
+        "iterative_stratification_version": "0.1.9",
+        "numpy_version": "2.0.2",
+        "python_version": "3.12.13",
+        "scikit_learn_version": "1.6.1",
+        "scipy_version": "1.16.1"
+      },
+      "fold_index": 0,
+      "holdout_count": 72236,
+      "holdout_digest": "6ee6917ac3e1fad42563a7317e39e9c3988ce9256543ef29fb481a4855bd8e6c",
+      "n_splits": 5,
+      "random_state": 42,
+      "shuffle": true,
+      "train_count": 288944,
+      "train_digest": "61dc839539f47be30380059036cb803388fdb282f50b5f983d4e60109bfbd611"
+    },
+    "new_assignment_holdout_partition_spread": [
+      "test",
+      "train",
+      "validation"
+    ]
+  },
+  "reconciliation": {
+    "fasta_hash_reconciliation_against_decode_manifest": {
+      "101": true,
+      "251": true,
+      "500": true
+    },
+    "legacy_fold_row_count_check": {
+      "expected_total_rows": 361180,
+      "holdout_count": 72236,
+      "matches_expected_total": true,
+      "sum": 361180,
+      "train_count": 288944
+    },
+    "legacy_split_did_not_alter_new_assignment": true,
+    "legacy_split_is_descriptive_only": true,
+    "new_assignment_exact_rc_zero_violation_gate": {
+      "101": true,
+      "251": true,
+      "500": true,
+      "all_widths_passed": true
+    },
+    "new_assignment_universe_check": {
+      "101": true,
+      "251": true,
+      "500": true
+    }
+  },
+  "reconciliation_review": "docs/reviews/002c2c_non_mmseqs_diagnostics_reconciliation.md",
+  "schema": "sequence_non_mmseqs_audits_002c2c_v1",
+  "stage_execution": {
+    "exact_audit_101": {
+      "disk_free_kb_after": 164529516,
+      "disk_free_kb_before": 164529532,
+      "end_utc": "2026-09-30T11:09:13Z",
+      "exit_status": 0,
+      "fasta_sha256": "60be2b211923d303570974fced0f85e546ceb4b5b5182d2cd0a9f72f483b08b1",
+      "generation_digest": "1590c17b74e3841995c4f749e7ea731712b1bc66c843dc66dbb8cd571079ed33",
+      "generation_dir": "artifacts/splits/sequence_partitions_002c_v1/exact_audit/101/generations/exact_audit_0aa2aa84b0c540ee",
+      "output_artifacts": [
+        {
+          "path": "exact_audit_report.json",
+          "sha256": "0a37e816c038ac708e6fb820a6fecf2ac139014387fced855764be35f54d8c6f",
+          "size": 268
+        }
+      ],
+      "peak_rss_bytes": 413810688,
+      "selection_record_byte_size": 1145,
+      "selection_record_path": "artifacts/splits/sequence_partitions_002c_v1/selected/exact_audit_101.json",
+      "selection_record_sha256": "fd748fa7aaab3201cb2ed54f6303a4532e70283bfcc57fa42d57fd1d43440318",
+      "stage_fingerprint": "ee506f13289827f6f32c8de33c2c4db7986cb566c0e7ca7bb71f23ae0b3923e7",
+      "start_utc": "2026-09-30T11:09:06Z",
+      "wall_time_seconds": 7.02
+    },
+    "exact_audit_251": {
+      "disk_free_kb_after": 164529536,
+      "disk_free_kb_before": 164529872,
+      "end_utc": "2026-09-30T11:08:55Z",
+      "exit_status": 0,
+      "fasta_sha256": "f4f436ef2eb0f17409c5145507991b688e49965a09c346ddd380942a5b1d5b5c",
+      "generation_digest": "86282e0a00dfa7c4db23b213f0b72047a428240e97abf10e1e14ad521ab7c04b",
+      "generation_dir": "artifacts/splits/sequence_partitions_002c_v1/exact_audit/251/generations/exact_audit_a357889feb914660",
+      "output_artifacts": [
+        {
+          "path": "exact_audit_report.json",
+          "sha256": "8fbef8aacac4c5e82a41044d175948f434819f78be13fb83a8ba6e293ba978c4",
+          "size": 268
+        }
+      ],
+      "peak_rss_bytes": 474075136,
+      "selection_record_byte_size": 1145,
+      "selection_record_path": "artifacts/splits/sequence_partitions_002c_v1/selected/exact_audit_251.json",
+      "selection_record_sha256": "9bf54a64ae07136a7b2080d6abf8a9f748f26b45648d319e60a6cbf52317123c",
+      "stage_fingerprint": "1da7730e7b4b2c3481fbea6220e90c3b79e8eed2cf40d544ebeea180e136f3b8",
+      "start_utc": "2026-09-30T11:08:48Z",
+      "wall_time_seconds": 7.42
+    },
+    "exact_audit_500": {
+      "disk_free_kb_after": 164529860,
+      "disk_free_kb_before": 164530964,
+      "end_utc": "2026-09-30T11:08:36Z",
+      "exit_status": 0,
+      "fasta_sha256": "0849d4f8aceaed37c3dc7fec69056f38ae344338aa4adf321a3e11c4a72df0b0",
+      "generation_digest": "e22a685e53f0cd532075e081b4afe31941de954cf68967afc0fee383eabc592c",
+      "generation_dir": "artifacts/splits/sequence_partitions_002c_v1/exact_audit/500/generations/exact_audit_145d9481431142f4",
+      "output_artifacts": [
+        {
+          "path": "exact_audit_report.json",
+          "sha256": "eb7cafc719309d8237b71affe6f0c37c3fc84c5fc9f18ea6493583766eee6c1b",
+          "size": 268
+        }
+      ],
+      "peak_rss_bytes": 561999872,
+      "selection_record_byte_size": 1145,
+      "selection_record_path": "artifacts/splits/sequence_partitions_002c_v1/selected/exact_audit_500.json",
+      "selection_record_sha256": "ea47a76fa0e469aaf988e228e61bedbd575d101b22d7ab23cdcd8f24ed79c43c",
+      "stage_fingerprint": "726556eda465e445d944764326657c2f2c44515117f954bbd73713343866cc0e",
+      "start_utc": "2026-09-30T11:08:27Z",
+      "wall_time_seconds": 9.32
+    },
+    "legacy_diagnostic": {
+      "disk_free_kb_after": 164531276,
+      "disk_free_kb_before": 164533300,
+      "end_utc": "2026-09-30T11:08:06Z",
+      "exit_status": 0,
+      "generation_digest": "5ef1de6c6486c9808710ba4980b8729dd8b7409bafedfeb7114dfc9f01415f48",
+      "generation_dir": "artifacts/splits/sequence_partitions_002c_v1/legacy_diagnostic/generations/legacy_diagnostic_4516e573335447d6",
+      "output_artifacts": [
+        {
+          "path": "legacy_diagnostic_report.json",
+          "sha256": "c3dcdff4477ca74ad92b307490e8fd86b330ffa770cce3b39e24b799b2866379",
+          "size": 6352
+        }
+      ],
+      "peak_rss_bytes": 685899776,
+      "selection_record_byte_size": 10503,
+      "selection_record_path": "artifacts/splits/sequence_partitions_002c_v1/selected/legacy_diagnostic.json",
+      "selection_record_sha256": "faf75f37da146c0607eae1daca4cf47ac591ffb6a8b6674c1afc5cba93b8f792",
+      "stage_fingerprint": "2c6b77a12ae5156dda207b2bc06e9f7c46331332423ca2db6371de37d3ceb4f2",
+      "start_utc": "2026-09-30T11:07:37Z",
+      "wall_time_seconds": 29.0
+    }
+  },
+  "status": "accepted",
+  "upstream": {
+    "accepted_assignment_manifest": {
+      "path": "manifests/sequence_assignment_002c2b.json",
+      "sha256": "28aa6687fc335ffcba36eb441ebf2d55ae25565349fc8dfcb48a29be566267f6"
+    },
+    "accepted_cluster_evidence_root": "artifacts/teammate_run_results/20260928T091014Z_87391_arm64",
+    "accepted_config": {
+      "path": "configs/splits/sequence_partitions_002c_v1.toml",
+      "sha256": "35d077ed939137b1b1e97a432b9ff3731be29d64afc922632fb7b3e3b0865bbf"
+    },
+    "accepted_decode_generation": "artifacts/splits/sequence_partitions_v1/decode/generations/decode_907eac7a0a69415a",
+    "accepted_decode_manifest": {
+      "path": "manifests/sequence_decode_002b2.json",
+      "sha256": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3"
+    },
+    "accepted_primary_membership": {
+      "components_split_across_partitions": 0,
+      "sha256": "ebca22489c85d4e6fe11b507c7ebd6ad0bd760246c1f96f1505f471aee278907",
+      "total_canonical_ids": 361180,
+      "total_components": 173465
+    },
+    "accepted_selection_record": {
+      "path": "artifacts/splits/sequence_partitions_002c_v1/selected/assign.json",
+      "sha256": "4340e6550e0b494b7831f1ff882de4cd3397ec335b463704ac573b1ab9dc7253"
+    },
+    "assign_generation_digest": "db06eb10c427b00633da852fa1d9b2f25020570f875eb4b6c6f9a8e4c446ccac",
+    "assign_stage_fingerprint": "78f6a384edd9849ee09df2b72ebde9ff6a4b82e01d4b7f1bb50eeb15ed64410b",
+    "decode_generation_digest": "c61501d1d0ee2bd928877af9c9646cc440b1480ac22b5f5a90dad8e6de9ce4b1"
+  }
+}

@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -122,6 +123,15 @@ DEFAULT_CONFIG_PATH = Path("configs/splits/sequence_partitions_002c_v1.toml")
 DEFAULT_OUTPUT_DIR = Path("artifacts/splits/sequence_partitions_002c_v1")
 
 _ACGT = frozenset("ACGT")
+
+# The native Apple-Silicon build was already independently accepted for the
+# real Task 002B execution after the frozen Intel build crashed with SIGILL
+# under Rosetta (docs/reviews/002b_real_sequence_grouping_acceptance.md).
+# Task 002C's scientific MMseqs2 version and argv are unchanged; only the
+# platform-specific executable identity differs.  Keep this as a narrow
+# host-gated exception instead of weakening binary verification to a version-
+# only check or changing the config hash that binds the accepted assignment.
+MMSEQS2_ARM64_NATIVE_SHA256 = "3fa397a9af5f8142ab8df13cc3e19b3aefc91cb9908d9c147883c8ac4162db0d"
 
 
 class StageValidationError(ValueError):
@@ -814,7 +824,12 @@ def legacy_diagnostic_fingerprint(
     )
 
 
-def _verify_current_legacy_cluster_evidence(*, config: SplitsConfig002C, legacy_record: dict) -> None:
+def _verify_current_legacy_cluster_evidence(
+    *,
+    config: SplitsConfig002C,
+    legacy_record: dict,
+    cluster_evidence_root_override: Path | None = None,
+) -> None:
     """Mirrors :func:`_verify_current_assignment` for the accepted
     ``legacy_diagnostic`` record's cluster-membership evidence bindings
     (Task 002C-2A "finalization's current-evidence revalidation";
@@ -831,7 +846,17 @@ def _verify_current_legacy_cluster_evidence(*, config: SplitsConfig002C, legacy_
     apparently current. Configured expected strings alone are never proof
     of live currency.
     """
-    cluster_evidence_root = legacy_record.get("cluster_evidence_root")
+    # Portable execution may move the already-hash-bound Task 002B evidence
+    # bundle to another machine.  An explicit override changes only where the
+    # live bytes are found: the shared verifier below still requires every
+    # pinned hash, size, generation digest, and semantic count to match both
+    # the frozen config and the accepted legacy record.  The accepted record
+    # itself therefore remains byte-for-byte unchanged.
+    cluster_evidence_root = (
+        str(Path(cluster_evidence_root_override))
+        if cluster_evidence_root_override is not None
+        else legacy_record.get("cluster_evidence_root")
+    )
     if not cluster_evidence_root:
         raise StaleLegacyEvidenceError(
             "legacy_diagnostic record has no recorded cluster_evidence_root to revalidate the live evidence against"
@@ -1216,9 +1241,16 @@ def _resolve_and_verify_mmseqs_binary(mmseqs_bin: str, *, config: SplitsConfig00
         raise InputValidationError(f"mmseqs binary {mmseqs_bin!r} not found on PATH")
     if live_binary.version != splits_commands.PINNED_VERSION:
         raise InputValidationError(f"mmseqs version {live_binary.version!r} != pinned {splits_commands.PINNED_VERSION!r}")
-    if live_binary.sha256 != config.binary.mmseqs_sha256:
+    machine = platform.machine().lower()
+    accepted_sha256 = config.binary.mmseqs_sha256
+    accepted_identity = "frozen osx-64 build"
+    if machine in {"arm64", "aarch64"}:
+        accepted_sha256 = MMSEQS2_ARM64_NATIVE_SHA256
+        accepted_identity = "accepted native osx-arm64 build"
+    if live_binary.sha256 != accepted_sha256:
         raise InputValidationError(
-            f"mmseqs binary SHA-256 {live_binary.sha256!r} != accepted {config.binary.mmseqs_sha256!r} for stage {stage_name!r}"
+            f"mmseqs binary SHA-256 {live_binary.sha256!r} != {accepted_identity} hash "
+            f"{accepted_sha256!r} for host architecture {machine!r} and stage {stage_name!r}"
         )
     return live_binary
 
@@ -1604,7 +1636,13 @@ def _independently_recompute_summary(*, config: SplitsConfig002C, assign_record:
     }
 
 
-def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool = False) -> dict:
+def stage_finalize(
+    *,
+    config: SplitsConfig002C,
+    output_dir: Path,
+    cluster_evidence_root_override: Path | None = None,
+    dry_run: bool = False,
+) -> dict:
     if dry_run:
         return {"dry_run": True, "stage": "finalize"}
 
@@ -1616,7 +1654,11 @@ def stage_finalize(*, config: SplitsConfig002C, output_dir: Path, dry_run: bool 
     legacy_record = restart.require_accepted(output_dir, "legacy_diagnostic")
     # Task 002C-2A: the accepted legacy_diagnostic record's cluster-
     # membership evidence bindings must still be current before finalization.
-    _verify_current_legacy_cluster_evidence(config=config, legacy_record=legacy_record)
+    _verify_current_legacy_cluster_evidence(
+        config=config,
+        legacy_record=legacy_record,
+        cluster_evidence_root_override=cluster_evidence_root_override,
+    )
     exact_audit_records = {
         width: restart.require_accepted(output_dir, f"exact_audit_{width}") for width in config.protected_widths
     }
@@ -2054,7 +2096,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
 
     elif args.stage == "finalize":
-        result = stage_finalize(config=config, output_dir=output_dir, dry_run=args.dry_run)
+        result = stage_finalize(
+            config=config,
+            output_dir=output_dir,
+            cluster_evidence_root_override=args.cluster_evidence_root,
+            dry_run=args.dry_run,
+        )
 
     else:  # pragma: no cover - argparse choices already excludes this
         raise StageValidationError(f"unknown stage {args.stage!r}")

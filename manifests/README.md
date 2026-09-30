@@ -22,6 +22,11 @@ hashes/sizes, exact/reverse-complement duplicate summaries, and resource
 measurements. The large decoded artifacts remain under the Git-ignored
 `artifacts/` tree.
 
+`sequence_partition_environment_002c3_arm64.explicit.txt` is the exact
+`osx-arm64` package lock bundled for the offline Task 002C-3/4 collaborator
+run. It contains the native MMseqs2 `18.8cc5c` build already accepted during
+Task 002B after the Intel build failed on Apple Silicon.
+
 Future files include coordinate mappings, eligibility summaries, and frozen fold
 assignments.
 

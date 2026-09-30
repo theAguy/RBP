@@ -30,7 +30,10 @@ import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from rbpbench.coordinates.provenance import BinaryProvenance
+from rbpbench.splits import cluster_membership_evidence
 from rbpbench.splits import commands as splits_commands
 from rbpbench.splits import mmseqs_audit
 from rbpbench.splits import output as splits_output
@@ -1138,6 +1141,92 @@ class CurrentAssignmentValidatorTests(unittest.TestCase):
             fx.proteins_tsv_path.write_text(fx.proteins_tsv_path.read_text() + "\n")
             with self.assertRaises(r002c.StaleAssignmentInputError):
                 r002c.stage_finalize(config=fx.config, output_dir=fx.output_dir)
+
+
+class PortableFinalizationEvidenceRootTests(unittest.TestCase):
+    def _legacy_record(self, fx) -> dict:
+        live = cluster_membership_evidence.verify_live_cluster_evidence(
+            config=fx.config, cluster_evidence_root=fx.cluster_evidence_root
+        )
+        return {
+            "cluster_evidence_root": str(fx.cluster_evidence_root),
+            "cluster_evidence": live["cluster_evidence"],
+            "return_metadata_evidence": {
+                "return_manifest_sha256": live["return_manifest_sha256"],
+                "return_manifest_byte_size": live["return_manifest_byte_size"],
+                "return_inventory_sha256": live["return_inventory_sha256"],
+                "return_inventory_byte_size": live["return_inventory_byte_size"],
+            },
+        }
+
+    def test_explicit_portable_root_revalidates_without_mutating_accepted_record(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp) / "fixture")
+            legacy_record = self._legacy_record(fx)
+            original_record_bytes = json.dumps(legacy_record, sort_keys=True).encode()
+            portable_root = Path(tmp) / "portable_cluster_evidence"
+            shutil.copytree(fx.cluster_evidence_root, portable_root)
+
+            r002c._verify_current_legacy_cluster_evidence(
+                config=fx.config,
+                legacy_record=legacy_record,
+                cluster_evidence_root_override=portable_root,
+            )
+            self.assertEqual(json.dumps(legacy_record, sort_keys=True).encode(), original_record_bytes)
+
+    def test_explicit_portable_root_still_fails_closed_on_mutated_evidence(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp) / "fixture")
+            legacy_record = self._legacy_record(fx)
+            portable_root = Path(tmp) / "portable_cluster_evidence"
+            shutil.copytree(fx.cluster_evidence_root, portable_root)
+            membership = portable_root / "memberships/cluster_500.membership.tsv"
+            membership.write_text(membership.read_text() + "row_0\trow_0\n")
+
+            with self.assertRaises(r002c.StaleLegacyEvidenceError):
+                r002c._verify_current_legacy_cluster_evidence(
+                    config=fx.config,
+                    legacy_record=legacy_record,
+                    cluster_evidence_root_override=portable_root,
+                )
+
+
+class PlatformSpecificMmseqsIdentityTests(unittest.TestCase):
+    @staticmethod
+    def _provenance(digest: str) -> BinaryProvenance:
+        return BinaryProvenance(
+            exe_name="mmseqs",
+            resolved_path="/portable/bin/mmseqs",
+            sha256=digest,
+            version=splits_commands.PINNED_VERSION,
+        )
+
+    def test_native_arm64_hash_is_accepted_only_on_arm64(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            provenance = self._provenance(r002c.MMSEQS2_ARM64_NATIVE_SHA256)
+            with patch.object(splits_commands, "resolve_mmseqs_binary_provenance", return_value=provenance):
+                with patch.object(r002c.platform, "machine", return_value="arm64"):
+                    actual = r002c._resolve_and_verify_mmseqs_binary(
+                        "mmseqs", config=fx.config, stage_name="audit_probe"
+                    )
+                self.assertEqual(actual.sha256, r002c.MMSEQS2_ARM64_NATIVE_SHA256)
+                with patch.object(r002c.platform, "machine", return_value="x86_64"):
+                    with self.assertRaises(r002c.InputValidationError):
+                        r002c._resolve_and_verify_mmseqs_binary(
+                            "mmseqs", config=fx.config, stage_name="audit_probe"
+                        )
+
+    def test_frozen_intel_hash_remains_accepted_on_intel(self):
+        with TemporaryDirectory() as tmp:
+            fx = _build_fixture(Path(tmp))
+            provenance = self._provenance(fx.config.binary.mmseqs_sha256)
+            with patch.object(splits_commands, "resolve_mmseqs_binary_provenance", return_value=provenance):
+                with patch.object(r002c.platform, "machine", return_value="x86_64"):
+                    actual = r002c._resolve_and_verify_mmseqs_binary(
+                        "mmseqs", config=fx.config, stage_name="audit_search"
+                    )
+            self.assertEqual(actual.sha256, fx.config.binary.mmseqs_sha256)
 
 
 class FullPipelineEndToEndTests(unittest.TestCase):

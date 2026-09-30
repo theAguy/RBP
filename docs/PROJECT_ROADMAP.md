@@ -366,8 +366,13 @@ groups are both contained wholly within validation.
 
 Assignment, the legacy diagnostic, and exact auditing should fit the local
 16-GiB Mac. The fresh MMseqs2 searches are the only potentially high-memory
-remaining data-preparation step. They will be probed locally first and moved to
-the 64-GiB collaborator Mac only if the reviewed resource gates require it.
+remaining data-preparation step. The local host did not have enough available
+memory for this checkpoint, so Task 002C-3/4 is packaged as a single offline,
+native Apple-Silicon handoff for the 64-GiB collaborator Mac. The handoff runs
+all three probes and 18 searches sequentially, stops without retry on any
+failure or nonzero hit, conditionally finalizes, and creates one small return
+ZIP whether it succeeds or stops. It does not repeat any accepted earlier
+stage.
 
 ### 12.4 Freeze the final split
 
@@ -467,9 +472,12 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Probe and, if safe, run the fresh MMseqs2 cross-partition audits.
-2. Freeze the final partition.
-3. Begin simple baselines only after the split is locked.
+1. Execute the reviewed one-shot Task 002C-3/4 bundle on the 64-GiB native
+   Apple-Silicon host and return its generated ZIP.
+2. Independently review the three probes, all 18 directed searches, and the
+   conditional finalization evidence.
+3. Freeze the final partition only if every search has zero qualifying hits.
+4. Begin simple baselines only after the split is locked.
 
 ## 19. Claims we can and cannot make today
 

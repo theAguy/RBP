@@ -1,9 +1,7 @@
 # Task 002C — Component-level partition assignment and leakage audit
 
-**Status:** checkpoint 002C-1 accepted; Task 002C-2A's correction and binding
-of the retained legacy-clustering cluster-membership evidence is implemented
-and pending its own separate review, while real Task 002C-2 assignment
-remains unauthorized
+**Status:** checkpoints 002C-1 and 002C-2A accepted; real Task 002C-2
+assignment remains unauthorized until its explicit checkpoint handoff
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 

@@ -1,6 +1,7 @@
 # Task 002C-2A — Correct and bind the legacy clustering evidence
 
-**Status:** planning review requested; execution is not yet authorized
+**Status:** accepted; see
+`docs/reviews/002c2a_legacy_cluster_evidence_acceptance.md`
 **Parent:** `docs/tasks/002c_partition_assignment_and_audit.md`
 **Branch:** `issue-002c-partition-assignment`
 

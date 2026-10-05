@@ -14,7 +14,7 @@ from typing import Iterable, Mapping
 
 from rbpbench.splits.commands import _WIDTH_COVERAGE
 from rbpbench.splits.components import UnionFind, component_id, component_members, component_sizes
-from rbpbench.splits.direct_edges import DirectEdgeError, DirectEdgeSet, validate_universe, verify_edge_set
+from rbpbench.splits.direct_edges import DirectEdgeError, DirectEdgeSet, edges_sha256, validate_universe, verify_edge_set
 
 REQUIRED_WIDTHS: tuple[int, ...] = tuple(sorted(_WIDTH_COVERAGE))
 
@@ -84,6 +84,7 @@ def build_components_v2(
     metadata = {
         "direct_edges_by_width": {str(w): direct_edges_by_width[w].metadata() for w in REQUIRED_WIDTHS},
         "exact_rc_edge_count": len(exact),
+        "exact_rc_edges_sha256": edges_sha256(exact),
     }
     return ComponentsV2Result(membership=membership, summary=summary, metadata=metadata)
 

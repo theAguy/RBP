@@ -46,6 +46,11 @@ def _check_width(width: int) -> None:
         raise UnknownWidthError(f"width {width!r} is not one of the frozen protected widths {sorted(_WIDTH_COVERAGE)}")
 
 
+def edges_sha256(edges: Iterable[tuple[str, str]]) -> str:
+    """SHA-256 of the sorted two-column serialization of already-normalized edges."""
+    return hashlib.sha256(_serialize(edges)).hexdigest()
+
+
 def _serialize(edges: Iterable[tuple[str, str]]) -> bytes:
     return "".join(f"{a}\t{b}\n" for a, b in edges).encode("utf-8")
 
@@ -82,7 +87,7 @@ def parse_direct_edge_lines(lines: Iterable[str], *, width: int, universe: Itera
     duplicate/reversed pairs collapsed.
     """
     _check_width(width)
-    ids = universe if isinstance(universe, frozenset) else validate_universe(universe)
+    ids = validate_universe(universe)
     pairs: set[tuple[str, str]] = set()
     raw = selfs = 0
     for lineno, raw_line in enumerate(lines, start=1):
@@ -162,4 +167,5 @@ __all__ = [
     "write_normalized_edges",
     "read_normalized_edges",
     "verify_edge_set",
+    "edges_sha256",
 ]

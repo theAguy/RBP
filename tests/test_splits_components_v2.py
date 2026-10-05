@@ -121,6 +121,14 @@ class ParserTests(unittest.TestCase):
         with self.assertRaises(DirectEdgeError):  # edge set built over a larger universe
             build_components_v2(["a", "b"], {w: edges(w, ["a\tc"], U) for w in (500, 251, 101)}, [])
 
+    def test_frozenset_universe_validated(self):
+        for bad in (frozenset(), frozenset(["a", "b\tc"]), frozenset(["a", "b\n"]), frozenset(["a", ""])):
+            with self.assertRaises(DirectEdgeError):
+                edges(500, [], universe=bad)
+            with self.assertRaises(DirectEdgeError):
+                edges(500, ["a\tb"], universe=bad)
+        self.assertEqual(edges(500, ["a\tb"], universe=frozenset(U)).edges, (("a", "b"),))
+
     def test_unknown_width(self):
         with self.assertRaises(UnknownWidthError):
             edges(7, [])
@@ -157,6 +165,19 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaises(DirectEdgeError):
             build_components_v2(U, by_width, [("a", "zzz")])
 
+    def test_exact_rc_digest(self):
+        import hashlib
+
+        def digest(pairs):
+            return build_components_v2(U, empty_all(), pairs).metadata["exact_rc_edges_sha256"]
+
+        base = digest([("a", "b"), ("c", "d")])
+        self.assertEqual(base, digest([("d", "c"), ("b", "a"), ("a", "b"), ("e", "e")]))
+        self.assertEqual(base, hashlib.sha256(b"a\tb\nc\td\n").hexdigest())
+        self.assertNotEqual(base, digest([("a", "b"), ("c", "e")]))
+        self.assertNotEqual(base, digest([("a", "b")]))
+        self.assertEqual(digest([]), hashlib.sha256(b"").hexdigest())
+
     def test_order_independence_and_hash_ids(self):
         rows = {500: ["a\tb", "c\td"], 251: ["b\tc"], 101: ["e\tf"]}
         base = None
@@ -192,8 +213,8 @@ class ComponentTests(unittest.TestCase):
 
     def test_legacy_membership_may_omit_direct_edge(self):
         # Legacy cluster TSV: rep a with member c; b is its own cluster. A
-        # qualifying direct a-b hit exists but clustering did not co-cluster
-        # them (greedy cluster membership is not an edge list).
+        # qualifying direct a-b hit exists but the cluster result does not
+        # co-cluster them (cluster membership is not a direct-edge list).
         legacy = parse_cluster_tsv_lines(["a\ta", "a\tc", "b\tb", "d\td", "e\te", "f\tf"])
         v1 = build_components(U, [membership_edges(legacy)])
         self.assertNotEqual(v1["a"], v1["b"])  # v1 relation misses the pair

@@ -199,9 +199,10 @@ because the two relations differ:
 
 - **v1 cluster co-membership (historical).** `mmseqs createtsv` over a
   *cluster* result (`representative<TAB>member`, parsed by
-  `rbpbench.splits.membership`). Greedy clustering may leave two sequences
-  that satisfy the pairwise predicate in different clusters, so this is
-  **not** a direct edge list and must never be fed to the v2 parser.
+  `rbpbench.splits.membership`). The v1 cluster result may leave sequences
+  satisfying the direct predicate in different clusters; it is not a
+  direct-edge list or a complete closure of the later audit relation, and
+  must never be fed to the v2 parser.
 - **v2 normalized direct-search edges (the leakage relation).** Two-column
   `query<TAB>target` output of an all-vs-all `mmseqs search`, built by
   `commands.components_v2_direct_search_command`: the audit's exact
@@ -220,7 +221,8 @@ singletons, takes the transitive closure across and within widths, and
 names components by the hash of their sorted member IDs. It fails closed on
 a missing/extra width, mismatched or tampered edge set, or endpoint outside
 the universe, and returns membership, a summary, and metadata (per-width
-counts and hashes, exact/RC edge count) for a later runner. Resource
+counts and hashes, exact/RC edge count and the SHA-256 of the normalized
+exact/RC relation) for a later runner. Resource
 probing (R2) and the full edge discovery run (R3) are separate checkpoints;
 v1 evidence is unchanged.
 

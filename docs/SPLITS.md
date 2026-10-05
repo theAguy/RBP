@@ -228,5 +228,23 @@ v1 evidence is unchanged.
 
 Focused tests: `PYTHONPATH=src python3 -m unittest tests.test_splits_components_v2`.
 
+### Task 002C-R2 resource probe (probe-only; implementation synthetic so far)
+
+`rbpbench.splits.resource_probe_r2` measures, before any full run is
+authorized, the memory/disk/time/output cost of the components-v2 direct
+search. It searches a deterministic label-blind 10,000-ID query subset
+(the same IDs at every width) against the complete 361,180-row width
+database, using only `components_v2_direct_search_command` plus a
+`--threads` cap of at most 4, in the fixed stages `probe_500`, `probe_251`,
+`probe_101`. It projects with the 36.118 linear scale and a separately
+labelled 1.5 safety factor (database creation is reported unscaled), runs
+live RSS/disk/temp/swap/memory-pressure supervision, and stops without retry
+on any failure or gate crossing. **Probe output is resource evidence only: no
+probe edge is scientific component evidence**, and the module has no
+normalized-edge writer, components-v2 build, full-query database, assignment,
+audit, or R3 stage. R2 uses separate query/target databases; R3's
+same-database search is not claimed to behave identically. Tests:
+`PYTHONPATH=src python3 -m unittest tests.test_splits_resource_probe_r2`.
+
 Each checkpoint requires its own executor handoff and review; this
 implementation does not silently continue into a later checkpoint.

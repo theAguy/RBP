@@ -255,5 +255,27 @@ after the width deadline is rejected even if it already exited. R2 uses separate
 same-database search is not claimed to behave identically. Tests:
 `PYTHONPATH=src python3 -m unittest tests.test_splits_resource_probe_r2`.
 
+### Task 002C-R2P portable probe package (source/tests only)
+
+`scripts/build_002c_r2_portable_bundle.py` (explicit repo, destination,
+runtime and decode-directory arguments; refuses a dirty tree or an existing
+destination) and `rbpbench.splits.portable_002c_r2` (the launcher, separate
+from the 002C-3/4 launcher) define a single-use offline package: `src/rbpbench`,
+the tracked decode manifest, the three manifest-bound decode FASTAs, the native
+arm64 runtime, `R2_PACKAGE_CONFIG.json`, a runbook, and one
+`RUN_002C_R2_PROBE.command`. `R2_INPUT_MANIFEST.json` (+ `.sha256`) binds every
+regular file and symlink; the launcher verifies it, and rejects any unlisted
+file, BEFORE opening a FASTA or starting a tool, then checks Darwin/arm64, the
+bundled interpreter, the frozen MMseqs2 hash/version, the manifest-bound
+FASTAs, 64 GiB installed / 24 GiB available RAM, 100 GiB free disk, and absent
+`r2_output/`, `return/`, `execution_logs/`. It calls only
+`resource_probe_r2.run_probe` (fixed `probe_500`, `probe_251`, `probe_101`; no
+stage selector, no direct-edge/components/assignment/audit/R3 path), stops at
+the first failure, and always attempts one `RBP_002C_R2_RETURN_<UTC>_<host>.zip`
+with STATUS, manifest, inventory, checksums, commands, logs, selection and
+path/size/hash records for excluded raw artifacts, guarded against sequence
+content. A SUCCESS return is not authorization for R3. Tests:
+`PYTHONPATH=src python3 -m unittest tests.test_splits_portable_002c_r2`.
+
 Each checkpoint requires its own executor handoff and review; this
 implementation does not silently continue into a later checkpoint.

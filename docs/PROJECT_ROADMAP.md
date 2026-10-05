@@ -4,7 +4,8 @@
 investigation and comparison of the former teammate's 122-protein RBP model.
 
 **Last updated:** 2026-10-05
-**Current stage:** Task 002C-R2P portable guarded-probe package implementation
+**Current stage:** Task 002C-R2 portable resource-probe package built; awaiting
+one collaborator execution on the 64-GiB Apple-Silicon Mac
 probes that precede components-v2 rebuilding
 
 **Model comparison status:** not started; the benchmark split must be frozen

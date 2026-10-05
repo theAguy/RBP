@@ -1,0 +1,49 @@
+{
+  "archive": {
+    "byte_size": 169214517,
+    "path": "artifacts/portable/RBP_Task002C_R2_Probe.tar.gz",
+    "sha256": "5a90ca98e79a6dfb483ce72ae82482d15f054fd6acf6313a9cda4283ccef49f8"
+  },
+  "archive_verification": {
+    "method": "scripts/build_002c_r2_portable_bundle.py:verify_archive",
+    "verified_entry_count": 6959
+  },
+  "bundle": {
+    "bundle_summary_sha256": "faf6d7282a39e734f8b323fbcc7d4d234b1d4f72abc8b6f8b5c41a8ad620cd41",
+    "config_sha256": "b8c28981f73cf96931105821b65444a796dc33b4cfec594d0e45dda7fda5a3f9",
+    "input_manifest_byte_size": 1506482,
+    "input_manifest_sha256": "696512ae23e65445a65ac55f65ec334d0e46fbbe9dd23f971bfe8c214c0f62b6",
+    "path": "artifacts/portable/RBP_Task002C_R2_Probe"
+  },
+  "checkpoint": "002C-R2P portable-package build",
+  "execution_boundary": {
+    "real_mmseqs2_launched": false,
+    "r3_started": false,
+    "resource_probe_run": false
+  },
+  "frozen_inputs": {
+    "decode_manifest_sha256": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3",
+    "environment_lock_sha256": "cf2a18589d0973c4b71aef45812d634fafb4bef26d8f747e0c38587bd39e2b12",
+    "expected_mmseqs_sha256": "3fa397a9af5f8142ab8df13cc3e19b3aefc91cb9908d9c147883c8ac4162db0d",
+    "expected_mmseqs_version": "18.8cc5c",
+    "probe_seed": 20260925,
+    "runtime_manifest_sha256": "bc07ee51a46f9c8cc654d4be1dfd104836acaecd142af2fd16ee7c430e81ba68"
+  },
+  "runtime_manifest_derivation": {
+    "accepted_outer_manifest_sha256": "442f5c85a92101cb6476b5a878be6afd11a78cb6ee82d46ef1943c484ab73e8b",
+    "entry_count": 6927,
+    "note": "The accepted outer inventory supplied 6,925 runtime entries. Two internal directory symlinks omitted by that older inventory were included only after their targets and all material descendants were confirmed to remain inside the runtime and already be covered by the accepted outer inventory.",
+    "verified_internal_directory_symlinks": [
+      {
+        "path": "lib/icu/current",
+        "target": "78.3"
+      },
+      {
+        "path": "lib/terminfo",
+        "target": "../share/terminfo"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "source_commit": "82d085e"
+}

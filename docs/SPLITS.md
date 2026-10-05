@@ -191,5 +191,40 @@ the real binary in `tests/test_splits_real_binaries.py`).
   direct pairwise similarity edge, and the diagnostic reports per-width
   `cluster_boundary_by_width` counts/rates accordingly.
 
+## Components v2 (Task 002C-R1; synthetic implementation only)
+
+The v1 assignment failed the direct cross-partition audit
+(`docs/reviews/002c3_cross_partition_failure_and_component_rebuild_plan.md`),
+because the two relations differ:
+
+- **v1 cluster co-membership (historical).** `mmseqs createtsv` over a
+  *cluster* result (`representative<TAB>member`, parsed by
+  `rbpbench.splits.membership`). Greedy clustering may leave two sequences
+  that satisfy the pairwise predicate in different clusters, so this is
+  **not** a direct edge list and must never be fed to the v2 parser.
+- **v2 normalized direct-search edges (the leakage relation).** Two-column
+  `query<TAB>target` output of an all-vs-all `mmseqs search`, built by
+  `commands.components_v2_direct_search_command`: the audit's exact
+  scientific flags (`--search-type 3 --strand 2 --cov-mode 0 --max-seqs 361180
+  --alignment-mode 3 -e 1000 --mask 0 -s 7.5`, identity 0.90, coverage
+  0.80/0.95/0.95 at 500/251/101 nt), no cluster-only flags, and no
+  identity/coverage/`--max-seqs` parameters.
+
+`rbpbench.splits.direct_edges` strictly parses each width's TSV against the
+full canonical-ID universe (exactly two non-empty IDs; foreign IDs fail;
+self-pairs dropped; pairs canonicalized to `(min, max)` and de-duplicated)
+and writes/reads a sorted, content-hashable `a<TAB>b` artifact with no
+sequences or labels. `rbpbench.splits.components_v2.build_components_v2`
+takes the three widths' edge sets plus separate exact/RC edges, keeps
+singletons, takes the transitive closure across and within widths, and
+names components by the hash of their sorted member IDs. It fails closed on
+a missing/extra width, mismatched or tampered edge set, or endpoint outside
+the universe, and returns membership, a summary, and metadata (per-width
+counts and hashes, exact/RC edge count) for a later runner. Resource
+probing (R2) and the full edge discovery run (R3) are separate checkpoints;
+v1 evidence is unchanged.
+
+Focused tests: `PYTHONPATH=src python3 -m unittest tests.test_splits_components_v2`.
+
 Each checkpoint requires its own executor handoff and review; this
 implementation does not silently continue into a later checkpoint.

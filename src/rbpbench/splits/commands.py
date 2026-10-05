@@ -212,6 +212,26 @@ def audit_search_command(
     return ToolCommand(tool="mmseqs_search", argv=argv, pinned_version=PINNED_VERSION)
 
 
+def components_v2_direct_search_command(
+    query_db: Path, target_db: Path, result_prefix: Path, tmp_dir: Path, *, width: int, mmseqs_bin: str = "mmseqs"
+) -> ToolCommand:
+    """Builds the components-v2 all-vs-all DIRECT search command: the
+    leakage relation used to rebuild components, NOT an audit.
+
+    Scientifically identical to :func:`audit_search_command` (same frozen
+    identity/coverage/``--max-seqs`` and ``--search-type 3 --strand 2
+    --alignment-mode 3 -e 1000 --mask 0 -s 7.5`` flags), so the relation
+    that defines components is the relation the cross-partition audit
+    checks. Contains no ``--single-step-clustering`` or other cluster-only
+    option. ``query_db`` and ``target_db`` are explicit (the full-width
+    database for both in the later full run); an unknown ``width`` raises
+    :class:`UnknownWidthError` before any subprocess could start. No
+    identity/coverage/``--max-seqs`` parameter exists.
+    """
+    command = audit_search_command(query_db, target_db, result_prefix, tmp_dir, width=width, mmseqs_bin=mmseqs_bin)
+    return ToolCommand(tool="mmseqs_components_v2_search", argv=command.argv, pinned_version=command.pinned_version)
+
+
 def createtsv_search_command(query_db: Path, target_db: Path, result_prefix: Path, output_tsv: Path, *, mmseqs_bin: str = "mmseqs") -> ToolCommand:
     """``mmseqs createtsv QUERY TARGET RESULT OUTPUT``: renders
     :func:`audit_search_command`'s result DB as ``query<TAB>target`` hit
@@ -378,6 +398,7 @@ __all__ = [
     "cluster_command",
     "createtsv_command",
     "audit_search_command",
+    "components_v2_direct_search_command",
     "createtsv_search_command",
     "resolve_mmseqs_binary_provenance",
     "MmseqsExecutionError",

@@ -273,7 +273,7 @@ def analyze_probe_result(lines: Iterable[str], *, selected_ids: Iterable[str], u
         group_targets.add(t)
         distinct_targets.add(t)
         counts[q] += 1
-        row_bytes = len(raw.encode("utf-8")) + (0 if raw.endswith("\n") else 1)
+        row_bytes = len(raw.encode("utf-8"))  # exactly the bytes supplied; no synthetic newline
         nbytes[q] += row_bytes
         total_bytes += row_bytes
         rows += 1
@@ -557,7 +557,10 @@ def run_supervised(
             if violation:
                 _kill_process_group(proc)
                 raise ProbeResourceError(f"{command.tool}: {violation}: {format_command(command.argv)}")
-    elapsed = monitors.clock() - start
+    now = monitors.clock()
+    elapsed = now - start
+    if now > deadline:  # a child that exited between polls after the deadline is not accepted
+        raise ProbeResourceError(f"{command.tool}: width deadline passed before its exit was observed (elapsed {elapsed:.1f}s)")
     size = monitors.dir_size_bytes(output_dir)
     ev["peak_dir_bytes"] = max(ev["peak_dir_bytes"], size)
     free = monitors.free_disk_gib(output_dir)
@@ -649,6 +652,7 @@ def run_probe_stage(
     free = monitors.free_disk_gib(output_root)
     if free < limits.min_free_disk_gib_before_width:
         raise ProbeResourceError(f"free disk {free:.2f} GiB before {stage} below {limits.min_free_disk_gib_before_width}")
+    stage_start_free = free  # whole-width start: before candidate generation and subset-query writing
     gen = new_generation_dir(output_root, prefix=stage)
     logs, tmp_dir = gen / "logs", gen / "tmp"
     tmp_dir.mkdir()
@@ -660,7 +664,6 @@ def run_probe_stage(
     deadline = monitors.clock() + limits.timeout_seconds_per_width
     run = lambda cmd: run_supervised(cmd, log_dir=logs, output_dir=gen, monitors=monitors, limits=limits,
                                      deadline=deadline, poll_interval=poll_interval, binary=binary)
-    stage_start_free = monitors.free_disk_gib(output_root)
     steps: dict[str, dict] = {}
     plan = (
         ("createdb_query", lambda: createdb_command(query_fasta, qdb, mmseqs_bin=mmseqs_bin)),

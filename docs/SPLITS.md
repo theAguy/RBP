@@ -249,7 +249,9 @@ and both are subject to the 1.5x heterogeneity gate, the transient-disk
 projection uses the whole width stage's free-disk minimum, the retained
 figure is an upper bound `max(raw result DB, rendered TSV)`, peak RSS also
 includes a post-run child measurement, and MMseqs2 warnings stop the stage
-before the next command. R2 uses separate query/target databases; R3's
+before the next command. Block bytes are the exact supplied TSV bytes, the whole-width disk
+measurement starts before candidate-generation/subset writing, and a child observed
+after the width deadline is rejected even if it already exited. R2 uses separate query/target databases; R3's
 same-database search is not claimed to behave identically. Tests:
 `PYTHONPATH=src python3 -m unittest tests.test_splits_resource_probe_r2`.
 

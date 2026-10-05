@@ -629,6 +629,45 @@ class CorrectionTests(ProbeBase):
             r2.read_fasta_strict(p, width=101, universe=frozenset(["", "row_1"]))
 
 
+class FinalCorrectionTests(ProbeBase):
+    def test_g1_exact_bytes_without_trailing_newline(self):
+        sel = ["row_0", "row_1"]
+        rows = ["row_0\trow_0\n", "row_0\trow_7\n", "row_1\trow_1"]  # last line unterminated
+        m = r2.analyze_probe_result(rows, selected_ids=sel, universe=[f"row_{i}" for i in range(10)])
+        raw = "".join(rows).encode("utf-8")
+        self.assertEqual(m["bytes"], len(raw))
+        self.assertEqual(sum(b["bytes"] for b in m["blocks"]), len(raw))
+        m2 = r2.analyze_probe_result(rows[:2] + [rows[2] + "\n"], selected_ids=sel, universe=[f"row_{i}" for i in range(10)])
+        self.assertEqual(m2["bytes"], len(raw) + 1)
+
+    def test_g2_setup_included_in_stage_disk_measurement(self):
+        root = self.root / "out"
+
+        def free(p):
+            return 450.0 if any(root.rglob("query_*.fasta")) else 500.0  # only subset creation drops disk
+
+        with self.assertRaises(ProbeGateFailure):
+            self.run_probe(monitors=good_monitors(free_disk_gib=free))
+        measured = json.loads((root / "stopped.json").read_text())["record"]["measured"]
+        self.assertEqual(measured["stage_start_free_disk_gib"], 500.0)
+        self.assertEqual(measured["stage_min_free_disk_gib"], 450.0)
+        self.assertEqual(measured["transient_free_disk_drop_gib"], 50.0)
+
+    def test_g3_deadline_enforced_after_child_exit(self):
+        calls = {"n": 0}
+
+        def clock():
+            calls["n"] += 1
+            return 0.0 if calls["n"] <= 2 else 1.0e6  # deadline set, child launched, then observed after deadline
+
+        with self.assertRaises(ProbeResourceError) as ctx:
+            r2.run_probe(self.root / "o3", fasta_paths=self.fastas, universe=self.ids, seed=7, mmseqs_bin=str(self.fake),
+                         binary=Binary(), monitors=good_monitors(clock=clock), sample_size=10, poll_interval=30.0)
+        self.assertIn("deadline", str(ctx.exception))
+        self.assertEqual(list((self.root / "o3" / "selected").glob("*.json")), [])
+        self.assertTrue((self.root / "o3" / "stopped.json").exists())
+
+
 class BoundaryTests(unittest.TestCase):
     def test_no_edge_component_or_r3_writer_in_probe_path(self):
         path = Path(r2.__file__)

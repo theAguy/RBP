@@ -30,6 +30,7 @@ from rbpbench.coordinates.commands import ToolCommand, format_command
 from rbpbench.coordinates.decode import fasta_record
 from rbpbench.coordinates.diskbudget import GIB, snapshot
 from rbpbench.coordinates.hashing import label_blind_rank
+from rbpbench.coordinates.provenance import peak_rss_kib_of_children
 from rbpbench.coordinates.preflight import detect_available_memory_gib, detect_physical_ram_gib
 from rbpbench.data.audit import sha256_file
 from rbpbench.splits.commands import (
@@ -109,13 +110,27 @@ def validate_stage(stage: str) -> int:
 # ------------------------------------------------------------- selection
 
 
+def validate_canonical_ids(ids: Iterable[str], *, what: str = "universe") -> frozenset[str]:
+    """R2-local canonical-ID contract: every ID a non-empty string without
+    tab/CR/LF, present exactly once, and the collection non-empty."""
+    seen: set[str] = set()
+    for sid in ids:
+        if not isinstance(sid, str) or not sid or any(c in sid for c in "\t\r\n"):
+            raise ProbeInputError(f"invalid canonical ID in {what}: {sid!r}")
+        if sid in seen:
+            raise ProbeInputError(f"duplicate canonical ID in {what}: {sid!r}")
+        seen.add(sid)
+    if not seen:
+        raise ProbeInputError(f"{what} is empty")
+    return frozenset(seen)
+
+
 def select_probe_ids(universe: Iterable[str], *, seed: int, sample_size: int = PROBE_QUERY_COUNT) -> dict:
     """Deterministic label-blind selection by the accepted rule
     (``sorted(ids, key=(label_blind_rank(seed, id), id))[:n]``), returned
     sorted with its digest. Only canonical IDs are used."""
     ids = list(universe)
-    if len(set(ids)) != len(ids):
-        raise ProbeInputError("duplicate canonical ID in universe")
+    validate_canonical_ids(ids)
     if sample_size < 1 or len(ids) < sample_size:
         raise ProbeInputError(f"universe of {len(ids)} cannot supply a {sample_size}-ID selection")
     ranked = sorted(ids, key=lambda sid: (label_blind_rank(seed, sid), sid))
@@ -133,6 +148,7 @@ def read_fasta_strict(path: Path, *, width: int, universe: frozenset[str]) -> di
     """Streaming strict reader: no duplicate header, exact width, ACGT only,
     and the ID set must equal ``universe`` exactly (a smaller/larger target
     is rejected). Returns records in file order."""
+    universe = validate_canonical_ids(universe)
     records: dict[str, str] = {}
     current: str | None = None
     chunks: list[str] = []
@@ -141,6 +157,7 @@ def read_fasta_strict(path: Path, *, width: int, universe: frozenset[str]) -> di
         if current is None:
             return
         seq = "".join(chunks)
+        validate_canonical_ids([current], what=f"{path} FASTA header")
         if current in records:
             raise ProbeInputError(f"{path}: duplicate FASTA header {current!r}")
         if len(seq) != width:
@@ -213,22 +230,28 @@ def _quantile(sorted_values: list[int], q: float) -> int:
 
 def analyze_probe_result(lines: Iterable[str], *, selected_ids: Iterable[str], universe: Iterable[str]) -> dict:
     """Streams a two-column ``query<TAB>target`` TSV into resource metrics
-    ONLY (counts/quantiles/block densities). It keeps no edge list and
-    emits no edge artifact. Query endpoints must be in the selection, target
-    endpoints in the full universe; malformed rows and duplicate (query,
-    target) rows fail; every selected query must hit itself (100%), no
-    per-query count may reach the 361,180 cap, and no 1,000-query block may
-    exceed 1.5x the overall density.
+    ONLY (counts/quantiles/per-block rows and bytes); no edge list or edge
+    artifact is kept. The raw output must be GROUPED BY QUERY: a query that
+    reappears after its group ended is rejected, and duplicate targets are
+    detected only inside the current group (that set is released before the
+    next query), so memory is bounded by one query's targets, never all
+    pairs. Query endpoints must be in the selection, targets in the full
+    universe; every selected query must hit itself (100%); no per-query
+    count may reach the 361,180 cap. Block row/byte heterogeneity is
+    evaluated separately by :func:`check_block_heterogeneity`.
     """
     selected = sorted(selected_ids)
     selected_set, universe_set = set(selected), set(universe)
     if len(selected_set) != len(selected) or not selected_set <= universe_set:
         raise ProbeResultError("selection must be unique and inside the universe")
     counts = {sid: 0 for sid in selected}
-    targets: set[str] = set()
-    seen: set[tuple[str, str]] = set()
-    self_hits: set[str] = set()
-    rows = 0
+    nbytes = {sid: 0 for sid in selected}
+    finished: set[str] = set()
+    current_q: str | None = None
+    group_targets: set[str] = set()
+    distinct_targets: set[str] = set()
+    self_hits = 0
+    rows = total_bytes = 0
     for lineno, raw in enumerate(lines, start=1):
         line = raw[:-1] if raw.endswith("\n") else raw
         parts = line.split("\t")
@@ -239,33 +262,45 @@ def analyze_probe_result(lines: Iterable[str], *, selected_ids: Iterable[str], u
             raise ProbeResultError(f"row {lineno}: query {q!r} is not in the selected probe IDs")
         if t not in universe_set:
             raise ProbeResultError(f"row {lineno}: target {t!r} is outside the universe")
-        if (q, t) in seen:
+        if q != current_q:
+            if q in finished:
+                raise ProbeResultError(f"row {lineno}: query {q!r} reappears after its group ended (output not grouped)")
+            if current_q is not None:
+                finished.add(current_q)
+            current_q, group_targets = q, set()
+        if t in group_targets:
             raise ProbeResultError(f"row {lineno}: duplicate result pair")
-        seen.add((q, t))
+        group_targets.add(t)
+        distinct_targets.add(t)
         counts[q] += 1
-        targets.add(t)
+        row_bytes = len(raw.encode("utf-8")) + (0 if raw.endswith("\n") else 1)
+        nbytes[q] += row_bytes
+        total_bytes += row_bytes
         rows += 1
         if q == t:
-            self_hits.add(q)
+            self_hits += 1
     n = len(selected)
-    self_rate = len(self_hits) / n
+    self_rate = self_hits / n
     if self_rate < 1.0:
-        raise ProbeResultError(f"self-hit rate {self_rate:.4f} < 1.0 ({n - len(self_hits)} queries lost their self hit)")
+        raise ProbeResultError(f"self-hit rate {self_rate:.4f} < 1.0 ({n - self_hits} queries lost their self hit)")
     ordered = sorted(counts.values())
     if ordered[-1] >= RESULT_CAP:
         raise ProbeResultError(f"a query reached the frozen {RESULT_CAP} result cap")
     distinct_queries = sum(1 for c in counts.values() if c > 0)
     if distinct_queries != n:
         raise ProbeResultError("distinct query count does not reconcile with the selection")
-    overall = rows / n
+    overall_rows, overall_bytes = rows / n, total_bytes / n
     blocks = []
     for start in range(0, n, BLOCK_SIZE):
-        block_ids = selected[start : start + BLOCK_SIZE]
-        blocks.append(sum(counts[s] for s in block_ids) / len(block_ids))
-    result = {
+        ids = selected[start : start + BLOCK_SIZE]
+        brows, bbytes = sum(counts[x] for x in ids), sum(nbytes[x] for x in ids)
+        blocks.append({"queries": len(ids), "rows": brows, "bytes": bbytes,
+                       "rows_per_query": brows / len(ids), "bytes_per_query": bbytes / len(ids)})
+    return {
         "rows": rows,
+        "bytes": total_bytes,
         "distinct_queries": distinct_queries,
-        "distinct_targets": len(targets),
+        "distinct_targets": len(distinct_targets),
         "self_hit_rate": self_rate,
         "hit_count_quantiles": {
             "min": ordered[0],
@@ -274,20 +309,22 @@ def analyze_probe_result(lines: Iterable[str], *, selected_ids: Iterable[str], u
             "p99": _quantile(ordered, 0.99),
             "max": ordered[-1],
         },
-        "overall_density": overall,
-        "block_densities": blocks,
+        "overall_density": overall_rows,
+        "overall_bytes_per_query": overall_bytes,
+        "blocks": blocks,
         "result_cap_reached": False,
-        "block_density_ratio_max": max(blocks) / overall,
+        "block_density_ratio_max": max(b["rows_per_query"] for b in blocks) / overall_rows,
+        "block_bytes_density_ratio_max": max(b["bytes_per_query"] for b in blocks) / overall_bytes,
     }
-    return result
 
 
 def check_block_heterogeneity(metrics: Mapping, limits: ProbeLimits) -> None:
-    if metrics["block_density_ratio_max"] > limits.block_density_ratio:
-        raise ProbeGateFailure(
-            f"block density is {metrics['block_density_ratio_max']:.3f}x the overall density, over "
-            f"{limits.block_density_ratio}x: the 1.5 safety envelope is invalid"
-        )
+    for key, label in (("block_density_ratio_max", "rows/query"), ("block_bytes_density_ratio_max", "bytes/query")):
+        if metrics[key] > limits.block_density_ratio:
+            raise ProbeGateFailure(
+                f"block {label} density is {metrics[key]:.3f}x the overall density, over "
+                f"{limits.block_density_ratio}x: the 1.5 safety envelope is invalid"
+            )
 
 
 # ------------------------------------------------------------ projections
@@ -299,8 +336,10 @@ def project_width(measured: Mapping, limits: ProbeLimits = ProbeLimits()) -> dic
     memory is NOT scaled by query count: observed peak and a 1.5x envelope.
 
     ``measured``: search_seconds, createtsv_seconds, db_creation_seconds,
-    peak_rss_gib, result_bytes (rendered TSV), retained_bytes, and
-    transient_free_disk_drop_gib (start free - minimum free during run).
+    peak_rss_gib, result_bytes (rendered TSV), retained_upper_bound_bytes
+    (max of raw result-DB and rendered-TSV bytes; an UPPER-BOUND estimate,
+    not actual R3 retained output), and transient_free_disk_drop_gib (whole
+    width stage: start free - minimum free across all four commands).
     """
 
     def pair(value: float) -> dict:
@@ -313,7 +352,8 @@ def project_width(measured: Mapping, limits: ProbeLimits = ProbeLimits()) -> dic
         "search_seconds": search,
         "createtsv_seconds": pair(measured["createtsv_seconds"]),
         "rendered_bytes": pair(measured["result_bytes"]),
-        "retained_gib": pair(measured["retained_bytes"] / GIB),
+        "retained_gib": pair(measured["retained_upper_bound_bytes"] / GIB),
+        "retained_note": "upper-bound estimate: max(raw result DB, rendered TSV); not actual R3 retained output",
         "transient_disk_gib": pair(measured["transient_free_disk_drop_gib"]),
         "db_creation_seconds_unscaled": measured["db_creation_seconds"],
         "peak_rss_gib": {
@@ -422,6 +462,7 @@ class ResourceMonitors:
     swap_used_bytes: Callable[[], tuple[str, int | None]] = macos_swap_used_bytes
     memory_pressure: Callable[[], tuple[str, str | None]] = macos_memory_pressure
     clock: Callable[[], float] = time.monotonic
+    children_peak_rss_kib: Callable[[], int | None] = peak_rss_kib_of_children
 
 
 def check_pre_launch(monitors: ResourceMonitors, limits: ProbeLimits, *, label: str, disk_path: Path) -> dict:
@@ -440,6 +481,13 @@ def check_pre_launch(monitors: ResourceMonitors, limits: ProbeLimits, *, label: 
     if state != "normal":
         raise ProbeResourceError(f"memory pressure before {label!r} is {state!r} (raw {raw_pressure!r}), not normal")
     return {"installed_ram_gib": installed, "available_ram_gib": available, "free_disk_gib": free}
+
+
+_WARNING_RE = re.compile(
+    r"^\s*(warning|error)\b|multi-?part|split(?:s|ting)? (?:the )?(?:target|database|db)\b|splits? into \d+|"
+    r"split-memory-limit|override|out of memory|cannot fit|bad_alloc|\boom\b|truncat",
+    re.I,
+)
 
 
 def run_supervised(
@@ -525,8 +573,20 @@ def run_supervised(
         raise ProbeResourceError(f"{command.tool}: output ceiling or disk floor crossed at exit")
     if rc != 0:
         raise ProbeResourceError(f"{command.tool} exited {rc}: {format_command(command.argv)}; see {err_path}")
+    child_peak = monitors.children_peak_rss_kib()
+    if child_peak is None:
+        raise ProbeResourceError(f"{command.tool}: post-run child peak RSS is unavailable (fail closed)")
+    live_peak = ev["peak_rss_kib"]
+    ev["peak_rss_kib"] = max(live_peak, child_peak)
+    ev["peak_rss_source"] = {
+        "live_sampler_kib": live_peak,
+        "cumulative_children_kib": child_peak,
+        "used": "max of both",
+        "limitation": "cumulative-children ru_maxrss is a running maximum over all reaped children, so it can only "
+        "overstate this command; a child finishing before the first poll is covered only by it",
+    }
     stderr_text = err_path.read_text(errors="replace") + out_path.read_text(errors="replace")
-    warnings = [ln for ln in stderr_text.splitlines() if re.search(r"warning|split|out of memory|oom|truncat", ln, re.I)]
+    warnings = [ln for ln in stderr_text.splitlines() if _WARNING_RE.search(ln)]
     return {
         "tool": command.tool,
         "command_text": format_command(command.argv),
@@ -600,20 +660,25 @@ def run_probe_stage(
     deadline = monitors.clock() + limits.timeout_seconds_per_width
     run = lambda cmd: run_supervised(cmd, log_dir=logs, output_dir=gen, monitors=monitors, limits=limits,
                                      deadline=deadline, poll_interval=poll_interval, binary=binary)
-    steps = {
-        "createdb_query": run(createdb_command(query_fasta, qdb, mmseqs_bin=mmseqs_bin)),
-        "createdb_target": run(createdb_command(target_fasta, tdb, mmseqs_bin=mmseqs_bin)),
-        "search": run(probe_search_command(qdb, tdb, res, tmp_dir, width=width, threads=threads, mmseqs_bin=mmseqs_bin)),
-        "createtsv": run(createtsv_search_command(qdb, tdb, res, tsv, mmseqs_bin=mmseqs_bin)),
-    }
-    for name, step in steps.items():
-        if step["warnings"] and name in ("search", "createdb_target"):
-            raise ProbeResourceError(f"{stage} {name} emitted MMseqs2 warning(s): {step['warnings'][:3]}")
+    stage_start_free = monitors.free_disk_gib(output_root)
+    steps: dict[str, dict] = {}
+    plan = (
+        ("createdb_query", lambda: createdb_command(query_fasta, qdb, mmseqs_bin=mmseqs_bin)),
+        ("createdb_target", lambda: createdb_command(target_fasta, tdb, mmseqs_bin=mmseqs_bin)),
+        ("search", lambda: probe_search_command(qdb, tdb, res, tmp_dir, width=width, threads=threads, mmseqs_bin=mmseqs_bin)),
+        ("createtsv", lambda: createtsv_search_command(qdb, tdb, res, tsv, mmseqs_bin=mmseqs_bin)),
+    )
+    for name, build in plan:
+        steps[name] = run(build())
+        if steps[name]["warnings"]:  # stop BEFORE launching the next command
+            raise ProbeResourceError(f"{stage} {name} emitted MMseqs2 warning(s): {steps[name]['warnings'][:3]}")
     with tsv.open() as handle:
         metrics = analyze_probe_result(handle, selected_ids=selected_ids, universe=universe)
     check_block_heterogeneity(metrics, limits)
     result_bytes = tsv.stat().st_size
-    retained = sum(p.stat().st_size for p in gen.glob("result*") if p.is_file())
+    result_db_bytes = sum(p.stat().st_size for p in gen.glob("result*") if p.is_file() and p != tsv)
+    retained_upper = max(result_db_bytes, result_bytes)
+    stage_min_free = min([stage_start_free] + [st["min_free_disk_gib"] for st in steps.values()])
     search = steps["search"]
     measured = {
         "search_seconds": search["elapsed_seconds"],
@@ -621,8 +686,12 @@ def run_probe_stage(
         "db_creation_seconds": steps["createdb_query"]["elapsed_seconds"] + steps["createdb_target"]["elapsed_seconds"],
         "peak_rss_gib": max(s["peak_rss_kib"] for s in steps.values()) / (1024**2),
         "result_bytes": result_bytes,
-        "retained_bytes": retained,
-        "transient_free_disk_drop_gib": max(0.0, search["start_free_disk_gib"] - search["min_free_disk_gib"]),
+        "raw_result_db_bytes": result_db_bytes,
+        "rendered_tsv_bytes": result_bytes,
+        "retained_upper_bound_bytes": retained_upper,
+        "stage_start_free_disk_gib": stage_start_free,
+        "stage_min_free_disk_gib": stage_min_free,
+        "transient_free_disk_drop_gib": max(0.0, stage_start_free - stage_min_free),
     }
     projection = project_width(measured, limits)
     failures = evaluate_width_gates(projection, limits)
@@ -665,7 +734,7 @@ def run_probe(
     ``stopped.json`` for failures. Returns the SUCCESS summary. Never
     continues into any later task."""
     monitors = monitors or ResourceMonitors()
-    uni = frozenset(universe)
+    uni = validate_canonical_ids(universe)
     if set(fasta_paths) != set(STAGE_WIDTH.values()):
         raise ProbeInputError(f"fasta_paths must cover exactly widths {sorted(STAGE_WIDTH.values())}")
     root = prepare_output_root(output_root)
@@ -743,7 +812,7 @@ def write_return_summary(output_root: Path, path: Path) -> str:
 
 __all__ = [
     "PROBE_STAGES", "ProbeLimits", "ProbeError", "ProbeInputError", "ProbeResultError", "ProbeResourceError",
-    "ProbeGateFailure", "ResourceMonitors", "validate_stage", "select_probe_ids", "read_fasta_strict",
+    "ProbeGateFailure", "ResourceMonitors", "validate_stage", "validate_canonical_ids", "select_probe_ids", "read_fasta_strict",
     "write_subset_query_fasta", "probe_search_command", "analyze_probe_result", "check_block_heterogeneity",
     "project_width", "evaluate_width_gates", "evaluate_total_gates", "run_supervised", "run_probe_stage", "run_probe",
     "prepare_output_root", "build_return_summary", "write_return_summary",

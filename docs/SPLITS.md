@@ -242,7 +242,14 @@ live RSS/disk/temp/swap/memory-pressure supervision, and stops without retry
 on any failure or gate crossing. **Probe output is resource evidence only: no
 probe edge is scientific component evidence**, and the module has no
 normalized-edge writer, components-v2 build, full-query database, assignment,
-audit, or R3 stage. R2 uses separate query/target databases; R3's
+audit, or R3 stage. Result parsing is bounded streaming: the raw
+`createtsv` output must be grouped by query (duplicates are checked only
+within the current query), per-block rows *and bytes* per query are reported
+and both are subject to the 1.5x heterogeneity gate, the transient-disk
+projection uses the whole width stage's free-disk minimum, the retained
+figure is an upper bound `max(raw result DB, rendered TSV)`, peak RSS also
+includes a post-run child measurement, and MMseqs2 warnings stop the stage
+before the next command. R2 uses separate query/target databases; R3's
 same-database search is not claimed to behave identically. Tests:
 `PYTHONPATH=src python3 -m unittest tests.test_splits_resource_probe_r2`.
 

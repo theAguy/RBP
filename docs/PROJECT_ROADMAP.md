@@ -4,8 +4,8 @@
 investigation and comparison of the former teammate's 122-protein RBP model.
 
 **Last updated:** 2026-10-05
-**Current stage:** Task 002C-R2 planning, resource probes for rebuilding
-components from the direct audit-search relation
+**Current stage:** Task 002C-R2 portable-package preparation for resource
+probes that precede components-v2 rebuilding
 
 **Model comparison status:** not started; the benchmark split must be frozen
 first
@@ -378,9 +378,10 @@ searches and finalization were correctly not run.
 The correction is **components v2**: run the frozen direct search all-vs-all
 at each protected width, normalize its pairwise edges, union them with exact/RC
 edges, and rebuild connected components before reassignment. The synthetic
-components-v2 core is accepted. The current R2 checkpoint will measure the
-resource cost on a deterministic 10,000-query/full-target probe before any full
-edge discovery is authorized.
+components-v2 core and the synthetic guarded R2 probe core are accepted. The
+current R2 boundary is portable-package preparation; its deterministic
+10,000-query/full-target probe will measure resource cost before any full edge
+discovery is authorized.
 
 ### 12.4 Freeze the final split
 

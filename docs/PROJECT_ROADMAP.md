@@ -3,9 +3,9 @@
 **Purpose:** provide one plain-language, end-to-end source of truth for the
 investigation and comparison of the former teammate's 122-protein RBP model.
 
-**Last updated:** 2026-09-30  
-**Current stage:** Task 002C-3, fresh MMseqs2 cross-partition similarity audits
-for the accepted component assignment
+**Last updated:** 2026-10-05
+**Current stage:** Task 002C-R2 planning, resource probes for rebuilding
+components from the direct audit-search relation
 
 **Model comparison status:** not started; the benchmark split must be frozen
 first
@@ -62,8 +62,8 @@ negatives.
 | 0. Repository and data audit | Freeze inputs, hashes, schemas, and label meanings | Complete |
 | 1. Coordinate feasibility | Test whether genomic coordinates can be recovered safely | Deferred; not required for the core comparison |
 | 2A. Sequence decoding | Convert bit-encoded sequences to validated nucleotide strings | Complete |
-| 2B. Similarity grouping | Identify related sequences at 500, 251, and 101 nt | Complete and accepted |
-| 2C. Partition construction | Assign intact groups to train/validation/test and audit leakage | In progress |
+| 2B. Similarity grouping | Identify related sequences at 500, 251, and 101 nt | v1 preserved; insufficient for the direct audit |
+| 2C. Partition construction | Assign intact groups to train/validation/test and audit leakage | v1 rejected; components-v2 rebuild in progress |
 | 3. Simple baselines | Establish how far trivial sequence properties can predict binding | Not started |
 | 4. Development pilot | Verify model implementations and compute requirements on eight proteins | Not started |
 | 5. Controlled comparison | Compare architectures under common data, windows, and loss | Not started |
@@ -222,8 +222,10 @@ For example:
 This connected-component rule prevents indirect leakage chains. Every final
 component receives a deterministic ID derived from its sorted row IDs. During
 partitioning, the component—not the individual row—is the smallest movable
-unit. The accepted construction produced 173,465 final components from the
-361,180 rows.
+unit. The v1 construction produced 173,465 final components from the 361,180
+rows. It passed the giant-component checks but was later shown not to be a
+complete closure of the fresh direct-search audit relation; it is retained as
+diagnostic evidence, not as the final benchmark grouping.
 
 ## 9. Phase 2B/2C — component evidence
 
@@ -285,11 +287,12 @@ membership and scientific summaries:
 | Validation | 57,391 | 15.8899% |
 | Test | 57,324 | 15.8713% |
 
-All 173,465 components remained intact. Validation and test each retained at
+All 173,465 v1 components remained intact. Validation and test each retained at
 least 101 known positives and 81 known negatives for every protein, comfortably
 above the frozen 30/30 floor. No repair move or swap was needed. The assignment
-is accepted as the sole candidate for finalization, but it is not yet the
-released benchmark split because the independent leakage audits remain.
+was a valid assignment of v1 components, but it was subsequently rejected for
+model evaluation after the fresh direct-search audit found cross-partition
+matches. It is not the released benchmark split.
 
 ## 11. The known-negative imbalance problem
 
@@ -364,15 +367,20 @@ groups are both contained wholly within validation.
   original clustering databases.
 - Require zero qualifying cross-partition hits.
 
-Assignment, the legacy diagnostic, and exact auditing should fit the local
-16-GiB Mac. The fresh MMseqs2 searches are the only potentially high-memory
-remaining data-preparation step. The local host did not have enough available
-memory for this checkpoint, so Task 002C-3/4 is packaged as a single offline,
-native Apple-Silicon handoff for the 64-GiB collaborator Mac. The handoff runs
-all three probes and 18 searches sequentially, stops without retry on any
-failure or nonzero hit, conditionally finalizes, and creates one small return
-ZIP whether it succeeds or stops. It does not repeat any accepted earlier
-stage.
+The native Apple-Silicon handoff ran successfully on the 64-GiB collaborator
+Mac but stopped at the first directed search, as designed. The 500-nt
+train-to-validation audit found 4,792 qualifying pairs involving 1,400 train
+queries and 2,176 validation targets (3,576 distinct rows). These pairs connect
+1,351 v1 components through 737 component-to-component links. Therefore v1 is
+not leakage-safe under the frozen direct-search definition; the remaining 17
+searches and finalization were correctly not run.
+
+The correction is **components v2**: run the frozen direct search all-vs-all
+at each protected width, normalize its pairwise edges, union them with exact/RC
+edges, and rebuild connected components before reassignment. The synthetic
+components-v2 core is accepted. The current R2 checkpoint will measure the
+resource cost on a deterministic 10,000-query/full-target probe before any full
+edge discovery is authorized.
 
 ### 12.4 Freeze the final split
 

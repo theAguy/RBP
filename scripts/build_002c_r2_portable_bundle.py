@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import stat
@@ -133,8 +134,53 @@ exec "$PYTHON_BIN" -m rbpbench.splits.portable_002c_r2 --bundle-root "$BUNDLE_RO
     destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def verify_runtime_against_manifest(runtime_prefix: Path, manifest_path: Path, expected_sha256: str) -> dict:
+    """Verifies the WHOLE runtime prefix against an explicit expected runtime
+    manifest (pinned by SHA-256) before anything is copied: every regular
+    file (path, size, SHA-256) and every symlink (path, target) must match,
+    with no missing, extra, retyped, or escaping path. The manifest's paths
+    are relative to the runtime prefix. Raises RuntimeError on any mismatch."""
+    runtime_prefix, manifest_path = Path(runtime_prefix).resolve(), Path(manifest_path)
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or ""):
+        raise ValueError("expected runtime-manifest SHA-256 must be 64 lowercase hex characters")
+    if not manifest_path.is_file() or launcher.sha256_file(manifest_path) != expected_sha256:
+        raise RuntimeError("runtime manifest is missing or does not match its pinned SHA-256")
+    data = json.loads(manifest_path.read_text())
+    entries = data.get("entries")
+    if data.get("schema_version") != 1 or not isinstance(entries, list) or not entries:
+        raise RuntimeError("runtime manifest is not a non-empty schema-1 manifest")
+    expected: dict[str, dict] = {}
+    for entry in entries:
+        rel = entry.get("path")
+        if not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in Path(rel).parts or rel in expected:
+            raise RuntimeError(f"invalid or duplicate runtime manifest path: {rel!r}")
+        if entry.get("type") not in ("file", "symlink"):
+            raise RuntimeError(f"unsupported runtime manifest entry type for {rel}")
+        expected[rel] = entry
+    actual = {e["path"]: e for e in launcher.inventory_tree(runtime_prefix, excluded=frozenset())}
+    missing, extra = sorted(set(expected) - set(actual)), sorted(set(actual) - set(expected))
+    if missing or extra:
+        raise RuntimeError(f"runtime differs from the expected manifest: missing {missing[:5]}, extra {extra[:5]}")
+    for rel, want in expected.items():
+        have = actual[rel]
+        if have["type"] != want["type"]:
+            raise RuntimeError(f"runtime entry changed type: {rel}")
+        if want["type"] == "symlink":
+            if have["target"] != want.get("target"):
+                raise RuntimeError(f"runtime symlink target differs from the manifest: {rel}")
+            resolved = Path(os.path.normpath((runtime_prefix / rel).parent / have["target"]))
+            try:
+                resolved.relative_to(runtime_prefix)
+            except ValueError:
+                raise RuntimeError(f"runtime symlink escapes the runtime prefix: {rel} -> {have['target']}") from None
+        elif (have["byte_size"], have["sha256"]) != (want.get("byte_size"), want.get("sha256")):
+            raise RuntimeError(f"runtime file differs from the expected manifest: {rel}")
+    return {"entry_count": len(expected), "sha256": expected_sha256}
+
+
 def build_bundle(
     repo: Path, destination: Path, runtime_prefix: Path, decode_dir: Path, *, decode_manifest_sha256: str, seed: int,
+    runtime_manifest: Path, runtime_manifest_sha256: str, environment_lock: Path,
     expected_mmseqs_sha256: str = launcher.FROZEN_ARM64_MMSEQS_SHA256,
     expected_mmseqs_version: str = launcher.FROZEN_MMSEQS_VERSION,
     sample_size: int = launcher.FROZEN_SAMPLE_SIZE, expected_row_count: int = 361_180,
@@ -168,8 +214,14 @@ def build_bundle(
     mmseqs, python = runtime_prefix / "bin/mmseqs", runtime_prefix / "bin/python"
     if not mmseqs.is_file() or not python.is_file():
         raise RuntimeError(f"runtime prefix lacks bin/python or bin/mmseqs: {runtime_prefix}")
+    # Gate 1: the complete runtime against the pinned expected runtime manifest (before any copy).
+    verify_runtime_against_manifest(runtime_prefix, runtime_manifest, runtime_manifest_sha256)
+    # Gate 2 (independent): the fixed MMseqs2 hash.
     if launcher.sha256_file(mmseqs) != expected_mmseqs_sha256:
         raise RuntimeError("runtime MMseqs2 does not match the expected native arm64 SHA-256")
+    environment_lock = Path(environment_lock)
+    if not environment_lock.is_file():
+        raise RuntimeError("environment lock file is missing")
 
     destination.mkdir(parents=True)
     for rel in R2_SOURCE_SUBSET:
@@ -184,12 +236,16 @@ def build_bundle(
     for width, src in fastas.items():
         shutil.copy2(src, destination / launcher.FASTA_DIR_REL / src.name)
     shutil.copytree(runtime_prefix, destination / launcher.RUNTIME_REL, symlinks=True, ignore=_ignore_generated)
+    shutil.copy2(runtime_manifest, destination / launcher.RUNTIME_MANIFEST_REL)
+    shutil.copy2(environment_lock, destination / launcher.ENVIRONMENT_LOCK_REL)
+    lock_sha256 = launcher.sha256_file(destination / launcher.ENVIRONMENT_LOCK_REL)
 
     config = {
         "schema_version": 1, "checkpoint": launcher.CHECKPOINT, "seed": seed,
         "decode_manifest_sha256": decode_manifest_sha256, "expected_mmseqs_sha256": expected_mmseqs_sha256,
         "expected_mmseqs_version": expected_mmseqs_version, "sample_size": sample_size,
-        "expected_row_count": expected_row_count, "stages": list(launcher.probe.PROBE_STAGES),
+        "expected_row_count": expected_row_count, "runtime_manifest_sha256": runtime_manifest_sha256,
+        "environment_lock_sha256": lock_sha256, "stages": list(launcher.probe.PROBE_STAGES),
     }
     (destination / launcher.CONFIG_REL).write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
     (destination / "RUNBOOK.md").write_text(RUNBOOK)
@@ -202,6 +258,7 @@ def build_bundle(
         "single_entrypoint": LAUNCHER_NAME, "network_required_at_execution": False,
         "return_location": "return/RBP_002C_R2_RETURN_<timestamp>_<host>.zip",
         "r3_authorization": "none",
+        "expected_runtime_manifest_sha256": runtime_manifest_sha256, "environment_lock_sha256": lock_sha256,
     }
     (destination / "BUNDLE_SUMMARY.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
@@ -212,7 +269,7 @@ def build_bundle(
                 raise RuntimeError(f"symlink outside the private runtime: {entry['path']}")
             target = (destination / entry["path"]).parent / entry["target"]
             try:
-                Path(__import__("os").path.normpath(target)).relative_to(destination)
+                Path(os.path.normpath(target)).relative_to(destination)
             except ValueError:
                 raise RuntimeError(f"runtime symlink escapes the bundle: {entry['path']} -> {entry['target']}") from None
     manifest = {"schema_version": 1, "checkpoint": launcher.CHECKPOINT, "source_commit": commit, "entries": entries}
@@ -293,6 +350,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--decode-dir", type=Path, required=True)
     p.add_argument("--decode-manifest-sha256", required=True)
     p.add_argument("--seed", type=int, required=True)
+    p.add_argument("--runtime-manifest", type=Path, required=True, help="accepted expected runtime manifest (JSON)")
+    p.add_argument("--runtime-manifest-sha256", required=True)
+    p.add_argument("--environment-lock", type=Path, required=True, help="accepted explicit environment lock")
     p.add_argument("--archive", action="store_true", help="also create a verified <bundle>.tar.gz and .sha256")
     return p
 
@@ -300,7 +360,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
     a = build_parser().parse_args(argv)
     bundle, summary = build_bundle(a.repo, a.destination, a.runtime_prefix, a.decode_dir,
-                                   decode_manifest_sha256=a.decode_manifest_sha256, seed=a.seed)
+                                   decode_manifest_sha256=a.decode_manifest_sha256, seed=a.seed,
+                                   runtime_manifest=a.runtime_manifest, runtime_manifest_sha256=a.runtime_manifest_sha256,
+                                   environment_lock=a.environment_lock)
     result = {"bundle": str(bundle), **summary}
     if a.archive:
         archive, digest = create_archive(bundle)

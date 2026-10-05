@@ -281,7 +281,16 @@ against the launcher's static import closure), so direct-edge, components-v2,
 assignment, audit, `runner_002c` and 002C-3 modules are absent from the bundle;
 it also writes `RUNBOOK.md` and `PROMPT_FOR_CLAUDE_OR_CODEX.txt`, and with
 `--archive` builds a re-read-verified `<bundle>.tar.gz` plus `.sha256`
-(refusing an existing archive). A SUCCESS return is not authorization for R3. Tests:
+(refusing an existing archive). Before copying the runtime, the builder requires
+an explicit expected runtime manifest and its pinned SHA-256 and verifies every
+file (path, size, hash) and symlink (path, target) under the runtime prefix,
+rejecting missing, extra, retyped, mismatching or escaping entries; the fixed
+MMseqs2 hash/version check remains a second independent gate. The verified
+manifest and the environment lock are copied into the bundle
+(`manifests/runtime_manifest.json`, `manifests/runtime_environment_lock.explicit.txt`),
+their hashes are bound in `R2_PACKAGE_CONFIG.json` and `BUNDLE_SUMMARY.json`,
+and the launcher re-checks them and reports `runtime_provenance` in the return
+`STATUS.json`. A SUCCESS return is not authorization for R3. Tests:
 `PYTHONPATH=src python3 -m unittest tests.test_splits_portable_002c_r2`.
 
 Each checkpoint requires its own executor handoff and review; this

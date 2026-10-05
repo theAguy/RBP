@@ -88,10 +88,23 @@ class Base(unittest.TestCase):
         (self.runtime / "bin/mmseqs").chmod(0o755)
         os.symlink("python", self.runtime / "bin/python3")
         self.fake_sha = sha(self.runtime / "bin/mmseqs")
+        (self.runtime / "lib").mkdir()
+        (self.runtime / "lib/libfake.so").write_text("fake shared object\n")
+        self.write_runtime_manifest()
+        self.env_lock = self.t / "env.explicit.txt"
+        self.env_lock.write_text("# fake explicit lock\nhttps://example.invalid/fake-1.tar.bz2\n")
+
+    def write_runtime_manifest(self):
+        entries = p2.inventory_tree(self.runtime, excluded=frozenset())
+        self.runtime_manifest = self.t / "runtime_manifest.json"
+        self.runtime_manifest.write_text(json.dumps({"schema_version": 1, "entries": entries}, indent=2, sort_keys=True))
+        self.runtime_manifest_sha = sha(self.runtime_manifest)
 
     def build(self, name="bundle", **over):
         kwargs = dict(decode_manifest_sha256=self.manifest_sha, seed=7, expected_mmseqs_sha256=self.fake_sha,
-                      expected_mmseqs_version=FAKE_VERSION, sample_size=10, expected_row_count=40)
+                      expected_mmseqs_version=FAKE_VERSION, sample_size=10, expected_row_count=40,
+                      runtime_manifest=self.runtime_manifest, runtime_manifest_sha256=self.runtime_manifest_sha,
+                      environment_lock=self.env_lock)
         kwargs.update(over)
         return builder.build_bundle(self.repo, self.t / name, self.runtime, self.decode, **kwargs)[0]
 
@@ -241,7 +254,8 @@ class DeliveryCorrectionTests(Base):
     def test_p1_cli_archive_flag_exists(self):
         self.assertTrue(builder.build_parser().parse_args(
             ["--repo", "r", "--destination", "d", "--runtime-prefix", "p", "--decode-dir", "x",
-             "--decode-manifest-sha256", "0" * 64, "--seed", "1", "--archive"]).archive)
+             "--decode-manifest-sha256", "0" * 64, "--seed", "1", "--archive", "--runtime-manifest", "m",
+             "--runtime-manifest-sha256", "0" * 64, "--environment-lock", "l"]).archive)
 
     def test_p3_required_subset_present_and_forbidden_absent(self):
         b = self.build()
@@ -297,6 +311,100 @@ class DeliveryCorrectionTests(Base):
         self.assertEqual(closure, set(builder.R2_SOURCE_SUBSET))
         for name in FORBIDDEN_MODULES:
             self.assertNotIn(f"rbpbench/splits/{name}", closure)
+
+
+class RuntimeProvenanceTests(Base):
+    def assert_fails_before_bundle(self, exc=RuntimeError, **over):
+        with self.assertRaises(exc):
+            self.build(**over)
+        self.assertFalse((self.t / "bundle").exists())
+
+    def test_modified_non_mmseqs_runtime_file(self):
+        (self.runtime / "lib/libfake.so").write_text("tampered shared object\n")
+        self.assert_fails_before_bundle()
+
+    def test_extra_runtime_file(self):
+        (self.runtime / "lib/extra.so").write_text("x")
+        self.assert_fails_before_bundle()
+
+    def test_missing_runtime_file(self):
+        (self.runtime / "lib/libfake.so").unlink()
+        self.assert_fails_before_bundle()
+
+    def test_changed_symlink(self):
+        link = self.runtime / "bin/python3"
+        link.unlink()
+        os.symlink("mmseqs", link)
+        self.assert_fails_before_bundle()
+
+    def test_escaping_symlink_even_if_listed(self):
+        os.symlink("../../outside", self.runtime / "bin/escape")
+        self.write_runtime_manifest()  # a (wrongly) accepted manifest still cannot pass an escaping link
+        self.assert_fails_before_bundle()
+
+    def test_mismatched_expected_manifest_hash(self):
+        self.assert_fails_before_bundle(runtime_manifest_sha256="5" * 64)
+        self.assert_fails_before_bundle(exc=ValueError, runtime_manifest_sha256="nothex")
+        self.runtime_manifest.write_text(self.runtime_manifest.read_text() + " ")  # manifest edited after pinning
+        self.assert_fails_before_bundle()
+
+    def test_bundled_runtime_manifest_tamper_detected_at_launch(self):
+        b = self.build()
+        (b / p2.RUNTIME_MANIFEST_REL).write_text((b / p2.RUNTIME_MANIFEST_REL).read_text() + " ")
+        code, rd, _a = self.run_bundle(b)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.launches(), [])
+
+    def test_mmseqs_gate_remains_independent(self):
+        self.assert_fails_before_bundle(expected_mmseqs_sha256="6" * 64)
+
+    def test_manifest_lock_and_hashes_in_bundle_archive_and_return(self):
+        import tarfile
+
+        b = self.build()
+        listed = {e["path"]: e for e in json.loads((b / p2.INPUT_MANIFEST_REL).read_text())["entries"]}
+        self.assertEqual(listed[str(p2.RUNTIME_MANIFEST_REL)]["sha256"], self.runtime_manifest_sha)
+        self.assertEqual(listed[str(p2.ENVIRONMENT_LOCK_REL)]["sha256"], sha(self.env_lock))
+        config = json.loads((b / p2.CONFIG_REL).read_text())
+        self.assertEqual(config["runtime_manifest_sha256"], self.runtime_manifest_sha)
+        self.assertEqual(config["environment_lock_sha256"], sha(self.env_lock))
+        summary = json.loads((b / "BUNDLE_SUMMARY.json").read_text())
+        self.assertEqual(summary["expected_runtime_manifest_sha256"], self.runtime_manifest_sha)
+        self.assertEqual(summary["environment_lock_sha256"], sha(self.env_lock))
+        archive, _digest = builder.create_archive(b)
+        with tarfile.open(archive) as tar:
+            names = {m.name for m in tar.getmembers()}
+        self.assertIn(f"{b.name}/{p2.RUNTIME_MANIFEST_REL}", names)
+        self.assertIn(f"{b.name}/{p2.ENVIRONMENT_LOCK_REL}", names)
+        self.assertEqual(builder.verify_archive(archive, b), len(listed) + 2)
+        code, rd, _a = self.run_bundle(b)
+        self.assertEqual(code, 0)
+        prov = json.loads((rd / "STATUS.json").read_text())["runtime_provenance"]
+        self.assertEqual(prov["expected_runtime_manifest_sha256"], self.runtime_manifest_sha)
+        self.assertEqual(prov["environment_lock_sha256"], sha(self.env_lock))
+        self.assertGreater(prov["runtime_manifest_entry_count"], 2)
+
+    def test_launcher_rejects_runtime_manifest_hash_mismatch(self):
+        b = self.build()
+        config_path = b / p2.CONFIG_REL
+        verified = p2.verify_inventory(b)
+        cfg = json.loads(config_path.read_text())
+        cfg["runtime_manifest_sha256"] = "7" * 64
+        with self.assertRaises(p2.PortableR2Error):
+            p2.bind_runtime_provenance(b, cfg, verified)
+        cfg["runtime_manifest_sha256"] = self.runtime_manifest_sha
+        cfg["environment_lock_sha256"] = "8" * 64
+        with self.assertRaises(p2.PortableR2Error):
+            p2.bind_runtime_provenance(b, cfg, verified)
+
+    def test_cli_requires_runtime_manifest_arguments(self):
+        base = ["--repo", "r", "--destination", "d", "--runtime-prefix", "p", "--decode-dir", "x",
+                "--decode-manifest-sha256", "0" * 64, "--seed", "1"]
+        with self.assertRaises(SystemExit):
+            builder.build_parser().parse_args(base)
+        a = builder.build_parser().parse_args(base + ["--runtime-manifest", "m", "--runtime-manifest-sha256", "1" * 64,
+                                                       "--environment-lock", "l"])
+        self.assertEqual(a.runtime_manifest_sha256, "1" * 64)
 
 
 class TamperAndGateTests(Base):

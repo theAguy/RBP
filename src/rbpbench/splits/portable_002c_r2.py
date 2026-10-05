@@ -41,6 +41,8 @@ INPUT_MANIFEST_REL = Path("R2_INPUT_MANIFEST.json")
 INPUT_MANIFEST_HASH_REL = Path("R2_INPUT_MANIFEST.sha256")
 CONFIG_REL = Path("R2_PACKAGE_CONFIG.json")
 DECODE_MANIFEST_REL = Path("manifests/sequence_decode_002b2.json")
+RUNTIME_MANIFEST_REL = Path("manifests/runtime_manifest.json")
+ENVIRONMENT_LOCK_REL = Path("manifests/runtime_environment_lock.explicit.txt")
 FASTA_DIR_REL = Path("data/decode")
 RUNTIME_REL = Path(".runtime/rbpbench-splits-002c-arm64")
 MMSEQS_REL = RUNTIME_REL / "bin/mmseqs"
@@ -159,6 +161,7 @@ def verify_inventory(root: Path) -> dict:
         raise PortableR2Error("input manifest is not a non-empty R2 package manifest")
     listed: set[str] = set()
     hashes: dict[str, str] = {}
+    by_path: dict[str, dict] = {}
     for entry in entries:
         rel = entry.get("path")
         if not isinstance(rel, str) or not rel:
@@ -166,6 +169,7 @@ def verify_inventory(root: Path) -> dict:
         if rel in listed:
             raise PortableR2Error(f"duplicate manifest entry: {rel}")
         listed.add(rel)
+        by_path[rel] = entry
         lexical = root / rel
         try:
             (root / rel).resolve(strict=False).relative_to(root)
@@ -207,6 +211,7 @@ def verify_inventory(root: Path) -> dict:
         "entry_count": len(entries),
         "source_commit": manifest.get("source_commit"),
         "hashes": hashes,
+        "entries": by_path,
     }
 
 
@@ -250,7 +255,8 @@ class HostChecks:
 def load_package_config(root: Path, checks: HostChecks) -> dict:
     config = json.loads((Path(root) / CONFIG_REL).read_text())
     required = {"schema_version", "checkpoint", "seed", "decode_manifest_sha256", "expected_mmseqs_sha256",
-                "expected_mmseqs_version", "sample_size", "expected_row_count"}
+                "expected_mmseqs_version", "sample_size", "expected_row_count", "runtime_manifest_sha256",
+                "environment_lock_sha256"}
     if required - set(config) or config["checkpoint"] != CHECKPOINT:
         raise PortableR2Error("package config is incomplete or not an R2 config")
     if config["expected_mmseqs_sha256"] != checks.frozen_mmseqs_sha256 or config["expected_mmseqs_version"] != checks.frozen_mmseqs_version:
@@ -298,6 +304,39 @@ def check_host_and_runtime(root: Path, checks: HostChecks, config: Mapping) -> d
         "python_executable": str(actual_python), "mmseqs_path": str(mmseqs), "mmseqs_version": version,
         "mmseqs_sha256": digest, "installed_ram_gib": installed, "available_ram_gib": available,
         "free_disk_gib": free,
+    }
+
+
+def bind_runtime_provenance(root: Path, config: Mapping, verified: Mapping) -> dict:
+    """Surfaces and re-checks the runtime provenance recorded at build time:
+    the bundled expected-runtime manifest and environment lock must hash to the
+    values in the (inventory-bound) package config, and every runtime file and
+    symlink the manifest lists must match the inventory-verified bundle entry.
+    """
+    hashes, entries = verified["hashes"], verified["entries"]
+    if hashes.get(str(RUNTIME_MANIFEST_REL)) != config["runtime_manifest_sha256"]:
+        raise PortableR2Error("bundled runtime manifest does not match the recorded expected-runtime-manifest SHA-256")
+    if hashes.get(str(ENVIRONMENT_LOCK_REL)) != config["environment_lock_sha256"]:
+        raise PortableR2Error("bundled environment lock does not match its recorded SHA-256")
+    manifest = json.loads((Path(root) / RUNTIME_MANIFEST_REL).read_text())
+    count = 0
+    for entry in manifest.get("entries", []):
+        rel = str(RUNTIME_REL / entry["path"])
+        actual = entries.get(rel)
+        if actual is None or actual["type"] != entry["type"]:
+            raise PortableR2Error(f"runtime manifest entry is missing or retyped in the bundle: {rel}")
+        if entry["type"] == "file" and (actual["sha256"], actual["byte_size"]) != (entry["sha256"], entry["byte_size"]):
+            raise PortableR2Error(f"runtime file differs from the expected runtime manifest: {rel}")
+        if entry["type"] == "symlink" and actual["target"] != entry["target"]:
+            raise PortableR2Error(f"runtime symlink differs from the expected runtime manifest: {rel}")
+        count += 1
+    bundled = sum(1 for rel in entries if rel.startswith(str(RUNTIME_REL) + "/"))
+    if bundled != count:
+        raise PortableR2Error(f"bundle holds {bundled} runtime entries but the expected runtime manifest lists {count}")
+    return {
+        "expected_runtime_manifest_sha256": config["runtime_manifest_sha256"],
+        "environment_lock_sha256": config["environment_lock_sha256"],
+        "runtime_manifest_entry_count": count,
     }
 
 
@@ -378,6 +417,7 @@ def _copy_if_file(source: Path, destination: Path) -> None:
 def package_return(
     root: Path, *, status: str, started_at_utc: str, input_verification: dict | None, host_preflight: dict | None,
     probe_summary: dict | None, failure: dict | None, log_dir: Path | None,
+    runtime_provenance: dict | None = None,
 ) -> tuple[Path, Path, str]:
     """Returns ``(return_dir, archive, effective_status)``. If the sanitation
     guard trips, the full return is discarded, a minimal STATUS-only return
@@ -397,8 +437,9 @@ def package_return(
         _write_json(return_dir / "STATUS.json", {
             "schema_version": 1, "checkpoint": CHECKPOINT, "status": status, "started_at_utc": started_at_utc,
             "finished_at_utc": _utc_now(), "failure": failure, "minimal_return": not full,
-            "input_verification": None if input_verification is None else {k: v for k, v in input_verification.items() if k != "hashes"},
+            "input_verification": None if input_verification is None else {k: v for k, v in input_verification.items() if k not in ("hashes", "entries")},
             "host_preflight": host_preflight,
+            "runtime_provenance": runtime_provenance,
             "raw_fastas_databases_and_result_tsvs_in_return": False,
             "r3_authorization": "NOT GRANTED: a resource probe never authorizes R3",
         })
@@ -461,7 +502,7 @@ def execute(root: Path, checks: HostChecks | None = None) -> tuple[int, Path | N
     root = Path(root).resolve()
     started = _utc_now()
     status, failure = "STOPPED", None
-    input_verification = host_preflight = probe_summary = None
+    input_verification = host_preflight = probe_summary = runtime_provenance = None
     log_dir: Path | None = None
     orchestrator_log: Path | None = None
     try:
@@ -471,6 +512,7 @@ def execute(root: Path, checks: HostChecks | None = None) -> tuple[int, Path | N
         _append_log(None, "verifying immutable package inventory before opening any FASTA")
         input_verification = verify_inventory(root)
         config = load_package_config(root, checks)
+        runtime_provenance = bind_runtime_provenance(root, config, input_verification)
         log_dir = root / LOG_PARENT_REL / f"002c_r2_{_timestamp_slug()}"
         log_dir.mkdir(parents=True)
         orchestrator_log = log_dir / "orchestrator.log"
@@ -506,6 +548,7 @@ def execute(root: Path, checks: HostChecks | None = None) -> tuple[int, Path | N
         return_dir, archive, effective = package_return(
             root, status=status, started_at_utc=started, input_verification=input_verification,
             host_preflight=host_preflight, probe_summary=probe_summary, failure=failure, log_dir=log_dir,
+            runtime_provenance=runtime_provenance,
         )
         if effective != status:
             status = effective

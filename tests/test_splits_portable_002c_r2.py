@@ -28,6 +28,9 @@ builder = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(builder)
 
 IDS = [f"row_{i}" for i in range(40)]
+FORBIDDEN_MODULES = ("direct_edges.py", "components_v2.py", "components.py", "runner_002c.py", "runner.py", "assignment.py",
+                     "audit.py", "mmseqs_audit.py", "exact_audit.py", "legacy_diagnostic.py", "ingestion.py",
+                     "portable_002c3.py", "cluster_membership_evidence.py", "membership.py")
 FAKE_VERSION = "fake-tool-1"
 FAKE_BODY = "# FAKE TEST TOOL - not MMseqs2\n" + FAKE.replace("{py}", sys.executable).replace(
     "a = sys.argv[1:]\n",
@@ -66,8 +69,11 @@ class Base(unittest.TestCase):
             path.write_text("".join(f">{sid}\n{seq(i, width)}\n" for i, sid in enumerate(IDS)))
             evidence.append({"path": f"decode/{path.name}", "byte_size": path.stat().st_size, "sha256": sha(path)})
         self.repo = self.t / "repo"
-        (self.repo / "src/rbpbench").mkdir(parents=True)
-        (self.repo / "src/rbpbench/__init__.py").write_text("")
+        for rel in builder.R2_SOURCE_SUBSET:  # stub source tree: required subset plus forbidden modules
+            (self.repo / "src" / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / "src" / rel).write_text(f"# stub {rel}\n")
+        for name in FORBIDDEN_MODULES:
+            (self.repo / "src/rbpbench/splits" / name).write_text("# forbidden stub\n")
         (self.repo / "manifests").mkdir()
         manifest = self.repo / "manifests/sequence_decode_002b2.json"
         manifest.write_text(json.dumps({"decode_generation_digest": "d", "retained_artifacts": evidence}))
@@ -172,6 +178,125 @@ class BuilderTests(Base):
         self.assertIn("not** authorization for r3", book)
         config = json.loads((b / p2.CONFIG_REL).read_text())
         self.assertEqual(config["stages"], ["probe_500", "probe_251", "probe_101"])
+
+
+class DeliveryCorrectionTests(Base):
+    def test_p1_prompt_file(self):
+        b = self.build()
+        text = (b / "PROMPT_FOR_CLAUDE_OR_CODEX.txt").read_text()
+        self.assertIn("ONLY the one launcher", text)
+        self.assertIn("RUN_002C_R2_PROBE.command", text)
+        self.assertIn("Return ONLY the generated ZIP", text)
+        self.assertIn("NOT authorization for R3", text)
+        self.assertIn("Do NOT", text)
+        listed = {e["path"] for e in json.loads((b / p2.INPUT_MANIFEST_REL).read_text())["entries"]}
+        self.assertIn("PROMPT_FOR_CLAUDE_OR_CODEX.txt", listed)
+        self.assertIn("RUNBOOK.md", listed)
+
+    def test_p1_archive_and_checksum(self):
+        import hashlib
+        import tarfile
+
+        b = self.build()
+        archive, digest = builder.create_archive(b)
+        self.assertEqual(archive, b.parent / (b.name + ".tar.gz"))
+        sidecar = (b.parent / (archive.name + ".sha256")).read_text().split()
+        self.assertEqual(sidecar, [digest, archive.name])
+        self.assertEqual(digest, hashlib.sha256(archive.read_bytes()).hexdigest())
+        manifest = json.loads((b / p2.INPUT_MANIFEST_REL).read_text())
+        with tarfile.open(archive) as tar:
+            names = {m.name for m in tar.getmembers() if not m.isdir()}
+            links = {m.name: m.linkname for m in tar.getmembers() if m.issym()}
+        expected = {f"{b.name}/{e['path']}" for e in manifest["entries"]} | {
+            f"{b.name}/{p2.INPUT_MANIFEST_REL}", f"{b.name}/{p2.INPUT_MANIFEST_HASH_REL}"}
+        self.assertEqual(names, expected)
+        self.assertEqual(links[f"{b.name}/{p2.RUNTIME_REL}/bin/python3"], "python")
+        self.assertEqual(builder.verify_archive(archive, b), len(expected))
+        # extracted archive verifies as a launcher bundle
+        out = self.t / "extracted"
+        with tarfile.open(archive) as tar:
+            tar.extractall(out)
+        self.assertEqual(p2.verify_inventory(out / b.name)["entry_count"], len(manifest["entries"]))
+
+    def test_p1_archive_refusals(self):
+        b = self.build()
+        builder.create_archive(b)
+        with self.assertRaises(FileExistsError):
+            builder.create_archive(b)
+        b2 = self.build("bundle2")
+        (b2 / p2.INPUT_MANIFEST_HASH_REL).unlink()
+        with self.assertRaises(RuntimeError):
+            builder.create_archive(b2)
+        self.assertFalse((b2.parent / "bundle2.tar.gz").exists())
+        b3 = self.build("bundle3")
+        (b3 / "extra.txt").write_text("x")  # unlisted file => not an immutable bundle
+        with self.assertRaises(p2.PortableR2Error):
+            builder.create_archive(b3)
+        self.assertFalse((b3.parent / "bundle3.tar.gz").exists())
+        (self.t / "bundle4.tar.gz").write_text("x")
+        b4 = self.build("bundle4")
+        with self.assertRaises(FileExistsError):
+            builder.create_archive(b4)
+
+    def test_p1_cli_archive_flag_exists(self):
+        self.assertTrue(builder.build_parser().parse_args(
+            ["--repo", "r", "--destination", "d", "--runtime-prefix", "p", "--decode-dir", "x",
+             "--decode-manifest-sha256", "0" * 64, "--seed", "1", "--archive"]).archive)
+
+    def test_p3_required_subset_present_and_forbidden_absent(self):
+        b = self.build()
+        shipped = {str(p.relative_to(b / "src")) for p in (b / "src").rglob("*") if p.is_file()}
+        self.assertEqual(shipped, set(builder.R2_SOURCE_SUBSET))
+        for rel in ("rbpbench/splits/resource_probe_r2.py", "rbpbench/splits/portable_002c_r2.py",
+                    "rbpbench/splits/commands.py", "rbpbench/splits/guarded_exec.py", "rbpbench/__init__.py",
+                    "rbpbench/splits/__init__.py", "rbpbench/coordinates/provenance.py", "rbpbench/data/audit.py"):
+            self.assertIn(rel, shipped)
+        for name in FORBIDDEN_MODULES:
+            self.assertNotIn(f"rbpbench/splits/{name}", shipped)
+        self.assertFalse([r for r in shipped if re.search(r"direct_edge|components|assign|audit_|runner|r3", r.split("/")[-1])
+                          and not r.endswith(("coordinates/commands.py",)) and "data/audit.py" not in r])
+
+    def test_p3_missing_subset_file_refused(self):
+        (self.repo / "src/rbpbench/splits/guarded_exec.py").unlink()
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "drop")
+        with self.assertRaises(RuntimeError):
+            self.build()
+
+    def test_p3_subset_equals_real_static_import_closure(self):
+        """The shipped list must equal the launcher's actual import closure in
+        the real source tree (static analysis of source files only)."""
+        src = ROOT / "src"
+
+        def path_of(mod):
+            base = src.joinpath(*mod.split("."))
+            if base.with_suffix(".py").is_file():
+                return base.with_suffix(".py")
+            if (base / "__init__.py").is_file():
+                return base / "__init__.py"
+            return None
+
+        seen, todo = set(), ["rbpbench.splits.portable_002c_r2"]
+        while todo:
+            mod = todo.pop()
+            if mod in seen:
+                continue
+            seen.add(mod)
+            path = path_of(mod)
+            if path is None:
+                continue
+            parts = mod.split(".")
+            todo.extend(".".join(parts[:i]) for i in range(1, len(parts)))
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("rbpbench"):
+                    todo.append(node.module)
+                    todo.extend(f"{node.module}.{a.name}" for a in node.names)
+                elif isinstance(node, ast.Import):
+                    todo.extend(a.name for a in node.names if a.name.startswith("rbpbench"))
+        closure = {str(path_of(m).relative_to(src)) for m in seen if path_of(m)}
+        self.assertEqual(closure, set(builder.R2_SOURCE_SUBSET))
+        for name in FORBIDDEN_MODULES:
+            self.assertNotIn(f"rbpbench/splits/{name}", closure)
 
 
 class TamperAndGateTests(Base):
@@ -417,6 +542,11 @@ class ExecutionTests(Base):
         self.addCleanup(setattr, r2, "run_probe", real)
         code, rd, archive = self.run_bundle(b)
         status = self.status(rd)
+        self.assertEqual(code, 1)  # a sanitation fallback is a stopped run, never exit 0
+        self.assertEqual(status["status"], "STOPPED")
+        self.assertEqual(status["failure"]["status_before_return_guard"], "SUCCESS")
+        self.assertEqual(json.loads((rd / "RETURN_MANIFEST.json").read_text())["status"], "STOPPED")
+        self.assertIn("STOPPED", (rd / "RETURN_SUMMARY.md").read_text())
         self.assertTrue(status["minimal_return"])
         self.assertIn("return_guard", status["failure"])
         self.assertFalse((rd / "tool_logs").exists())

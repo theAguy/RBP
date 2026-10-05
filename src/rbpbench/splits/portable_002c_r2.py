@@ -378,8 +378,13 @@ def _copy_if_file(source: Path, destination: Path) -> None:
 def package_return(
     root: Path, *, status: str, started_at_utc: str, input_verification: dict | None, host_preflight: dict | None,
     probe_summary: dict | None, failure: dict | None, log_dir: Path | None,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, str]:
+    """Returns ``(return_dir, archive, effective_status)``. If the sanitation
+    guard trips, the full return is discarded, a minimal STATUS-only return
+    is written, and the effective status is forced to ``STOPPED`` (the
+    evidence cannot be safely returned, so the checkpoint cannot be accepted)."""
     root = Path(root)
+    original_status = status
     parent = root / RETURN_PARENT_REL
     parent.mkdir(parents=True, exist_ok=True)
     name = f"RBP_002C_R2_RETURN_{_timestamp_slug()}_{_safe_host_slug()}"
@@ -436,12 +441,13 @@ def package_return(
         assert_return_clean(return_dir)
     except PortableR2Error as exc:
         shutil.rmtree(return_dir)
-        failure = failure or {"type": "PortableR2Error", "message": str(exc)}
-        failure = {**failure, "return_guard": str(exc)}
+        status = "STOPPED"
+        failure = failure or {"type": "PortableR2Error", "message": f"return sanitation failed: {exc}"}
+        failure = {**failure, "return_guard": str(exc), "status_before_return_guard": original_status}
         build(full=False)  # minimal STATUS-only return; never ship the offending content
     archive = Path(shutil.make_archive(str(parent / return_dir.name), "zip", root_dir=parent, base_dir=return_dir.name))
     (parent / (archive.name + ".sha256")).write_text(f"{sha256_file(archive)}  {archive.name}\n")
-    return return_dir, archive
+    return return_dir, archive, status
 
 
 # ------------------------------------------------------------------ main
@@ -497,10 +503,13 @@ def execute(root: Path, checks: HostChecks | None = None) -> tuple[int, Path | N
         out = root / OUTPUT_REL
         if out.is_dir():
             probe_summary = probe.build_return_summary(out)
-        return_dir, archive = package_return(
+        return_dir, archive, effective = package_return(
             root, status=status, started_at_utc=started, input_verification=input_verification,
             host_preflight=host_preflight, probe_summary=probe_summary, failure=failure, log_dir=log_dir,
         )
+        if effective != status:
+            status = effective
+            _append_log(orchestrator_log, "return sanitation fallback: effective status forced to STOPPED")
         _append_log(orchestrator_log, f"return archive: {archive}")
     except BaseException as package_exc:
         _append_log(orchestrator_log, f"return packaging failed: {type(package_exc).__name__}: {package_exc}")

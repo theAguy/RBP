@@ -274,7 +274,14 @@ stage selector, no direct-edge/components/assignment/audit/R3 path), stops at
 the first failure, and always attempts one `RBP_002C_R2_RETURN_<UTC>_<host>.zip`
 with STATUS, manifest, inventory, checksums, commands, logs, selection and
 path/size/hash records for excluded raw artifacts, guarded against sequence
-content. A SUCCESS return is not authorization for R3. Tests:
+content; if that guard trips, the return degrades to a minimal STATUS-only
+package and the effective status becomes `STOPPED` with a non-zero exit. The
+builder ships only an explicit R2 source subset (`R2_SOURCE_SUBSET`, checked
+against the launcher's static import closure), so direct-edge, components-v2,
+assignment, audit, `runner_002c` and 002C-3 modules are absent from the bundle;
+it also writes `RUNBOOK.md` and `PROMPT_FOR_CLAUDE_OR_CODEX.txt`, and with
+`--archive` builds a re-read-verified `<bundle>.tar.gz` plus `.sha256`
+(refusing an existing archive). A SUCCESS return is not authorization for R3. Tests:
 `PYTHONPATH=src python3 -m unittest tests.test_splits_portable_002c_r2`.
 
 Each checkpoint requires its own executor handoff and review; this

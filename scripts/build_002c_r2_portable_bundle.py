@@ -11,12 +11,14 @@ arm64 runtime, and generated launcher/runbook/config files.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -26,6 +28,48 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rbpbench.splits import portable_002c_r2 as launcher  # noqa: E402
 
 LAUNCHER_NAME = "RUN_002C_R2_PROBE.command"
+
+# Explicit R2-only source subset (the static import closure of the launcher
+# and ``resource_probe_r2``). Nothing else under src/rbpbench is shipped, so
+# direct-edge, components-v2, assignment, audit, runner_002c, the 002C-3
+# launcher and any R3-capable module are structurally absent. A test checks
+# this list against the real import closure so it cannot drift.
+R2_SOURCE_SUBSET: tuple[str, ...] = (
+    "rbpbench/__init__.py",
+    "rbpbench/coordinates/__init__.py",
+    "rbpbench/coordinates/alignment.py",
+    "rbpbench/coordinates/commands.py",
+    "rbpbench/coordinates/config.py",
+    "rbpbench/coordinates/decode.py",
+    "rbpbench/coordinates/diskbudget.py",
+    "rbpbench/coordinates/hashing.py",
+    "rbpbench/coordinates/preflight.py",
+    "rbpbench/coordinates/provenance.py",
+    "rbpbench/coordinates/reference.py",
+    "rbpbench/data/__init__.py",
+    "rbpbench/data/audit.py",
+    "rbpbench/splits/__init__.py",
+    "rbpbench/splits/commands.py",
+    "rbpbench/splits/guarded_exec.py",
+    "rbpbench/splits/portable_002c_r2.py",
+    "rbpbench/splits/resource_probe_r2.py",
+)
+
+PROMPT = """Instructions for the collaborator's AI assistant (Claude or Codex) - Task 002C-R2 resource probe
+
+Do exactly this and nothing else:
+
+1. Run ONLY the one launcher in this folder: RUN_002C_R2_PROBE.command (double-click it, or execute it once).
+2. Wait for it to finish. Do not interrupt it, retry it, or run it a second time.
+3. Return ONLY the generated ZIP: return/RBP_002C_R2_RETURN_<timestamp>_<host>.zip
+   (return it even if the run reports STOPPED).
+
+Do NOT:
+- run mmseqs or any other program from this folder directly, or change any file, setting, or flag;
+- inspect, copy, or upload the FASTA files, databases, or any other file in this folder;
+- authorize, start, or prepare R3 (full edge discovery) or any other task. A successful probe is resource
+  evidence only; it is NOT authorization for R3. Stop after returning the ZIP.
+"""
 
 RUNBOOK = """# Task 002C-R2 resource probe — runbook
 
@@ -128,7 +172,12 @@ def build_bundle(
         raise RuntimeError("runtime MMseqs2 does not match the expected native arm64 SHA-256")
 
     destination.mkdir(parents=True)
-    shutil.copytree(repo / "src/rbpbench", destination / "src/rbpbench", symlinks=True, ignore=_ignore_generated)
+    for rel in R2_SOURCE_SUBSET:
+        source = repo / "src" / rel
+        if not source.is_file():
+            raise RuntimeError(f"required R2 source file is missing from the repository: src/{rel}")
+        (destination / "src" / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination / "src" / rel)
     (destination / launcher.DECODE_MANIFEST_REL).parent.mkdir(parents=True)
     shutil.copy2(manifest_src, destination / launcher.DECODE_MANIFEST_REL)
     (destination / launcher.FASTA_DIR_REL).mkdir(parents=True)
@@ -144,6 +193,7 @@ def build_bundle(
     }
     (destination / launcher.CONFIG_REL).write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
     (destination / "RUNBOOK.md").write_text(RUNBOOK)
+    (destination / "PROMPT_FOR_CLAUDE_OR_CODEX.txt").write_text(PROMPT)
     (destination / "SOURCE_COMMIT.txt").write_text(commit + "\n")
     write_launcher(destination / LAUNCHER_NAME)
     summary = {
@@ -173,6 +223,68 @@ def build_bundle(
     return destination, summary | {"input_manifest_sha256": digest, "input_entry_count": len(entries)}
 
 
+def verify_archive(archive: Path, bundle: Path) -> int:
+    """Re-reads ``archive`` and checks it holds exactly the bundle's inventory
+    (every file/symlink, matching size/SHA-256/target) plus the manifest and
+    its hash file, under the bundle's top-level directory name."""
+    manifest = json.loads((bundle / launcher.INPUT_MANIFEST_REL).read_text())
+    expected = {e["path"]: e for e in manifest["entries"]}
+    for rel in (launcher.INPUT_MANIFEST_REL, launcher.INPUT_MANIFEST_HASH_REL):
+        expected[str(rel)] = {"path": str(rel), "type": "file", "byte_size": (bundle / rel).stat().st_size,
+                              "sha256": launcher.sha256_file(bundle / rel)}
+    seen = set()
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar.getmembers():
+            if member.isdir():
+                continue
+            if not member.name.startswith(bundle.name + "/"):
+                raise RuntimeError(f"archive member outside the bundle directory: {member.name}")
+            rel = member.name[len(bundle.name) + 1:]
+            entry = expected.get(rel)
+            if entry is None or rel in seen:
+                raise RuntimeError(f"archive holds an unexpected or duplicate member: {rel}")
+            seen.add(rel)
+            if entry["type"] == "symlink":
+                if not member.issym() or member.linkname != entry["target"]:
+                    raise RuntimeError(f"archive symlink mismatch: {rel}")
+            else:
+                if not member.isfile() or member.size != entry["byte_size"]:
+                    raise RuntimeError(f"archive file mismatch: {rel}")
+                digest = hashlib.sha256()
+                handle = tar.extractfile(member)
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                if digest.hexdigest() != entry["sha256"]:
+                    raise RuntimeError(f"archive file hash mismatch: {rel}")
+    if seen != set(expected):
+        raise RuntimeError(f"archive is missing members: {sorted(set(expected) - seen)[:5]}")
+    return len(seen)
+
+
+def create_archive(bundle: Path) -> tuple[Path, str]:
+    """``<bundle>.tar.gz`` plus ``<bundle>.tar.gz.sha256``, built only from a
+    completed bundle (its input manifest must exist), verified by re-reading,
+    and refused if either output already exists."""
+    bundle = Path(bundle).resolve()
+    if not (bundle / launcher.INPUT_MANIFEST_REL).is_file() or not (bundle / launcher.INPUT_MANIFEST_HASH_REL).is_file():
+        raise RuntimeError("bundle has no completed input manifest; refusing to archive")
+    launcher.verify_inventory(bundle)
+    archive = bundle.parent / (bundle.name + ".tar.gz")
+    checksum = bundle.parent / (archive.name + ".sha256")
+    if archive.exists() or checksum.exists():
+        raise FileExistsError(f"archive or checksum already exists: {archive}")
+    try:
+        with tarfile.open(archive, "w:gz") as handle:
+            handle.add(bundle, arcname=bundle.name, recursive=True)
+        verify_archive(archive, bundle)
+    except BaseException:
+        archive.unlink(missing_ok=True)
+        raise
+    digest = launcher.sha256_file(archive)
+    checksum.write_text(f"{digest}  {archive.name}\n")
+    return archive, digest
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", type=Path, required=True)
@@ -181,6 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--decode-dir", type=Path, required=True)
     p.add_argument("--decode-manifest-sha256", required=True)
     p.add_argument("--seed", type=int, required=True)
+    p.add_argument("--archive", action="store_true", help="also create a verified <bundle>.tar.gz and .sha256")
     return p
 
 
@@ -188,7 +301,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     a = build_parser().parse_args(argv)
     bundle, summary = build_bundle(a.repo, a.destination, a.runtime_prefix, a.decode_dir,
                                    decode_manifest_sha256=a.decode_manifest_sha256, seed=a.seed)
-    print(json.dumps({"bundle": str(bundle), **summary}, indent=2, sort_keys=True))
+    result = {"bundle": str(bundle), **summary}
+    if a.archive:
+        archive, digest = create_archive(bundle)
+        result.update({"archive": str(archive), "archive_sha256": digest, "archive_byte_size": archive.stat().st_size})
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

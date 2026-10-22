@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 import re
 import subprocess
 import time
@@ -407,7 +408,13 @@ def _run_text(argv: list[str]) -> str | None:
     return done.stdout if done.returncode == 0 else None
 
 
-def macos_process_tree_rss_kib(root_pid: int) -> int | None:
+def process_tree_rss_kib(root_pid: int) -> int | None:
+    """RSS for ``root_pid`` and every descendant, in KiB.
+
+    The selected ``ps`` columns are supported by both Darwin/BSD ``ps`` and
+    GNU/Linux ``ps``.  Keep the historical macOS name below as an alias for
+    callers/tests written before the Newton Linux execution path existed.
+    """
     out = _run_text(["ps", "-axo", "pid=,ppid=,rss="])
     if out is None:
         return None
@@ -424,6 +431,9 @@ def macos_process_tree_rss_kib(root_pid: int) -> int | None:
                 family.add(pid)
                 grew = True
     return sum(rows[p][1] for p in family if p in rows)
+
+
+macos_process_tree_rss_kib = process_tree_rss_kib
 
 
 _SWAP_RE = re.compile(r"used\s*=\s*([0-9.]+)([MGK])")
@@ -449,6 +459,58 @@ def macos_memory_pressure() -> tuple[str, str | None]:
     return raw.strip(), names.get(raw.strip(), raw.strip() or None)
 
 
+def linux_swap_used_bytes() -> tuple[str, int | None]:
+    """Linux swap use from ``/proc/meminfo``.
+
+    The raw evidence is retained exactly as with the macOS monitor.  Missing
+    or malformed kernel data fails closed through the caller.
+    """
+    try:
+        raw = Path("/proc/meminfo").read_text()
+    except OSError:
+        return "", None
+    values: dict[str, int] = {}
+    for line in raw.splitlines():
+        parts = line.replace(":", "").split()
+        if len(parts) >= 2 and parts[0] in {"SwapTotal", "SwapFree"} and parts[1].isdigit():
+            values[parts[0]] = int(parts[1]) * 1024
+    if set(values) != {"SwapTotal", "SwapFree"} or values["SwapFree"] > values["SwapTotal"]:
+        return raw, None
+    return raw, values["SwapTotal"] - values["SwapFree"]
+
+
+def linux_memory_pressure() -> tuple[str, str | None]:
+    """Linux pressure evidence paired with the live ``MemAvailable`` gate.
+
+    Linux has no macOS ``kern.memorystatus_vm_pressure_level`` equivalent.
+    We therefore retain PSI text when the kernel exposes it and use Linux's
+    own ``MemAvailable`` estimate as the fail-closed state measurement.  The
+    supervisor separately requires that value to remain at or above the
+    frozen 24-GiB launch threshold throughout every child process.
+    """
+    available = detect_available_memory_gib()
+    if available is None:
+        return "", None
+    try:
+        psi = Path("/proc/pressure/memory").read_text().strip()
+    except OSError:
+        psi = "unavailable"
+    state = "normal" if available >= ProbeLimits().min_available_ram_gib_before_launch else "warn"
+    return f"MemAvailableGiB={available:.6f}; PSI={psi}", state
+
+
+def swap_used_bytes() -> tuple[str, int | None]:
+    if platform.system() == "Linux":
+        return linux_swap_used_bytes()
+    return macos_swap_used_bytes()
+
+
+def memory_pressure() -> tuple[str, str | None]:
+    if platform.system() == "Linux":
+        return linux_memory_pressure()
+    return macos_memory_pressure()
+
+
 @dataclass
 class ResourceMonitors:
     """Injectable measurements. Every one may return ``None`` (unavailable),
@@ -456,11 +518,11 @@ class ResourceMonitors:
 
     installed_ram_gib: Callable[[], float | None] = detect_physical_ram_gib
     available_ram_gib: Callable[[], float | None] = detect_available_memory_gib
-    process_tree_rss_kib: Callable[[int], int | None] = macos_process_tree_rss_kib
+    process_tree_rss_kib: Callable[[int], int | None] = process_tree_rss_kib
     free_disk_gib: Callable[[Path], float] = lambda p: snapshot(nearest_existing_ancestor(p)).free_gib
     dir_size_bytes: Callable[[Path], int] = directory_size_bytes
-    swap_used_bytes: Callable[[], tuple[str, int | None]] = macos_swap_used_bytes
-    memory_pressure: Callable[[], tuple[str, str | None]] = macos_memory_pressure
+    swap_used_bytes: Callable[[], tuple[str, int | None]] = swap_used_bytes
+    memory_pressure: Callable[[], tuple[str, str | None]] = memory_pressure
     clock: Callable[[], float] = time.monotonic
     children_peak_rss_kib: Callable[[], int | None] = peak_rss_kib_of_children
 

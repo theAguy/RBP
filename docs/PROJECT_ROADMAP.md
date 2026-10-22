@@ -3,10 +3,10 @@
 **Purpose:** provide one plain-language, end-to-end source of truth for the
 investigation and comparison of the former teammate's 122-protein RBP model.
 
-**Last updated:** 2026-10-05
-**Current stage:** Task 002C-R2 portable resource-probe package built; awaiting
-one collaborator execution on the 64-GiB Apple-Silicon Mac
-probes that precede components-v2 rebuilding
+**Last updated:** 2026-10-22
+**Current stage:** Task 002C-R2 Newton/Linux execution adaptation prepared for
+second review. The Apple-Silicon package was valid but its one collaborator
+attempt stopped before MMseqs2 because free disk was below the frozen gate.
 
 **Model comparison status:** not started; the benchmark split must be frozen
 first
@@ -380,10 +380,11 @@ The correction is **components v2**: run the frozen direct search all-vs-all
 at each protected width, normalize its pairwise edges, union them with exact/RC
 edges, and rebuild connected components before reassignment. The synthetic
 components-v2 core and the synthetic guarded R2 probe core are accepted. The
-current R2 boundary is portable-package implementation and synthetic
-verification; its deterministic
-10,000-query/full-target probe will measure resource cost before any full edge
-discovery is authorized.
+first portable Mac attempt stopped safely before MMseqs2 at the 100-GiB disk
+gate (90.76 GiB was available). A Newton/Slurm Linux package is now prepared
+for second review; its deterministic 10,000-query/full-target probe will
+measure resource cost before any full edge discovery is authorized. The GPU
+is not used for this MMseqs2 workload.
 
 ### 12.4 Freeze the final split
 

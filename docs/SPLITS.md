@@ -293,5 +293,24 @@ and the launcher re-checks them and reports `runtime_provenance` in the return
 `STATUS.json`. A SUCCESS return is not authorization for R3. Tests:
 `PYTHONPATH=src python3 -m unittest tests.test_splits_portable_002c_r2`.
 
+The accepted Mac package was subsequently built. Its collaborator attempt
+stopped before any MMseqs2 command because only 90.76 GiB was free, below the
+frozen 100-GiB pre-width gate; that STOPPED return is preserved at
+`artifacts/teammate_run_results/return.zip`.
+
+### Task 002C-R2N Newton/Slurm adapter (awaiting second review)
+
+`rbpbench.splits.newton_002c_r2` and `hpc/newton/002c_r2/` adapt the same R2
+core to a scheduled Linux x86_64 node. The scientific command, seed, sample,
+widths, target universe, four-thread cap and projection gates are unchanged.
+Linux monitoring uses process-tree RSS, `/proc/meminfo` swap and
+`MemAvailable`, plus raw PSI evidence; an unreadable measurement fails closed.
+The submit wrapper requests four CPUs, 96 GiB RAM, eight hours, no requeue and
+no GPU, and the launcher refuses to run outside Slurm. A separate conda setup
+pins MMseqs2 18.8cc5c build `hd6d6fdc_0`, exports an explicit lock and records the exact Linux
+binary hash; the job revalidates that receipt. The full operator procedure and
+review boundary are in `docs/tasks/002c_r2_newton_hpc_execution.md` and
+`docs/reviews/002c_r2_newton_hpc_execution_review_request.md`.
+
 Each checkpoint requires its own executor handoff and review; this
 implementation does not silently continue into a later checkpoint.

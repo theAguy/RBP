@@ -81,6 +81,22 @@ for forbidden in r2_output return execution_logs; do
   }
 done
 
+print_failed_submit_recovery() {
+  printf '\nNo successful submission receipt was created. Recovery:\n' >&2
+  printf '  1. Confirm no job exists: squeue --me --name=rbp-r2-probe\n' >&2
+  printf '  2. Only if that shows no job, remove the failed receipt:\n' >&2
+  printf '     rm %q\n' "$SUBMISSION_DIR/SUBMIT_FAILED.txt" >&2
+  printf '     rmdir %q\n' "$SUBMISSION_DIR" >&2
+  printf '  3. Correct the account/partition request and run this submit wrapper once.\n' >&2
+}
+
+if [[ -f "$SUBMISSION_DIR/SUBMIT_FAILED.txt" ]]; then
+  printf 'A prior scheduler rejection is recorded at %s:\n' "$SUBMISSION_DIR/SUBMIT_FAILED.txt" >&2
+  cat "$SUBMISSION_DIR/SUBMIT_FAILED.txt" >&2
+  print_failed_submit_recovery
+  exit 1
+fi
+
 mkdir "$SUBMISSION_DIR" || {
   printf 'Refusing a second submission: receipt directory already exists: %s\n' "$SUBMISSION_DIR" >&2
   exit 1
@@ -109,6 +125,25 @@ printf '  time:     %s\n' "$TIME_LIMIT"
 printf '  account:  %s\n' "${ACCOUNT:-Newton default}"
 printf '  partition:%s\n' "${PARTITION:-Newton default}"
 
-SUBMISSION=$(sbatch "${SBATCH_ARGS[@]}" "$BUNDLE_ROOT/hpc/newton/002c_r2/RUN_R2_PROBE.sbatch")
+SBATCH_STDERR="$SUBMISSION_DIR/sbatch.stderr.tmp"
+set +e
+SUBMISSION=$(sbatch "${SBATCH_ARGS[@]}" "$BUNDLE_ROOT/hpc/newton/002c_r2/RUN_R2_PROBE.sbatch" 2>"$SBATCH_STDERR")
+SBATCH_STATUS=$?
+set -e
+if (( SBATCH_STATUS != 0 )); then
+  {
+    printf 'sbatch exit status: %s\n' "$SBATCH_STATUS"
+    printf 'sbatch stderr:\n'
+    cat "$SBATCH_STDERR"
+    if [[ -n "$SUBMISSION" ]]; then
+      printf 'sbatch stdout:\n%s\n' "$SUBMISSION"
+    fi
+  } > "$SUBMISSION_DIR/SUBMIT_FAILED.txt"
+  rm -f "$SBATCH_STDERR"
+  cat "$SUBMISSION_DIR/SUBMIT_FAILED.txt" >&2
+  print_failed_submit_recovery
+  exit "$SBATCH_STATUS"
+fi
+rm -f "$SBATCH_STDERR"
 printf '%s\n' "$SUBMISSION" | tee "$SUBMISSION_DIR/submission.txt"
 printf 'Use 03_CHECK_STATUS.sh to monitor the job.\n'

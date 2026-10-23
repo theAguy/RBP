@@ -62,7 +62,9 @@ PYTHONPATH=src python3 -m unittest \
   tests.test_splits_components_v2 \
   tests.test_splits_commands
 
-bash -n hpc/newton/002c_r2/*.sh hpc/newton/002c_r2/*.sbatch
+for script in hpc/newton/002c_r2/*.sh hpc/newton/002c_r2/*.sbatch; do
+  bash -n "$script"
+done
 git diff --check 91af9e0..HEAD
 ```
 
@@ -77,3 +79,18 @@ Confirm specifically that:
 
 Do not read the real FASTAs/CSV, build the large archive, install MMseqs2,
 submit Slurm work, or run a real binary during this correction review.
+
+## Second bounded follow-up
+
+The Linux review confirmed all four original blockers and the focused suite,
+then identified two small delivery races.  The follow-up diff must also show:
+
+- a rejected `sbatch` writes `SUBMIT_FAILED.txt`, cannot be silently reused,
+  and prints recovery steps that require an empty `squeue` result before the
+  operator removes the failed receipt; and
+- after the first `USR1`/`SIGTERM` enters the STOPPED path, later termination
+  signals are ignored until return packaging finishes.
+
+The synthetic suite includes a rejected-then-corrected fake-sbatch test and a
+two-signal STOPPED-ZIP test.  A quick diff check is sufficient; scientific
+commands and gates remain outside this follow-up.

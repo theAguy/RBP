@@ -110,8 +110,17 @@ def termination_handlers():
     """
     watched = tuple(sig for sig in (signal.SIGUSR1, signal.SIGTERM) if sig is not None)
     previous = {sig: signal.getsignal(sig) for sig in watched}
+    first_signal_received = False
 
     def stop(signum, _frame):
+        nonlocal first_signal_received
+        if first_signal_received:
+            return
+        first_signal_received = True
+        # A second Slurm signal must not interrupt the small STOPPED-return
+        # package triggered by the first one.
+        for sig in watched:
+            signal.signal(sig, signal.SIG_IGN)
         raise NewtonR2Signal(f"received {signal.Signals(signum).name}; stopping and packaging evidence")
 
     try:

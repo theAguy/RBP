@@ -206,7 +206,15 @@ exists, so two queued jobs cannot race on one extraction.  The package is
 single-use and the job stops without retry at the first failed gate.  Slurm is
 asked to send `USR1` ten minutes before the time limit; `USR1` and `SIGTERM`
 both terminate any active MMseqs2 process group and route through the normal
-small STOPPED-return path.
+small STOPPED-return path.  Later termination signals are ignored while that
+return is being packaged, so cancellation cannot interrupt the evidence ZIP.
+
+If `sbatch` itself rejects the request, no job was accepted and no successful
+submission receipt is written.  The wrapper preserves the scheduler error in
+`SUBMIT_FAILED.txt` and prints a bounded recovery: confirm with
+`squeue --me --name=rbp-r2-probe` that no job exists, remove only that failure
+receipt and its empty directory, correct the account/partition, and submit
+once.  A failed receipt is never silently overwritten or adopted.
 
 ### 6. Monitor without modifying the run
 

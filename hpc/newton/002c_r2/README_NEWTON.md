@@ -33,5 +33,13 @@ the time limit so it can stop its child and package evidence.  Whether the
 outcome is SUCCESS or STOPPED, return only the generated ZIP plus its
 `.sha256` file.
 
+If `sbatch` rejects the request (for example, because the account or partition
+is invalid), the wrapper writes `SUBMIT_FAILED.txt` beside the bundle and
+prints the recovery procedure.  First run
+`squeue --me --name=rbp-r2-probe` and confirm that no job exists.  Only then
+remove the named `SUBMIT_FAILED.txt`, remove its now-empty receipt directory,
+correct the account/partition, and submit once.  Never remove a successful
+`submission.txt` receipt and never resubmit while any matching job exists.
+
 The full explanation and file map are in
 `docs/tasks/002c_r2_newton_hpc_execution.md` in the source repository.

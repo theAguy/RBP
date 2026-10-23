@@ -339,8 +339,9 @@ def project_width(measured: Mapping, limits: ProbeLimits = ProbeLimits()) -> dic
     ``measured``: search_seconds, createtsv_seconds, db_creation_seconds,
     peak_rss_gib, result_bytes (rendered TSV), retained_upper_bound_bytes
     (max of raw result-DB and rendered-TSV bytes; an UPPER-BOUND estimate,
-    not actual R3 retained output), and transient_free_disk_drop_gib (whole
-    width stage: start free - minimum free across all four commands).
+    not actual R3 retained output), and transient_free_disk_drop_gib (the
+    larger of whole-width free-space drop and peak candidate-generation
+    size).
     """
 
     def pair(value: float) -> dict:

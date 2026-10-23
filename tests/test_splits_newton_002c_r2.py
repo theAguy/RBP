@@ -168,7 +168,7 @@ class ReturnPackageTests(unittest.TestCase):
             self.assertTrue(status["minimal_return"])
             self.assertEqual(status["failure"]["status_before_return_guard"], "SUCCESS")
 
-    def test_sigterm_uses_stopped_return_path(self):
+    def test_sigterm_uses_stopped_return_path_and_second_signal_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = {
@@ -180,6 +180,12 @@ class ReturnPackageTests(unittest.TestCase):
             def terminate(*_args, **_kwargs):
                 os.kill(os.getpid(), signal.SIGTERM)
 
+            real_package_return = newton.package_return
+
+            def package_after_second_signal(*args, **kwargs):
+                os.kill(os.getpid(), signal.SIGTERM)
+                return real_package_return(*args, **kwargs)
+
             with patch.object(newton.package, "verify_inventory", return_value={"hashes": {}}), patch.object(
                 newton, "load_config", return_value=config
             ), patch.object(newton, "load_runtime_receipt", return_value={
@@ -189,6 +195,8 @@ class ReturnPackageTests(unittest.TestCase):
                 newton.package, "bind_decode_manifest_and_fastas", return_value={500: Path("fake")}
             ), patch.object(newton.package, "load_universe", return_value=[]), patch.object(
                 newton.probe, "run_probe", side_effect=terminate
+            ), patch.object(
+                newton, "package_return", side_effect=package_after_second_signal
             ):
                 code, archive = newton.execute(root, root / "receipt.json")
             self.assertEqual(code, 1)
@@ -221,6 +229,10 @@ class SubmitWrapperTests(unittest.TestCase):
         sbatch.write_text(
             "#!/usr/bin/env bash\n"
             "printf '%s\\n' \"$*\" >> \"$FAKE_SBATCH_LOG\"\n"
+            "if [[ -n \"${FAKE_SBATCH_FAIL:-}\" ]]; then\n"
+            "  printf 'Invalid account\\n' >&2\n"
+            "  exit 1\n"
+            "fi\n"
             "printf '12345;newton\\n'\n"
         )
         sbatch.chmod(0o755)
@@ -259,6 +271,32 @@ class SubmitWrapperTests(unittest.TestCase):
             self.assertIn("--signal=B:USR1@600", calls[0])
             receipt = Path(str(bundle) + ".slurm_submission/submission.txt")
             self.assertEqual(receipt.read_text(), "12345;newton\n")
+
+    def test_scheduler_rejection_leaves_auditable_recovery_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle, env, fake_log = self.fixture(Path(tmp))
+            failed = self.run_submit(bundle, env | {"FAKE_SBATCH_FAIL": "1"})
+            self.assertNotEqual(failed.returncode, 0)
+            receipt_dir = Path(str(bundle) + ".slurm_submission")
+            failure_receipt = receipt_dir / "SUBMIT_FAILED.txt"
+            self.assertTrue(failure_receipt.is_file())
+            self.assertIn("Invalid account", failure_receipt.read_text())
+            self.assertFalse((receipt_dir / "submission.txt").exists())
+            self.assertIn("squeue --me --name=rbp-r2-probe", failed.stderr)
+            self.assertIn("rmdir", failed.stderr)
+
+            # The wrapper itself will not silently reuse the failed receipt.
+            blocked = self.run_submit(bundle, env)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertEqual(len(fake_log.read_text().splitlines()), 1)
+
+            # Follow the printed recovery only after the synthetic scheduler
+            # has established that nothing was queued, then submit once.
+            failure_receipt.unlink()
+            receipt_dir.rmdir()
+            accepted = self.run_submit(bundle, env)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(len(fake_log.read_text().splitlines()), 2)
 
 
 if __name__ == "__main__":

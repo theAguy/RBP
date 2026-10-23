@@ -1,0 +1,47 @@
+{
+  "archive": {
+    "byte_size": 91147898,
+    "path": "artifacts/newton_handoff/RBP_Task002C_R2_Newton_f65a415.tar.gz",
+    "sha256": "01180538fb1dd3893b098c6c0f4d02bbddf6d14f93b273b33d357f836c21a2af"
+  },
+  "archive_verification": {
+    "method": "scripts/build_002c_r2_newton_bundle.py:archive",
+    "verified_non_directory_entry_count": 36
+  },
+  "bundle": {
+    "bundle_summary_sha256": "9dd1dc5476be62e6acf3536e7a62d4720402c06f226fd2cd95b924dd1f2974ef",
+    "config_sha256": "caa1819454268446792522ca6d546e54c7ccd1ca2aa0f6ea1482a3e30ccfd1dc",
+    "input_entry_count": 34,
+    "input_manifest_byte_size": 6797,
+    "input_manifest_sha256": "d576231321e5fc775eab5f2756a78e81946cd846e12971106c96e9afe5a50d6c",
+    "path": "artifacts/newton_handoff/RBP_Task002C_R2_Newton_f65a415",
+    "source_commit_file_sha256": "eee23c18edfe97af623bb662b61c3ab690900b3264befe448e002aa1560dc7e1"
+  },
+  "checkpoint": "002C-R2N immutable Newton-package build",
+  "created_at_utc": "2026-10-23T12:09:24Z",
+  "execution_boundary": {
+    "environment_installed": false,
+    "real_mmseqs2_launched": false,
+    "r3_started": false,
+    "resource_probe_run": false,
+    "slurm_job_submitted": false
+  },
+  "frozen_inputs": {
+    "decode_manifest_sha256": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3",
+    "expected_mmseqs_conda_build": "hd6d6fdc_0",
+    "expected_mmseqs_version": "18.8cc5c",
+    "expected_row_count": 361180,
+    "probe_seed": 20260925,
+    "sample_size": 10000,
+    "stages": [
+      "probe_500",
+      "probe_251",
+      "probe_101"
+    ]
+  },
+  "gpu_required": false,
+  "r3_authorization": "none",
+  "schema_version": 1,
+  "source_branch": "issue-002c-partition-assignment",
+  "source_commit": "f65a415f32511c505e19390d71d73146974a55c6"
+}

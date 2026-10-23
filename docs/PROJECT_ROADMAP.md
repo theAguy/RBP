@@ -484,12 +484,16 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Execute the reviewed one-shot Task 002C-3/4 bundle on the 64-GiB native
-   Apple-Silicon host and return its generated ZIP.
-2. Independently review the three probes, all 18 directed searches, and the
-   conditional finalization evidence.
-3. Freeze the final partition only if every search has zero qualifying hits.
-4. Begin simple baselines only after the split is locked.
+1. Close the bounded operational review corrections for the Newton/Linux
+   Task 002C-R2 resource probe, then build its immutable archive.
+2. Run that one-shot CPU-only R2 probe through Slurm and review its returned
+   resource projections. R2 creates no scientific edges.
+3. Authorize the full direct-edge discovery (R3) only if R2 passes; then build
+   components v2, reassign whole components, and rerun the fresh leakage
+   audits.
+4. Freeze the final partition only when every protected-width,
+   cross-partition audit reports zero qualifying hits.
+5. Begin simple baselines only after that split is locked.
 
 ## 19. Claims we can and cannot make today
 

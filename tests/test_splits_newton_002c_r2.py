@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import signal
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,7 +26,7 @@ class NewtonConfigTests(unittest.TestCase):
                 "schema_version": 1,
                 "checkpoint": newton.CHECKPOINT,
                 "seed": 20260925,
-                "decode_manifest_sha256": "a" * 64,
+                "decode_manifest_sha256": newton.FROZEN_DECODE_MANIFEST_SHA256,
                 "sample_size": 10000,
                 "expected_row_count": 361180,
                 "expected_mmseqs_version": "18.8cc5c",
@@ -37,6 +40,9 @@ class NewtonConfigTests(unittest.TestCase):
                 {"sample_size": 9999},
                 {"stages": ["probe_500"]},
                 {"expected_mmseqs_version": "other"},
+                {"seed": 1},
+                {"decode_manifest_sha256": "a" * 64},
+                {"expected_row_count": 1},
             ):
                 (root / newton.CONFIG_REL).write_text(json.dumps(value | changed))
                 with self.assertRaises(newton.NewtonR2Error):
@@ -161,6 +167,98 @@ class ReturnPackageTests(unittest.TestCase):
             status = json.loads((destination / "STATUS.json").read_text())
             self.assertTrue(status["minimal_return"])
             self.assertEqual(status["failure"]["status_before_return_guard"], "SUCCESS")
+
+    def test_sigterm_uses_stopped_return_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = {
+                "seed": newton.FROZEN_SEED,
+                "sample_size": 10_000,
+                "expected_row_count": newton.FROZEN_ROW_COUNT,
+            }
+
+            def terminate(*_args, **_kwargs):
+                os.kill(os.getpid(), signal.SIGTERM)
+
+            with patch.object(newton.package, "verify_inventory", return_value={"hashes": {}}), patch.object(
+                newton, "load_config", return_value=config
+            ), patch.object(newton, "load_runtime_receipt", return_value={
+                "mmseqs_executable": "/fake/mmseqs", "mmseqs_sha256": "a" * 64,
+                "mmseqs_version": newton.FROZEN_MMSEQS_VERSION,
+            }), patch.object(newton, "check_newton_job", return_value={"synthetic": True}), patch.object(
+                newton.package, "bind_decode_manifest_and_fastas", return_value={500: Path("fake")}
+            ), patch.object(newton.package, "load_universe", return_value=[]), patch.object(
+                newton.probe, "run_probe", side_effect=terminate
+            ):
+                code, archive = newton.execute(root, root / "receipt.json")
+            self.assertEqual(code, 1)
+            self.assertTrue(archive.is_file())
+            status_paths = list((root / "return").glob("RBP_002C_R2_NEWTON_RETURN_*/STATUS.json"))
+            self.assertEqual(len(status_paths), 1)
+            status = json.loads(status_paths[0].read_text())
+            self.assertEqual(status["status"], "STOPPED")
+            self.assertEqual(status["failure"]["type"], "NewtonR2Signal")
+
+
+class SubmitWrapperTests(unittest.TestCase):
+    def fixture(self, parent: Path) -> tuple[Path, dict, Path]:
+        bundle = parent / "bundle"
+        script_dir = bundle / "hpc" / "newton" / "002c_r2"
+        script_dir.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[1] / "hpc" / "newton" / "002c_r2" / "02_SUBMIT_R2_PROBE.sh"
+        shutil.copy2(source, script_dir / source.name)
+        (script_dir / "RUN_R2_PROBE.sbatch").write_text("#!/usr/bin/env bash\n")
+        for name in ("R2_INPUT_MANIFEST.json", "R2_INPUT_MANIFEST.sha256", "R2_NEWTON_CONFIG.json"):
+            (bundle / name).write_text("{}\n")
+        env_prefix = parent / "env"
+        env_prefix.mkdir()
+        (env_prefix / "newton_runtime_receipt.json").write_text("{}\n")
+        (env_prefix / "newton_runtime_receipt.json.sha256").write_text("0\n")
+        fake_bin = parent / "bin"
+        fake_bin.mkdir()
+        fake_log = parent / "sbatch.log"
+        sbatch = fake_bin / "sbatch"
+        sbatch.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$*\" >> \"$FAKE_SBATCH_LOG\"\n"
+            "printf '12345;newton\\n'\n"
+        )
+        sbatch.chmod(0o755)
+        env = os.environ.copy() | {
+            "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+            "RBP_NEWTON_ENV_PREFIX": str(env_prefix),
+            "FAKE_SBATCH_LOG": str(fake_log),
+        }
+        return bundle, env, fake_log
+
+    def run_submit(self, bundle: Path, env: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(bundle / "hpc/newton/002c_r2/02_SUBMIT_R2_PROBE.sh")],
+            env=env, capture_output=True, text=True, check=False,
+        )
+
+    def test_downward_memory_and_time_overrides_are_refused(self):
+        for override in ({"NEWTON_MEMORY": "8G"}, {"NEWTON_TIME_LIMIT": "00:10:00"}):
+            with self.subTest(override=override), tempfile.TemporaryDirectory() as tmp:
+                bundle, env, fake_log = self.fixture(Path(tmp))
+                done = self.run_submit(bundle, env | override)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertFalse(fake_log.exists())
+                self.assertFalse(Path(str(bundle) + ".slurm_submission").exists())
+
+    def test_submit_is_single_use_and_parsable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle, env, fake_log = self.fixture(Path(tmp))
+            first = self.run_submit(bundle, env)
+            second = self.run_submit(bundle, env)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertNotEqual(second.returncode, 0)
+            calls = fake_log.read_text().splitlines()
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--parsable", calls[0])
+            self.assertIn("--signal=B:USR1@600", calls[0])
+            receipt = Path(str(bundle) + ".slurm_submission/submission.txt")
+            self.assertEqual(receipt.read_text(), "12345;newton\n")
 
 
 if __name__ == "__main__":

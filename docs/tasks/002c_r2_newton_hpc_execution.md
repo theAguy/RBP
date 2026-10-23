@@ -60,6 +60,7 @@ The core R2 gates are unchanged:
 - at least 64 GiB installed/node RAM;
 - at least 24 GiB available RAM before and throughout every child;
 - at least 100 GiB free disk before a width and 80 GiB throughout;
+- at least 100 GiB of confirmed user/group quota headroom before submission;
 - at most 10 GiB temporary/output growth per width;
 - at most two hours per probe width;
 - swap growth at most 2 GiB;
@@ -72,7 +73,8 @@ The core R2 gates are unchanged:
 Newton additionally must provide exactly four Slurm CPUs and at least 64 GiB
 of allocated memory.  The submission default is 96 GiB, providing headroom
 without changing a scientific parameter.  The job is CPU-only: MMseqs2 in
-this workflow does not use the GPU.
+this workflow does not use the GPU.  The wrapper rejects any memory override
+below 96 GiB or time override below eight hours.
 
 ## Linux operational adaptation
 
@@ -86,6 +88,13 @@ The original R2 monitor used macOS `sysctl`.  The Newton adapter adds:
 An unavailable RSS, available-memory or swap measurement stops the run.  The
 24-GiB available-memory floor is enforced live on Linux.  Slurm allocation
 memory is verified independently from physical node memory.
+
+Transient disk is measured conservatively as the larger of the observed
+filesystem free-space drop and the peak size of the probe's own candidate
+generation.  This prevents unrelated deletions on shared storage from hiding
+the probe's growth.  Host preflight also retains `quota -s` and `lfs quota`
+diagnostics when those commands exist; because Newton storage policies vary,
+the operator still confirms quota headroom before submitting.
 
 ## Deliverable layout
 
@@ -122,6 +131,18 @@ node.  Copy the verified bundle archive and its `.sha256` file to a location
 with at least 100 GiB free and sufficient user quota.  Newton documents
 `/home` and `/datasets`; the operator may instead use an authorized lab
 volume.
+
+Before extraction or submission, inspect quota as supported by the selected
+filesystem:
+
+```bash
+quota -s
+lfs quota -u "$USER" /the/selected/storage/path
+```
+
+Proceed only after confirming at least 100 GiB of quota headroom.  If neither
+command reports meaningful information, confirm the limit with the Newton
+administrator; `df` free space alone is not sufficient on shared storage.
 
 ### 2. Verify and extract
 
@@ -180,8 +201,12 @@ bash hpc/newton/002c_r2/02_SUBMIT_R2_PROBE.sh
 ```
 
 The wrapper invokes `sbatch`; it never performs the search on the login node.
-The package is single-use and the job stops without retry at the first failed
-gate.
+It atomically creates a submission receipt and refuses if that receipt already
+exists, so two queued jobs cannot race on one extraction.  The package is
+single-use and the job stops without retry at the first failed gate.  Slurm is
+asked to send `USR1` ten minutes before the time limit; `USR1` and `SIGTERM`
+both terminate any active MMseqs2 process group and route through the normal
+small STOPPED-return path.
 
 ### 6. Monitor without modifying the run
 

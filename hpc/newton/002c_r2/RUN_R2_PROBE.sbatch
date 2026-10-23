@@ -9,6 +9,7 @@ export PYTHONPATH="$RBP_BUNDLE_ROOT/src"
 export PYTHONNOUSERSITE=1
 export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=4
+unset PYTHONHOME LD_PRELOAD LD_LIBRARY_PATH
 
 exec "$RBP_ENV_PREFIX/bin/python" -m rbpbench.splits.newton_002c_r2 \
   --bundle-root "$RBP_BUNDLE_ROOT" \

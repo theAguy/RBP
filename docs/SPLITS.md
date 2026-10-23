@@ -246,7 +246,8 @@ audit, or R3 stage. Result parsing is bounded streaming: the raw
 `createtsv` output must be grouped by query (duplicates are checked only
 within the current query), per-block rows *and bytes* per query are reported
 and both are subject to the 1.5x heterogeneity gate, the transient-disk
-projection uses the whole width stage's free-disk minimum, the retained
+projection uses the larger of the whole-width free-space drop and the peak
+size of the probe's own candidate generation (important on shared storage), the retained
 figure is an upper bound `max(raw result DB, rendered TSV)`, peak RSS also
 includes a post-run child measurement, and MMseqs2 warnings stop the stage
 before the next command. Block bytes are the exact supplied TSV bytes, the whole-width disk

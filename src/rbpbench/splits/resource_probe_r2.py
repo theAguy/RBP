@@ -610,15 +610,20 @@ def run_supervised(
     with out_path.open("w") as so, err_path.open("w") as se:
         proc = subprocess.Popen(list(command.argv), shell=False, stdout=so, stderr=se, text=True, start_new_session=True)
         rc: int | None = None
-        while rc is None:
-            try:
-                rc = proc.wait(timeout=poll_interval)
-            except subprocess.TimeoutExpired:
-                pass
-            violation = sample(proc.pid) if rc is None else None
-            if violation:
+        try:
+            while rc is None:
+                try:
+                    rc = proc.wait(timeout=poll_interval)
+                except subprocess.TimeoutExpired:
+                    pass
+                violation = sample(proc.pid) if rc is None else None
+                if violation:
+                    _kill_process_group(proc)
+                    raise ProbeResourceError(f"{command.tool}: {violation}: {format_command(command.argv)}")
+        except BaseException:
+            if proc.poll() is None:
                 _kill_process_group(proc)
-                raise ProbeResourceError(f"{command.tool}: {violation}: {format_command(command.argv)}")
+            raise
     now = monitors.clock()
     elapsed = now - start
     if now > deadline:  # a child that exited between polls after the deadline is not accepted
@@ -744,6 +749,8 @@ def run_probe_stage(
     result_db_bytes = sum(p.stat().st_size for p in gen.glob("result*") if p.is_file() and p != tsv)
     retained_upper = max(result_db_bytes, result_bytes)
     stage_min_free = min([stage_start_free] + [st["min_free_disk_gib"] for st in steps.values()])
+    free_space_drop = max(0.0, stage_start_free - stage_min_free)
+    peak_generation_size = max(st["peak_dir_bytes"] for st in steps.values()) / GIB
     search = steps["search"]
     measured = {
         "search_seconds": search["elapsed_seconds"],
@@ -756,7 +763,10 @@ def run_probe_stage(
         "retained_upper_bound_bytes": retained_upper,
         "stage_start_free_disk_gib": stage_start_free,
         "stage_min_free_disk_gib": stage_min_free,
-        "transient_free_disk_drop_gib": max(0.0, stage_start_free - stage_min_free),
+        "free_space_drop_gib": free_space_drop,
+        "peak_generation_size_gib": peak_generation_size,
+        "transient_free_disk_drop_gib": max(free_space_drop, peak_generation_size),
+        "transient_disk_measurement": "max(filesystem free-space drop, peak candidate-generation size)",
     }
     projection = project_width(measured, limits)
     failures = evaluate_width_gates(projection, limits)

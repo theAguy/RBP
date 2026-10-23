@@ -7,6 +7,11 @@ From the extracted bundle on the Newton login node:
 
 ```bash
 bash hpc/newton/002c_r2/01_INSTALL_ENVIRONMENT.sh
+# Check your storage quota before submitting. Confirm at least 100 GiB of
+# quota headroom for the directory containing this extracted bundle.
+quota -s
+# On Lustre, when available:
+lfs quota -u "$USER" "$(pwd)"
 bash hpc/newton/002c_r2/02_SUBMIT_R2_PROBE.sh
 bash hpc/newton/002c_r2/03_CHECK_STATUS.sh
 # after completion:
@@ -15,11 +20,18 @@ bash hpc/newton/002c_r2/04_VERIFY_RETURN.sh
 
 If your lab requires an account and partition, set `NEWTON_ACCOUNT` and
 `NEWTON_PARTITION` before submission.  The default job asks for 4 CPUs,
-96 GiB RAM, 8 hours and no GPU.
+96 GiB RAM, 8 hours and no GPU.  If neither quota command reports usable
+information, confirm the 100-GiB quota headroom with the Newton administrator
+before submitting.  Do not confuse filesystem free space with your personal
+or group quota.  Memory and time overrides may only increase the reviewed
+96-GiB and eight-hour defaults.
 
 Never run the Python module or MMseqs2 directly, never submit the extracted
-bundle twice, and never continue into R3.  Whether the outcome is SUCCESS or
-STOPPED, return only the generated ZIP plus its `.sha256` file.
+bundle twice, and never continue into R3.  The wrapper refuses a second
+submission.  Slurm sends the launcher an advance signal ten minutes before
+the time limit so it can stop its child and package evidence.  Whether the
+outcome is SUCCESS or STOPPED, return only the generated ZIP plus its
+`.sha256` file.
 
 The full explanation and file map are in
 `docs/tasks/002c_r2_newton_hpc_execution.md` in the source repository.

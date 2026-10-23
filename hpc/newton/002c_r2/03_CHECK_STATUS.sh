@@ -4,8 +4,8 @@ set -Eeuo pipefail
 BUNDLE_ROOT=$(cd "$(dirname "$0")/../../.." && pwd -P)
 SUBMISSION="${BUNDLE_ROOT}.slurm_submission/submission.txt"
 [[ -f "$SUBMISSION" ]] || { printf 'No submission receipt found.\n' >&2; exit 1; }
-JOB_ID=$(grep -Eo '[0-9]+' "$SUBMISSION" | tail -1)
-[[ -n "$JOB_ID" ]] || { printf 'Could not parse job ID from %s\n' "$SUBMISSION" >&2; exit 1; }
+IFS=';' read -r JOB_ID _ < "$SUBMISSION"
+[[ "$JOB_ID" =~ ^[0-9]+$ ]] || { printf 'Could not parse exact job ID from %s\n' "$SUBMISSION" >&2; exit 1; }
 
 printf 'Job %s\n' "$JOB_ID"
 squeue --jobs="$JOB_ID" --format='%.18i %.12P %.24j %.10T %.12M %.12l %.8C %R' || true

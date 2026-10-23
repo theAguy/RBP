@@ -45,9 +45,10 @@ def write_fastas(root, ids):
 
 
 FAKE = """#!{py}
-import os, sys
+import os, sys, time
 a = sys.argv[1:]
 mode = os.environ.get("FAKE_MODE", "ok")
+time.sleep(float(os.environ.get("FAKE_DELAY", "0")))
 def ids(path):
     return [l[1:].strip() for l in open(path) if l.startswith(">")]
 if a[0] == "createdb":
@@ -106,6 +107,7 @@ class ProbeBase(unittest.TestCase):
         self.fake.write_text(FAKE.replace("{py}", sys.executable))
         self.fake.chmod(self.fake.stat().st_mode | stat.S_IXUSR)
         self.addCleanup(os.environ.pop, "FAKE_MODE", None)
+        self.addCleanup(os.environ.pop, "FAKE_DELAY", None)
 
     def run_probe(self, name="out", monitors=None, limits=None, **kw):
         return r2.run_probe(
@@ -353,6 +355,9 @@ class ProjectionTests(unittest.TestCase):
 
 class LiveMonitorTests(ProbeBase):
     def attempt(self, expect="", **mon):
+        # Ensure commands subject to live-monitor assertions survive at least
+        # one 50-ms polling interval on both macOS and Linux schedulers.
+        os.environ["FAKE_DELAY"] = "0.3"
         with self.assertRaises(ProbeResourceError) as ctx:
             self.run_probe(monitors=good_monitors(**mon))
         self.assertIn(expect, str(ctx.exception))
@@ -652,6 +657,20 @@ class FinalCorrectionTests(ProbeBase):
         self.assertEqual(measured["stage_start_free_disk_gib"], 500.0)
         self.assertEqual(measured["stage_min_free_disk_gib"], 450.0)
         self.assertEqual(measured["transient_free_disk_drop_gib"], 50.0)
+
+    def test_shared_filesystem_deletions_cannot_hide_generation_growth(self):
+        # Free space remains flat (another user could be deleting files), but
+        # our own candidate generation reaches 1 GiB. The conservative
+        # transient estimate must use that observed generation size.
+        with self.assertRaises(ProbeGateFailure):
+            self.run_probe(monitors=good_monitors(
+                free_disk_gib=lambda _p: 500.0,
+                dir_size_bytes=lambda _p: GIB,
+            ))
+        measured = json.loads((self.root / "out" / "stopped.json").read_text())["record"]["measured"]
+        self.assertEqual(measured["free_space_drop_gib"], 0.0)
+        self.assertEqual(measured["peak_generation_size_gib"], 1.0)
+        self.assertEqual(measured["transient_free_disk_drop_gib"], 1.0)
 
     def test_g3_deadline_enforced_after_child_exit(self):
         calls = {"n": 0}

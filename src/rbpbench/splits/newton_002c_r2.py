@@ -13,11 +13,13 @@ import json
 import os
 import platform
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import traceback
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -35,6 +37,9 @@ RETURN_REL = Path("return")
 LOG_REL = Path("execution_logs")
 FROZEN_MMSEQS_VERSION = "18.8cc5c"
 FROZEN_MMSEQS_CONDA_BUILD = "hd6d6fdc_0"
+FROZEN_SEED = 20260925
+FROZEN_DECODE_MANIFEST_SHA256 = "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3"
+FROZEN_ROW_COUNT = 361_180
 MIN_SLURM_MEMORY_MIB = 64 * 1024
 RECOMMENDED_SLURM_MEMORY_MIB = 96 * 1024
 MAX_THREADS = 4
@@ -42,6 +47,10 @@ MAX_THREADS = 4
 
 class NewtonR2Error(RuntimeError):
     """A Newton package, environment, or Slurm invariant failed."""
+
+
+class NewtonR2Signal(NewtonR2Error):
+    """Slurm asked the one-shot job to stop and package its evidence."""
 
 
 def _now() -> str:
@@ -82,9 +91,36 @@ def load_config(root: Path) -> dict:
         raise NewtonR2Error("Newton config changed the frozen linux-64 MMseqs2 conda build")
     if config["sample_size"] != probe.PROBE_QUERY_COUNT or config["stages"] != list(probe.PROBE_STAGES):
         raise NewtonR2Error("Newton config changed the fixed R2 selection size or stages")
-    if not isinstance(config["seed"], int) or isinstance(config["seed"], bool):
-        raise NewtonR2Error("Newton config seed is not an explicit integer")
+    if config["seed"] != FROZEN_SEED:
+        raise NewtonR2Error("Newton config changed the frozen deterministic seed")
+    if config["decode_manifest_sha256"] != FROZEN_DECODE_MANIFEST_SHA256:
+        raise NewtonR2Error("Newton config changed the accepted decode-manifest hash")
+    if config["expected_row_count"] != FROZEN_ROW_COUNT:
+        raise NewtonR2Error("Newton config changed the frozen target-universe size")
     return config
+
+
+@contextmanager
+def termination_handlers():
+    """Turn Slurm's advance/termination signals into the normal STOPPED path.
+
+    The submit wrapper asks Slurm for USR1 ten minutes before the time limit.
+    SIGTERM is also handled for cancellation or cluster maintenance.  Previous
+    handlers are restored so importing this module never changes its caller.
+    """
+    watched = tuple(sig for sig in (signal.SIGUSR1, signal.SIGTERM) if sig is not None)
+    previous = {sig: signal.getsignal(sig) for sig in watched}
+
+    def stop(signum, _frame):
+        raise NewtonR2Signal(f"received {signal.Signals(signum).name}; stopping and packaging evidence")
+
+    try:
+        for sig in watched:
+            signal.signal(sig, stop)
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def load_runtime_receipt(path: Path) -> dict:
@@ -150,6 +186,37 @@ def _slurm_memory_mib(env: Mapping[str, str]) -> int | None:
     return None
 
 
+def _quota_evidence(root: Path) -> dict:
+    """Capture shared-filesystem quota diagnostics without treating text as a gate.
+
+    Newton filesystems and quota implementations differ.  The operator must
+    confirm the documented 100-GiB quota headroom before submission; this
+    evidence makes that check auditable in the return package.
+    """
+    commands: list[list[str]] = []
+    if shutil.which("quota"):
+        commands.append(["quota", "-s"])
+    if shutil.which("lfs"):
+        commands.append(["lfs", "quota", "-u", os.environ.get("USER", str(os.getuid())), str(root)])
+    evidence = []
+    for command in commands:
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            evidence.append({
+                "command": command,
+                "returncode": done.returncode,
+                "stdout": done.stdout[-65536:],
+                "stderr": done.stderr[-65536:],
+            })
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            evidence.append({"command": command, "error": f"{type(exc).__name__}: {exc}"})
+    return {
+        "operator_gate": "at least 100 GiB quota headroom confirmed before submission",
+        "commands_available": bool(commands),
+        "checks": evidence,
+    }
+
+
 def check_newton_job(root: Path, runtime: Mapping, env: Mapping[str, str] | None = None) -> dict:
     env = dict(os.environ if env is None else env)
     if platform.system() != "Linux" or platform.machine().lower() not in {"x86_64", "amd64"}:
@@ -186,6 +253,7 @@ def check_newton_job(root: Path, runtime: Mapping, env: Mapping[str, str] | None
         "slurm_account": env.get("SLURM_JOB_ACCOUNT"), "slurm_cpus_per_task": int(cpus_text),
         "slurm_memory_mib": allocated_mib, "recommended_slurm_memory_mib": RECOMMENDED_SLURM_MEMORY_MIB,
         "physical_ram_gib": installed, "available_ram_gib": available, "free_disk_gib": free,
+        "quota_evidence": _quota_evidence(Path(root)),
         "python_executable": runtime["python_executable"], "mmseqs_executable": runtime["mmseqs_executable"],
         "mmseqs_version": runtime["mmseqs_version"], "mmseqs_sha256": runtime["mmseqs_sha256"],
         "gpu_requested_or_required": False,
@@ -316,40 +384,41 @@ def execute(root: Path, runtime_receipt: Path) -> tuple[int, Path | None]:
     started = _now()
     status, failure = "STOPPED", None
     verified = runtime = host = None
-    try:
-        for rel in (OUTPUT_REL, RETURN_REL, LOG_REL):
-            if (root / rel).exists():
-                raise NewtonR2Error(f"{rel} already exists; this extracted bundle is single-use")
-        verified = package.verify_inventory(root)
-        config = load_config(root)
-        runtime = load_runtime_receipt(runtime_receipt)
-        host = check_newton_job(root, runtime)
-        (root / LOG_REL).mkdir()
-        _write_json(root / LOG_REL / "host_preflight.json", host)
-        fasta_paths = package.bind_decode_manifest_and_fastas(root, config, verified["hashes"])
-        universe = package.load_universe(fasta_paths[500], expected_rows=config["expected_row_count"])
-        binary = BinaryProvenance(
-            exe_name="mmseqs", resolved_path=runtime["mmseqs_executable"],
-            sha256=runtime["mmseqs_sha256"], version=runtime["mmseqs_version"],
-        )
-        probe.run_probe(
-            root / OUTPUT_REL, fasta_paths=fasta_paths, universe=universe, seed=config["seed"],
-            mmseqs_bin=runtime["mmseqs_executable"], binary=binary, limits=probe.ProbeLimits(),
-            sample_size=config["sample_size"], threads=MAX_THREADS, poll_interval=1.0,
-        )
-        status = "SUCCESS"
-    except BaseException as exc:
-        failure = {"type": type(exc).__name__, "message": str(exc), "traceback": traceback.format_exc()}
     archive = None
-    try:
-        _return_dir, archive, effective_status = package_return(
-            root, status=status, started=started, input_verification=verified,
-            runtime=runtime, host=host, failure=failure,
-        )
-        status = effective_status
-    except BaseException as exc:
-        print(f"RETURN PACKAGING FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
-        status = "STOPPED"
+    with termination_handlers():
+        try:
+            for rel in (OUTPUT_REL, RETURN_REL, LOG_REL):
+                if (root / rel).exists():
+                    raise NewtonR2Error(f"{rel} already exists; this extracted bundle is single-use")
+            verified = package.verify_inventory(root)
+            config = load_config(root)
+            runtime = load_runtime_receipt(runtime_receipt)
+            host = check_newton_job(root, runtime)
+            (root / LOG_REL).mkdir()
+            _write_json(root / LOG_REL / "host_preflight.json", host)
+            fasta_paths = package.bind_decode_manifest_and_fastas(root, config, verified["hashes"])
+            universe = package.load_universe(fasta_paths[500], expected_rows=config["expected_row_count"])
+            binary = BinaryProvenance(
+                exe_name="mmseqs", resolved_path=runtime["mmseqs_executable"],
+                sha256=runtime["mmseqs_sha256"], version=runtime["mmseqs_version"],
+            )
+            probe.run_probe(
+                root / OUTPUT_REL, fasta_paths=fasta_paths, universe=universe, seed=config["seed"],
+                mmseqs_bin=runtime["mmseqs_executable"], binary=binary, limits=probe.ProbeLimits(),
+                sample_size=config["sample_size"], threads=MAX_THREADS, poll_interval=1.0,
+            )
+            status = "SUCCESS"
+        except BaseException as exc:
+            failure = {"type": type(exc).__name__, "message": str(exc), "traceback": traceback.format_exc()}
+        try:
+            _return_dir, archive, effective_status = package_return(
+                root, status=status, started=started, input_verification=verified,
+                runtime=runtime, host=host, failure=failure,
+            )
+            status = effective_status
+        except BaseException as exc:
+            print(f"RETURN PACKAGING FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+            status = "STOPPED"
     return (0 if status == "SUCCESS" else 1), archive
 
 

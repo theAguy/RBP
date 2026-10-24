@@ -79,6 +79,25 @@ class ParserTests(unittest.TestCase):
         es = edges(500, ["b\ta\n", "a\tb\n", "a\ta\n", "c\tb\n", "b\tc\n", "a\tb\n"])
         self.assertEqual(es.edges, (("a", "b"), ("b", "c")))
         self.assertEqual((es.raw_rows, es.self_pairs_discarded, es.duplicates_collapsed), (6, 1, 3))
+        self.assertEqual(es.raw_column_count_histogram, ((2, 6),))
+
+    def test_real_mmseqs_createtsv_alignment_row_uses_first_two_fields(self):
+        row = (Path(__file__).parent / "fixtures" / "splits" / "mmseqs18_createtsv_search_row.tsv").read_text()
+        es = edges(500, [row], universe=["row_0", "row_1"])
+        self.assertEqual(es.raw_rows, 1)
+        self.assertEqual(es.self_pairs_discarded, 1)
+        self.assertEqual(es.edges, ())
+        self.assertEqual(es.raw_column_count_histogram, ((15, 1),))
+
+    def test_raw_trailing_fields_are_opaque_but_normalized_artifacts_stay_two_column(self):
+        es = edges(500, ["a\tb\topaque\t\tvalue\n"])
+        self.assertEqual(es.edges, (("a", "b"),))
+        self.assertEqual(es.raw_column_count_histogram, ((5, 1),))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "not-normalized.tsv")
+            path.write_text("a\tb\topaque\n")
+            with self.assertRaises(DirectEdgeError):
+                read_normalized_edges(path, width=500, universe=U)
 
     def test_deterministic_and_roundtrip(self):
         rows = ["b\ta", "c\td", "a\tb", "e\te"]
@@ -102,7 +121,7 @@ class ParserTests(unittest.TestCase):
                 read_normalized_edges(p1, width=251, universe=U)
 
     def test_malformed_rows(self):
-        for bad in ["a", "a\tb\tc", "\tb", "a\t", "", "a b"]:
+        for bad in ["a", "\tb", "a\t", "", "a b"]:
             with self.assertRaises(DirectEdgeError, msg=repr(bad)):
                 edges(500, [bad])
 
@@ -226,8 +245,7 @@ class ComponentTests(unittest.TestCase):
         # The legacy parser does not accept a direct-edge file as membership
         # semantics: ["a\tb", "a\tc"] parses as cluster rows (b, c members of a),
         # and the v2 parser rejects cluster-style foreign rows by universe check.
-        with self.assertRaises(DirectEdgeError):
-            edges(500, ["a\tb\textra"])
+        self.assertEqual(edges(500, ["a\tb\textra"]).edges, (("a", "b"),))
 
 
 if __name__ == "__main__":

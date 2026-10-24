@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "checkpoint": "002C-R2 Darwin second execution STOPPED",
+  "source_commit": "e73f88a1a7784ac4c99a12c43191c992b6a66f25",
+  "slurm": {
+    "cluster": "darwin",
+    "job_id": "451600",
+    "account": "cs",
+    "partition": "public",
+    "cpus_per_task": 4,
+    "allocated_memory_mib": 98304
+  },
+  "execution": {
+    "started_at_utc": "2026-10-24T12:38:11Z",
+    "finished_at_utc": "2026-10-24T12:52:17Z",
+    "status": "STOPPED",
+    "accepted_probe_widths": [],
+    "r3_authorized": false,
+    "stop_classification": "real_createtsv_schema_mismatch",
+    "explanation": "The width-500 search and createtsv completed successfully. The parser required exactly two columns, but pinned MMseqs2 18.8cc5c emitted a 15-column search/alignment row whose first two fields are the query and target. Result reconciliation and projection gates did not complete, so this is not accepted R2 evidence."
+  },
+  "observed_first_result_row": {
+    "column_count": 15,
+    "query": "row_113711",
+    "target": "row_113711",
+    "self_hit": true,
+    "tail_policy_after_correction": "opaque; full raw bytes counted"
+  },
+  "return_archive": {
+    "local_ignored_path": "artifacts/teammate_run_results/002c_r2_darwin_parser_stop_20261024/RBP_002C_R2_NEWTON_RETURN_20261024T125217Z_newton8.zip",
+    "byte_size": 73620,
+    "sha256": "030dac49411c3899d481ca4b863c7eccdacad20eb0bbf89372908f3311426b15",
+    "sidecar_sha256": "581697f9fe8e1ee7daea6528fe41a3dd6064d6762ad2e9fd4e406277b5f0e639",
+    "zip_test": "passed",
+    "sidecar_check": "passed"
+  },
+  "selected_internal_evidence": {
+    "status_json_sha256": "9737cf05a95f3b3499d166b3d4740d2d57f17825883279ef9b0f2bccbf5d2f43",
+    "return_manifest_sha256": "3f10fdb90be7bbe9e352ae025dd83c710032adc95b6103872b9b2a4b3dbc9bf7",
+    "return_inventory_sha256": "b9d844547d2d696bb9b2c1a78ac0e85497964c407740361222521ec002acc85c",
+    "probe_stopped_sha256": "064b5881a4a411c7425b475c3b99e740c6366b65b885b0b1ccc91be2e4855d66",
+    "probe_summary_sha256": "d77b8fe4a96ea537bfd0fb7d528ff0fe671fc3978d83da2bd447bd415fc4e928",
+    "search_stdout_sha256": "886d11f181b208a321557df5aded1c60c67aa3df37fb79b62b2f6df1b2ab57cc",
+    "search_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "createtsv_stdout_sha256": "f96cb550237def4459d0a91f4dadeff0311349c9734391606ff7bd2b443b0595",
+    "createtsv_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

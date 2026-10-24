@@ -203,19 +203,22 @@ because the two relations differ:
   satisfying the direct predicate in different clusters; it is not a
   direct-edge list or a complete closure of the later audit relation, and
   must never be fed to the v2 parser.
-- **v2 normalized direct-search edges (the leakage relation).** Two-column
-  `query<TAB>target` output of an all-vs-all `mmseqs search`, built by
+- **v2 normalized direct-search edges (the leakage relation).** Query/target
+  endpoints extracted from the first two fields of an all-vs-all `mmseqs
+  search` rendering, built by
   `commands.components_v2_direct_search_command`: the audit's exact
   scientific flags (`--search-type 3 --strand 2 --cov-mode 0 --max-seqs 361180
   --alignment-mode 3 -e 1000 --mask 0 -s 7.5`, identity 0.90, coverage
   0.80/0.95/0.95 at 500/251/101 nt), no cluster-only flags, and no
   identity/coverage/`--max-seqs` parameters.
 
-`rbpbench.splits.direct_edges` strictly parses each width's TSV against the
-full canonical-ID universe (exactly two non-empty IDs; foreign IDs fail;
+`rbpbench.splits.direct_edges` strictly parses each width's raw TSV against the
+full canonical-ID universe (at least two fields with non-empty query/target
+IDs first; trailing alignment fields opaque; foreign IDs fail;
 self-pairs dropped; pairs canonicalized to `(min, max)` and de-duplicated)
 and writes/reads a sorted, content-hashable `a<TAB>b` artifact with no
-sequences or labels. `rbpbench.splits.components_v2.build_components_v2`
+sequences or labels. That normalized artifact is strictly two-column.
+`rbpbench.splits.components_v2.build_components_v2`
 takes the three widths' edge sets plus separate exact/RC edges, keeps
 singletons, takes the transitive closure across and within widths, and
 names components by the hash of their sorted member IDs. It fails closed on
@@ -242,8 +245,11 @@ live RSS/disk/temp/swap/memory-pressure supervision, and stops without retry
 on any failure or gate crossing. **Probe output is resource evidence only: no
 probe edge is scientific component evidence**, and the module has no
 normalized-edge writer, components-v2 build, full-query database, assignment,
-audit, or R3 stage. Result parsing is bounded streaming: the raw
-`createtsv` output must be grouped by query (duplicates are checked only
+audit, or R3 stage. Result parsing is bounded streaming: query and target are
+read from the first two fields of raw `createtsv` search rows, while any
+trailing MMseqs2 alignment fields remain opaque and their full bytes and
+column-count distribution are retained as resource/schema evidence. The raw
+output must be grouped by query (duplicates are checked only
 within the current query), per-block rows *and bytes* per query are reported
 and both are subject to the 1.5x heterogeneity gate, the transient-disk
 projection uses the larger of the whole-width free-space drop and the peak
@@ -328,6 +334,17 @@ MMseqs2 18.8cc5c lines `Split database 0`, `Split memory limit 0`, and internal
 regression-tested against a sanitized excerpt of that exact output. This stop
 contains no accepted R2 result because `createtsv` and the projection gates had
 not yet run.
+
+The second Darwin attempt is preserved under
+`artifacts/teammate_run_results/002c_r2_darwin_parser_stop_20261024/`. It
+passed the diagnostic correction and completed the 500-nt search plus
+`createtsv`, but exposed a real-schema mismatch: the pinned Linux binary wrote
+15-column alignment rows rather than the two-column synthetic fixture shape.
+`manifests/sequence_r2_darwin_parser_stop.json` binds that return. The corrected
+R2 parser uses only the first two endpoint fields and counts the complete raw
+row; the R3 raw direct-edge parser was corrected at the same time so this root
+cause cannot recur there. Normalized v2 edge artifacts remain canonical,
+strictly two-column files.
 
 Each checkpoint requires its own executor handoff and review; this
 implementation does not silently continue into a later checkpoint.

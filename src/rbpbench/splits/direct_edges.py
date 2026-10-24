@@ -1,7 +1,8 @@
 """Strict parsing/normalization of components-v2 DIRECT-search edges.
 
-Input is a two-column ``mmseqs createtsv`` rendering of an all-vs-all
-direct search result (``query<TAB>target``). This is NOT the v1 cluster
+Input is an ``mmseqs createtsv`` rendering of an all-vs-all direct search
+result. Query and target are the first two fields; raw MMseqs2 alignment
+fields may follow and are treated as opaque evidence. This is NOT the v1 cluster
 membership TSV (``representative<TAB>member``; see
 :mod:`rbpbench.splits.membership`): cluster co-membership may omit a
 qualifying direct pair, so nothing here is shared with, or accepts, that
@@ -66,6 +67,7 @@ class DirectEdgeSet:
     self_pairs_discarded: int
     duplicates_collapsed: int
     sha256: str
+    raw_column_count_histogram: tuple[tuple[int, int], ...]
 
     def metadata(self) -> dict:
         return {
@@ -75,27 +77,33 @@ class DirectEdgeSet:
             "self_pairs_discarded": self.self_pairs_discarded,
             "duplicates_collapsed": self.duplicates_collapsed,
             "sha256": self.sha256,
+            "raw_column_count_histogram": {str(k): v for k, v in self.raw_column_count_histogram},
         }
 
 
 def parse_direct_edge_lines(lines: Iterable[str], *, width: int, universe: Iterable[str]) -> DirectEdgeSet:
-    """Streams ``query<TAB>target`` lines into a :class:`DirectEdgeSet`.
+    """Streams raw MMseqs2 search rows into a :class:`DirectEdgeSet`.
 
-    Every row must be exactly two non-empty tab-separated IDs, both in
-    ``universe``; blank lines are malformed (not skipped). Self-pairs are
-    discarded; remaining pairs are canonicalized to ``(min, max)`` and
-    duplicate/reversed pairs collapsed.
+    Every row must have at least two fields and its first two fields must be
+    non-empty IDs in ``universe``. Any trailing MMseqs2 alignment fields are
+    opaque and their column counts are recorded. Blank lines are malformed
+    (not skipped). Self-pairs are discarded; remaining pairs are canonicalized
+    to ``(min, max)`` and duplicate/reversed pairs collapsed.
     """
     _check_width(width)
     ids = validate_universe(universe)
     pairs: set[tuple[str, str]] = set()
     raw = selfs = 0
+    column_counts: dict[int, int] = {}
     for lineno, raw_line in enumerate(lines, start=1):
         line = raw_line[:-1] if raw_line.endswith("\n") else raw_line
         parts = line.split("\t")
-        if len(parts) != 2 or not parts[0] or not parts[1]:
-            raise DirectEdgeError(f"malformed direct-edge row {lineno} (expected 2 non-empty columns): {line!r}")
-        a, b = parts
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            raise DirectEdgeError(
+                f"malformed direct-edge row {lineno} (expected non-empty query and target columns): {line!r}"
+            )
+        a, b = parts[0], parts[1]
+        column_counts[len(parts)] = column_counts.get(len(parts), 0) + 1
         for endpoint in (a, b):
             if endpoint not in ids:
                 raise DirectEdgeError(f"row {lineno}: endpoint {endpoint!r} is outside the canonical-ID universe")
@@ -112,6 +120,7 @@ def parse_direct_edge_lines(lines: Iterable[str], *, width: int, universe: Itera
         self_pairs_discarded=selfs,
         duplicates_collapsed=raw - selfs - len(edges),
         sha256=hashlib.sha256(_serialize(edges)).hexdigest(),
+        raw_column_count_histogram=tuple(sorted(column_counts.items())),
     )
 
 

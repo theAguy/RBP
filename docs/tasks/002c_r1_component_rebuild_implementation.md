@@ -57,17 +57,20 @@ Requirements:
 
 ### 2. Strict direct-edge parsing and normalization
 
-Implement a pure-Python, streaming parser for a two-column MMseqs2
-`createtsv` result.  For each width it must:
+Implement a pure-Python, streaming parser for an MMseqs2 `createtsv` search
+result. For each width it must:
 
-- require exactly two non-empty tab-separated canonical IDs;
+- require at least two tab-separated fields whose first two values are
+  non-empty canonical query/target IDs, treating later raw alignment fields
+  as opaque evidence;
 - reject malformed, duplicate, missing, or foreign endpoint IDs against the
   supplied full canonical-ID universe;
 - discard self-pairs;
 - canonicalize every remaining pair as `(min_id, max_id)`;
 - collapse duplicate/reversed pairs deterministically; and
-- write/read a deterministic, content-hashable normalized edge artifact
-  without raw sequences or labels.
+- record the observed raw column-count distribution; and
+- write/read a deterministic, strictly two-column, content-hashable normalized
+  edge artifact without raw sequences or labels.
 
 The parser must never interpret the older MMseqs2 cluster-membership TSV as a
 direct edge list.

@@ -233,9 +233,12 @@ def components_v2_direct_search_command(
 
 
 def createtsv_search_command(query_db: Path, target_db: Path, result_prefix: Path, output_tsv: Path, *, mmseqs_bin: str = "mmseqs") -> ToolCommand:
-    """``mmseqs createtsv QUERY TARGET RESULT OUTPUT``: renders
-    :func:`audit_search_command`'s result DB as ``query<TAB>target`` hit
-    rows.
+    """``mmseqs createtsv QUERY TARGET RESULT OUTPUT``: renders a search DB.
+
+    Query and target are the first two TSV fields.  MMseqs2 may append its
+    raw alignment fields; callers must not assume this command produces only
+    two columns.  Use ``convertalis --format-output`` when a custom schema is
+    required (R2 intentionally measures the raw ``createtsv`` output).
     """
     argv = (mmseqs_bin, "createtsv", str(query_db), str(target_db), str(result_prefix), str(output_tsv))
     return ToolCommand(tool="mmseqs_createtsv", argv=argv, pinned_version=PINNED_VERSION)

@@ -45,6 +45,17 @@ record, raw logs and return summary for end-of-run review, but do not alone
 discard a complete probe. This reduces avoidable handoffs without weakening
 objective resource and integrity gates.
 
+The second Darwin execution passed the corrected diagnostic guard, completed
+the 500-nt search and `createtsv`, then stopped in the Python result parser.
+Real MMseqs2 18.8cc5c emitted 15-column alignment rows, while the synthetic
+fixture had taught the parser to require exactly two columns. The corrected
+contract extracts query/target from the first two fields, treats all trailing
+fields as opaque evidence, counts the complete raw row for resource
+projection, and reports the observed column-count histogram. The exact first
+real row is now a regression fixture, and the future R3 raw-edge parser uses
+the same endpoint rule while keeping normalized edge artifacts strictly
+two-column. No threshold, search flag, gate or sample changed.
+
 ## Frozen scientific behavior
 
 The Darwin run uses the accepted implementation in

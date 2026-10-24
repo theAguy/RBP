@@ -70,9 +70,14 @@ elif a[0] == "search":
     if mode == "fail":
         sys.exit(3)
 elif a[0] == "createtsv":
-    body = open(a[3]).read()
+    # Real MMseqs2 18.8cc5c createtsv on a search/alignment DB appends
+    # alignment evidence. Exercise that production row shape by default.
+    body = "".join(
+        line.rstrip("\\n") + "\\t897\\t1.00\\t4.007E-276\\t0\\t499\\t500\\t0\\t499\\t500\\t0\\t499\\t0\\t652\\n"
+        for line in open(a[3])
+    )
     if mode == "foreign":
-        body += "row_0\\tnot_in_universe\\n"
+        body += "row_0\\tnot_in_universe\\t1\\n"
     if mode == "malformed":
         body += "row_0\\n"
     open(a[4], "w").write(body)
@@ -216,6 +221,34 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(m["hit_count_quantiles"], {"min": 1, "median": 1, "p95": 3, "p99": 3, "max": 3})
         self.assertNotIn("edges", m)
         self.assertEqual(m["bytes"], sum(len(r.encode()) for r in self.rows(["row_0\trow_7\n", "row_0\trow_8\n", "row_1\trow_7\n"])))
+        self.assertEqual(
+            m["result_schema"],
+            {
+                "endpoint_columns": [0, 1],
+                "trailing_fields": "opaque_mmseqs_createtsv_evidence",
+                "column_count_histogram": {"2": 8},
+                "minimum_columns": 2,
+                "maximum_columns": 2,
+                "full_raw_row_bytes_counted": True,
+            },
+        )
+
+    def test_real_mmseqs_18_createtsv_alignment_row(self):
+        real = (Path(__file__).parent / "fixtures" / "splits" / "mmseqs18_createtsv_search_row.tsv").read_text()
+        rows = [real] + [f"{sid}\t{sid}\t1\t1.0\n" for sid in self.sel[1:]]
+        m = self.analyze(rows)
+        self.assertEqual(m["rows"], 5)
+        self.assertEqual(m["bytes"], sum(len(row.encode("utf-8")) for row in rows))
+        self.assertEqual(m["result_schema"]["column_count_histogram"], {"4": 4, "15": 1})
+        self.assertEqual(m["result_schema"]["minimum_columns"], 4)
+        self.assertEqual(m["result_schema"]["maximum_columns"], 15)
+        self.assertEqual(m["self_hit_rate"], 1.0)
+
+    def test_trailing_createtsv_fields_are_opaque_but_counted(self):
+        rows = [f"{sid}\t{sid}\tfield-{i}\t\twith spaces\n" for i, sid in enumerate(self.sel)]
+        m = self.analyze(rows)
+        self.assertEqual(m["bytes"], sum(len(row.encode("utf-8")) for row in rows))
+        self.assertEqual(m["result_schema"]["column_count_histogram"], {"5": 5})
 
     def test_duplicate_within_group(self):
         with self.assertRaises(ProbeResultError):
@@ -252,7 +285,7 @@ class ResultTests(unittest.TestCase):
         self.assertNotIn("edges", m)
 
     def test_bad_rows(self):
-        for bad, why in [("row_0\n", "malformed"), ("row_0\tx\ty\n", "extra"), ("\trow_1\n", "empty"),
+        for bad, why in [("row_0\n", "malformed"), ("\trow_1\n", "empty"),
                          ("row_9\trow_1\n", "query not selected"), ("row_0\tfar\n", "foreign target"),
                          ("row_0\trow_0\n", "duplicate pair")]:
             with self.assertRaises(ProbeResultError, msg=why):
@@ -601,17 +634,8 @@ class CorrectionTests(ProbeBase):
         self.assertGreater(rec["rendered_tsv_bytes"], 0)
 
     def test_f3_tsv_larger_than_db_drives_bound(self):
-        script = self.fake.read_text()
-        script = script.replace(
-            '    open(a[3], "w").write("".join(f"{x}\\t{y}\\n" for x, y in out))',
-            '    open(a[3], "w").write("".join((f"{x}\\n" if mode == "bigtsv" else f"{x}\\t{y}\\n") for x, y in out))',
-        ).replace(
-            '    body = open(a[3]).read()\n',
-            '    body = open(a[3]).read()\n    if mode == "bigtsv":\n        body = "".join(f"{l.strip()}\\t{l.strip()}\\n" for l in body.splitlines())\n',
-        )
-        self.assertNotEqual(script, self.fake.read_text())
-        self.fake.write_text(script)
-        os.environ["FAKE_MODE"] = "bigtsv"
+        # The production-shaped 15-column renderer is already larger than
+        # the fake result DB, just as the real Darwin evidence was.
         self.run_probe()
         rec = json.loads((self.root / "out" / "selected" / "probe_500.json").read_text())["measured"]
         self.assertGreater(rec["rendered_tsv_bytes"], rec["raw_result_db_bytes"])

@@ -230,9 +230,17 @@ def _quantile(sorted_values: list[int], q: float) -> int:
 
 
 def analyze_probe_result(lines: Iterable[str], *, selected_ids: Iterable[str], universe: Iterable[str]) -> dict:
-    """Streams a two-column ``query<TAB>target`` TSV into resource metrics
-    ONLY (counts/quantiles/per-block rows and bytes); no edge list or edge
-    artifact is kept. The raw output must be GROUPED BY QUERY: a query that
+    """Streams an MMseqs2 ``createtsv`` search result into resource metrics.
+
+    The stable contract is that the first two tab-separated fields are the
+    query and target IDs.  ``createtsv`` may append alignment fields (the
+    pinned 18.8cc5c Darwin run emitted 15 columns), so trailing fields are
+    deliberately opaque: they are neither interpreted nor discarded.  Their
+    exact bytes remain in the output-density calculation and the observed
+    column-count distribution is recorded as schema evidence.  Rows with
+    fewer than two fields or an empty endpoint still fail closed.
+
+    No edge list or edge artifact is kept. The raw output must be GROUPED BY QUERY: a query that
     reappears after its group ended is rejected, and duplicate targets are
     detected only inside the current group (that set is released before the
     next query), so memory is bounded by one query's targets, never all
@@ -253,12 +261,14 @@ def analyze_probe_result(lines: Iterable[str], *, selected_ids: Iterable[str], u
     distinct_targets: set[str] = set()
     self_hits = 0
     rows = total_bytes = 0
+    column_counts: dict[int, int] = {}
     for lineno, raw in enumerate(lines, start=1):
         line = raw[:-1] if raw.endswith("\n") else raw
         parts = line.split("\t")
-        if len(parts) != 2 or not parts[0] or not parts[1]:
+        if len(parts) < 2 or not parts[0] or not parts[1]:
             raise ProbeResultError(f"malformed result row {lineno}: {line!r}")
-        q, t = parts
+        q, t = parts[0], parts[1]
+        column_counts[len(parts)] = column_counts.get(len(parts), 0) + 1
         if q not in selected_set:
             raise ProbeResultError(f"row {lineno}: query {q!r} is not in the selected probe IDs")
         if t not in universe_set:
@@ -312,6 +322,14 @@ def analyze_probe_result(lines: Iterable[str], *, selected_ids: Iterable[str], u
         },
         "overall_density": overall_rows,
         "overall_bytes_per_query": overall_bytes,
+        "result_schema": {
+            "endpoint_columns": [0, 1],
+            "trailing_fields": "opaque_mmseqs_createtsv_evidence",
+            "column_count_histogram": {str(k): column_counts[k] for k in sorted(column_counts)},
+            "minimum_columns": min(column_counts),
+            "maximum_columns": max(column_counts),
+            "full_raw_row_bytes_counted": True,
+        },
         "blocks": blocks,
         "result_cap_reached": False,
         "block_density_ratio_max": max(b["rows_per_query"] for b in blocks) / overall_rows,

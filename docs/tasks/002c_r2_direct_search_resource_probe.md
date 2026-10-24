@@ -59,6 +59,24 @@ evidence only and must never be consumed as components-v2 scientific edges.
 The three widths run sequentially. A failed width stops the package without
 retry or progression to a later width.
 
+### Raw `createtsv` schema clarification
+
+The pinned MMseqs2 18.8cc5c Linux execution established that `createtsv` over
+a search/alignment result DB emits query and target as its first two fields
+and may append raw alignment fields (15 columns were observed). The stable
+scientific contract is therefore **at least two non-empty fields**, with
+columns 1–2 interpreted as endpoints. Trailing fields are deliberately opaque:
+they are not used to decide similarity, but their full bytes remain included
+in output-density and disk projections. The return records the observed
+column-count histogram. Missing/empty endpoints, foreign endpoints, duplicate
+pairs within a query, ungrouped queries, lost self-hits, and cap saturation
+still fail closed.
+
+This is a format-contract correction, not a scientific change: MMseqs2 already
+applied the frozen thresholds when it constructed the result DB. The same raw
+schema rule must be used when R3 normalizes the first two fields into strict
+two-column direct-edge artifacts.
+
 ## Measurements and projections
 
 Record separately for database creation, search, and TSV rendering:

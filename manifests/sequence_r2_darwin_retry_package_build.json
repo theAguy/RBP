@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "checkpoint": "002C-R2 Darwin retry immutable-package build",
+  "created_at_utc": "2026-10-24T12:01:04Z",
+  "source_branch": "issue-002c-partition-assignment",
+  "source_commit": "e73f88a1a7784ac4c99a12c43191c992b6a66f25",
+  "bundle": {
+    "path": "artifacts/darwin_handoff/RBP_Task002C_R2_Darwin_e73f88a",
+    "input_entry_count": 34,
+    "input_manifest_byte_size": 6797,
+    "input_manifest_sha256": "c4053ab4a64a094073b0b587e43d8d91e29ace7e8c93bd822dfa1197555a48e7",
+    "bundle_summary_sha256": "edcc626083cd3c7a3ef69ae4d4f27c886ae4fd9dafc5b09523b93c480e12b3a8",
+    "config_sha256": "b20b854b36e5456e433d044f78de56133e2508c503da09f5d6a2ea8441cca5c0",
+    "source_commit_file_sha256": "2e34da8b0c09dc8dfbf1c051f97d1180540219db8683b346d6740c337cff5bb9"
+  },
+  "archive": {
+    "path": "artifacts/darwin_handoff/RBP_Task002C_R2_Darwin_e73f88a.tar.gz",
+    "byte_size": 91149334,
+    "sha256": "9ea6e08937b232d23e7500dfd1cfc2d6b6d58f91b928758143ef48148e0a9498"
+  },
+  "archive_verification": {
+    "method": "scripts/build_002c_r2_newton_bundle.py:archive plus independent sidecar check",
+    "verified_non_directory_entry_count": 36,
+    "sidecar_check": "passed"
+  },
+  "frozen_inputs": {
+    "decode_manifest_sha256": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3",
+    "probe_seed": 20260925,
+    "sample_size": 10000,
+    "expected_row_count": 361180,
+    "stages": [
+      "probe_500",
+      "probe_251",
+      "probe_101"
+    ],
+    "expected_mmseqs_version": "18.8cc5c",
+    "expected_mmseqs_conda_build": "hd6d6fdc_0"
+  },
+  "correction": {
+    "prior_stop_manifest": "manifests/sequence_r2_darwin_false_positive_stop.json",
+    "normal_verbose_split_text_is_fatal": false,
+    "generic_warnings_are_retained_for_end_review": true,
+    "objective_fatal_diagnostics_still_stop": true,
+    "optional_slurm_mail_types": "BEGIN,END,FAIL"
+  },
+  "execution_boundary": {
+    "environment_installed": false,
+    "slurm_job_submitted": false,
+    "resource_probe_run": false,
+    "real_mmseqs2_launched": false,
+    "r3_started": false
+  },
+  "gpu_required": false,
+  "r3_authorization": "none"
+}

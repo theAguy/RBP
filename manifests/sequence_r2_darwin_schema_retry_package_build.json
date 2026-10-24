@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "checkpoint": "002C-R2 Darwin schema-corrected retry immutable-package build",
+  "created_at_utc": "2026-10-24T13:10:57Z",
+  "source_branch": "issue-002c-partition-assignment",
+  "source_commit": "5c9b59e24fda1a7fe9b404f4d121a69a18531003",
+  "bundle": {
+    "path": "artifacts/darwin_handoff/RBP_Task002C_R2_Darwin_5c9b59e",
+    "input_entry_count": 34,
+    "input_manifest_byte_size": 6797,
+    "input_manifest_sha256": "4c36af2c198cf55ec09c80169635f4a35e3390aa3d5f18faf8f6942bee7be21e",
+    "bundle_summary_sha256": "9dde623154388102d9351dc6186bc2ec170684c9ed93289bae79a1b46fd3ac6c",
+    "config_sha256": "f09a7762ede6fd9621c869abf100665591f687ac5e61c79ac7acffeb0eec8e56",
+    "source_commit_file_sha256": "187dceac13d2eb3def55ccb41fe4242f2e8fa8652cdf43a50c4177b5bdcd3025"
+  },
+  "archive": {
+    "path": "artifacts/darwin_handoff/RBP_Task002C_R2_Darwin_5c9b59e.tar.gz",
+    "byte_size": 91149764,
+    "sha256": "63cc207aa6d56b4af63be73224529e9e6b69310f84f8dff9316046fb76d5552d"
+  },
+  "archive_verification": {
+    "method": "scripts/build_002c_r2_newton_bundle.py:archive plus independent tar-member/source-commit and sidecar checks",
+    "verified_non_directory_entry_count": 36,
+    "single_top_level_directory": true,
+    "sidecar_check": "passed"
+  },
+  "frozen_inputs": {
+    "decode_manifest_sha256": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3",
+    "probe_seed": 20260925,
+    "sample_size": 10000,
+    "expected_row_count": 361180,
+    "stages": [
+      "probe_500",
+      "probe_251",
+      "probe_101"
+    ],
+    "expected_mmseqs_version": "18.8cc5c",
+    "expected_mmseqs_conda_build": "hd6d6fdc_0"
+  },
+  "correction": {
+    "prior_stop_manifest": "manifests/sequence_r2_darwin_parser_stop.json",
+    "raw_endpoint_fields": [0, 1],
+    "trailing_fields": "opaque and fully included in byte-density measurements",
+    "observed_real_column_count_regression": 15,
+    "r3_parser_same_root_cause_corrected": true,
+    "scientific_flags_changed": false,
+    "resource_gates_changed": false
+  },
+  "verification": {
+    "focused_and_integration_tests": 165,
+    "focused_and_integration_failures": 0,
+    "broader_discovery_tests": 560,
+    "broader_discovery_errors": 46,
+    "broader_discovery_error_classification": "environment-only: base interpreter lacks the pinned NumPy legacy stack and older preflight tests cannot detect physical RAM; no correction-relevant failure"
+  },
+  "execution_boundary": {
+    "environment_installed": false,
+    "slurm_job_submitted": false,
+    "resource_probe_run": false,
+    "real_mmseqs2_launched": false,
+    "r3_started": false
+  },
+  "gpu_required": false,
+  "r3_authorization": "none"
+}

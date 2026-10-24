@@ -11,6 +11,7 @@ ACCOUNT=${NEWTON_ACCOUNT:-}
 PARTITION=${NEWTON_PARTITION:-}
 MEMORY=${NEWTON_MEMORY:-96G}
 TIME_LIMIT=${NEWTON_TIME_LIMIT:-08:00:00}
+MAIL_USER=${RBP_SLURM_MAIL_USER:-}
 
 memory_mib() {
   local value
@@ -64,6 +65,10 @@ TIME_SECONDS=$(time_seconds "$TIME_LIMIT") || {
   printf 'Refusing NEWTON_TIME_LIMIT=%s: the reviewed minimum is 08:00:00; overrides may only increase it.\n' "$TIME_LIMIT" >&2
   exit 1
 }
+if [[ -n "$MAIL_USER" && ! "$MAIL_USER" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+  printf 'Invalid RBP_SLURM_MAIL_USER %q; provide one ordinary email address or leave it unset.\n' "$MAIL_USER" >&2
+  exit 1
+fi
 
 for required in \
   "$BUNDLE_ROOT/R2_INPUT_MANIFEST.json" \
@@ -115,6 +120,7 @@ SBATCH_ARGS=(
 )
 [[ -n "$ACCOUNT" ]] && SBATCH_ARGS+=(--account="$ACCOUNT")
 [[ -n "$PARTITION" ]] && SBATCH_ARGS+=(--partition="$PARTITION")
+[[ -n "$MAIL_USER" ]] && SBATCH_ARGS+=(--mail-type=BEGIN,END,FAIL --mail-user="$MAIL_USER")
 
 printf 'Submitting CPU-only R2 probe (no GPU):\n'
 printf '  bundle:   %s\n' "$BUNDLE_ROOT"
@@ -122,8 +128,9 @@ printf '  env:      %s\n' "$ENV_PREFIX"
 printf '  CPUs:     4\n'
 printf '  memory:   %s\n' "$MEMORY"
 printf '  time:     %s\n' "$TIME_LIMIT"
-printf '  account:  %s\n' "${ACCOUNT:-Newton default}"
-printf '  partition:%s\n' "${PARTITION:-Newton default}"
+printf '  account:  %s\n' "${ACCOUNT:-scheduler default}"
+printf '  partition:%s\n' "${PARTITION:-scheduler default}"
+printf '  email:    %s\n' "${MAIL_USER:-disabled}"
 
 SBATCH_STDERR="$SUBMISSION_DIR/sbatch.stderr.tmp"
 set +e

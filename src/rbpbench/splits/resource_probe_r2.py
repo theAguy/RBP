@@ -546,11 +546,53 @@ def check_pre_launch(monitors: ResourceMonitors, limits: ProbeLimits, *, label: 
     return {"installed_ram_gib": installed, "available_ram_gib": available, "free_disk_gib": free}
 
 
-_WARNING_RE = re.compile(
-    r"^\s*(warning|error)\b|multi-?part|split(?:s|ting)? (?:the )?(?:target|database|db)\b|splits? into \d+|"
-    r"split-memory-limit|override|out of memory|cannot fit|bad_alloc|\boom\b|truncat",
+_ERROR_PREFIX_RE = re.compile(r"^\s*error\b", re.I)
+_WARNING_PREFIX_RE = re.compile(r"^\s*warning\b", re.I)
+_FATAL_DIAGNOSTIC_RE = re.compile(
+    r"multi-?part|out of memory|cannot fit|bad_alloc|\boom\b|truncat|"
+    r"split-memory-limit.{0,80}(?:override|ignored|cannot|too (?:low|small))|"
+    r"(?:override|ignored).{0,80}split-memory-limit",
     re.I,
 )
+_SPLIT_COUNT_RE = re.compile(
+    r"\b(?:target|database|db)\b.{0,80}\b(?:was\s+)?split(?:s|ting)?\s+into\s+(\d+)\b",
+    re.I,
+)
+_PREFILTER_STEP_COUNT_RE = re.compile(r"\bProcess prefiltering step\s+\d+\s+of\s+(\d+)\b", re.I)
+
+
+def classify_mmseqs_diagnostics(text: str) -> dict[str, list[str]]:
+    """Classify MMseqs2 text without treating its verbose parameter dump as
+    a failure.
+
+    MMseqs2 18.8cc5c normally prints lines such as ``Split database 0``,
+    ``Split memory limit 0`` and internal command paths containing
+    ``*_seqs_split``.  Those are not warnings and do not prove that a
+    memory-driven multi-part database search occurred.  Concrete OOM,
+    truncation, multi-part and split-count diagnostics remain fatal.  A
+    generic ``Warning:`` line is retained for end-of-run review but is not,
+    by itself, a reason to discard an otherwise complete resource probe.
+    ``Error:`` remains fatal even when a tool unexpectedly exits zero.
+    """
+    fatal: list[str] = []
+    advisory: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        split = _SPLIT_COUNT_RE.search(line)
+        prefilter_steps = _PREFILTER_STEP_COUNT_RE.search(line)
+        is_fatal = bool(
+            _ERROR_PREFIX_RE.search(line)
+            or _FATAL_DIAGNOSTIC_RE.search(line)
+            or (split and int(split.group(1)) > 1)
+            or (prefilter_steps and int(prefilter_steps.group(1)) > 1)
+        )
+        if is_fatal:
+            fatal.append(raw)
+        elif _WARNING_PREFIX_RE.search(line):
+            advisory.append(raw)
+    return {"fatal": fatal, "advisory": advisory}
 
 
 def run_supervised(
@@ -656,8 +698,8 @@ def run_supervised(
         "limitation": "cumulative-children ru_maxrss is a running maximum over all reaped children, so it can only "
         "overstate this command; a child finishing before the first poll is covered only by it",
     }
-    stderr_text = err_path.read_text(errors="replace") + out_path.read_text(errors="replace")
-    warnings = [ln for ln in stderr_text.splitlines() if _WARNING_RE.search(ln)]
+    stderr_text = err_path.read_text(errors="replace") + "\n" + out_path.read_text(errors="replace")
+    diagnostics = classify_mmseqs_diagnostics(stderr_text)
     return {
         "tool": command.tool,
         "command_text": format_command(command.argv),
@@ -666,7 +708,11 @@ def run_supervised(
         "stdout_path": str(out_path), "stdout_sha256": sha256_file(out_path),
         "stderr_path": str(err_path), "stderr_sha256": sha256_file(err_path),
         "binary": binary.to_dict(),
-        "warnings": warnings,
+        # ``warnings`` is retained as a compatibility alias for fatal
+        # diagnostics in already-reviewed return-summary consumers.
+        "warnings": diagnostics["fatal"],
+        "fatal_diagnostics": diagnostics["fatal"],
+        "advisory_diagnostics": diagnostics["advisory"],
         **ev,
     }
 
@@ -741,8 +787,11 @@ def run_probe_stage(
     )
     for name, build in plan:
         steps[name] = run(build())
-        if steps[name]["warnings"]:  # stop BEFORE launching the next command
-            raise ProbeResourceError(f"{stage} {name} emitted MMseqs2 warning(s): {steps[name]['warnings'][:3]}")
+        if steps[name]["fatal_diagnostics"]:  # stop BEFORE launching the next command
+            raise ProbeResourceError(
+                f"{stage} {name} emitted fatal MMseqs2 diagnostic(s): "
+                f"{steps[name]['fatal_diagnostics'][:3]}"
+            )
     with tsv.open() as handle:
         metrics = analyze_probe_result(handle, selected_ids=selected_ids, universe=universe)
     check_block_heterogeneity(metrics, limits)
@@ -781,6 +830,10 @@ def run_probe_stage(
         "measured": measured,
         "projection": projection,
         "gate_failures": failures,
+        "advisory_diagnostics": [
+            {"step": name, "lines": value["advisory_diagnostics"]}
+            for name, value in steps.items() if value["advisory_diagnostics"]
+        ],
         "raw_artifact_inventory": inventory_files(gen, names=[p for p in gen.rglob("*") if p.parent != logs]),
         "scientific_edge_evidence": False,
     }
@@ -834,8 +887,16 @@ def run_probe(
         if not (root / "stopped.json").exists():
             _atomic_write_json(root / "stopped.json", {"stage": "failed", "error": f"{type(exc).__name__}: {exc}"})
         raise
-    summary = {"status": "SUCCESS", "stages": list(records), "selection_digest": selection["digest"],
-               "projections": {s: r["projection"] for s, r in records.items()}}
+    summary = {
+        "status": "SUCCESS",
+        "stages": list(records),
+        "selection_digest": selection["digest"],
+        "projections": {s: r["projection"] for s, r in records.items()},
+        "advisory_diagnostics": {
+            stage: record["advisory_diagnostics"]
+            for stage, record in records.items() if record["advisory_diagnostics"]
+        },
+    }
     _atomic_write_json(root / "summary.json", summary)
     return summary
 
@@ -861,7 +922,8 @@ def build_return_summary(output_root: Path) -> dict:
             "binary": {k: v["binary"] for k, v in rec["steps"].items()},
             "step_resources": {
                 k: {kk: v[kk] for kk in ("elapsed_seconds", "peak_rss_kib", "min_free_disk_gib", "start_free_disk_gib",
-                                       "peak_dir_bytes", "max_swap_increase_bytes", "warnings", "stdout_sha256", "stderr_sha256")}
+                                       "peak_dir_bytes", "max_swap_increase_bytes", "warnings", "fatal_diagnostics",
+                                       "advisory_diagnostics", "stdout_sha256", "stderr_sha256")}
                 for k, v in rec["steps"].items()
             },
             "metrics": rec["metrics"],
@@ -891,5 +953,5 @@ __all__ = [
     "ProbeGateFailure", "ResourceMonitors", "validate_stage", "validate_canonical_ids", "select_probe_ids", "read_fasta_strict",
     "write_subset_query_fasta", "probe_search_command", "analyze_probe_result", "check_block_heterogeneity",
     "project_width", "evaluate_width_gates", "evaluate_total_gates", "run_supervised", "run_probe_stage", "run_probe",
-    "prepare_output_root", "build_return_summary", "write_return_summary",
+    "prepare_output_root", "build_return_summary", "write_return_summary", "classify_mmseqs_diagnostics",
 ]

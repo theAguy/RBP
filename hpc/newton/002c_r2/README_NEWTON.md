@@ -1,9 +1,11 @@
-# Newton operator card — Task 002C-R2
+# Darwin operator card — Task 002C-R2
 
 This directory runs one CPU-only, fixed resource probe through Slurm.  It does
 not need a GPU and it cannot run the later full edge-discovery task.
 
-From the extracted bundle on the Newton login node:
+The `hpc/newton` path is a historical compatibility name. CPU-only jobs must
+be submitted from the **Darwin** login node; Newton's public GPU infrastructure
+rejects them. From the extracted bundle on Darwin:
 
 ```bash
 bash hpc/newton/002c_r2/01_INSTALL_ENVIRONMENT.sh
@@ -21,10 +23,20 @@ bash hpc/newton/002c_r2/04_VERIFY_RETURN.sh
 If your lab requires an account and partition, set `NEWTON_ACCOUNT` and
 `NEWTON_PARTITION` before submission.  The default job asks for 4 CPUs,
 96 GiB RAM, 8 hours and no GPU.  If neither quota command reports usable
-information, confirm the 100-GiB quota headroom with the Newton administrator
+information, confirm the 100-GiB quota headroom with the cluster administrator
 before submitting.  Do not confuse filesystem free space with your personal
 or group quota.  Memory and time overrides may only increase the reviewed
 96-GiB and eight-hour defaults.
+
+To receive scheduler email at start, completion, or failure, set one address
+before submission:
+
+```bash
+export RBP_SLURM_MAIL_USER=your-address@example.org
+```
+
+The wrapper validates the address and supplies fixed
+`--mail-type=BEGIN,END,FAIL` options. Leaving it unset disables email.
 
 Never run the Python module or MMseqs2 directly, never submit the extracted
 bundle twice, and never continue into R3.  The wrapper refuses a second

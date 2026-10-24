@@ -65,6 +65,8 @@ elif a[0] == "search":
     open(a[3], "w").write("".join(f"{x}\\t{y}\\n" for x, y in out))
     if mode == "warn":
         sys.stderr.write("Warning: multi-part split\\n")
+    if mode == "advisory":
+        sys.stderr.write("Warning: synthetic non-fatal operator note\\n")
     if mode == "fail":
         sys.exit(3)
 elif a[0] == "createtsv":
@@ -523,13 +525,43 @@ class CorrectionTests(ProbeBase):
         self.assertIn("search", str(ctx.exception))
         self.assertEqual(log.read_text().split(), ["createdb", "createdb", "search"])  # no createtsv
 
-    def test_f2_precise_patterns(self):
-        rx = r2._WARNING_RE
-        for bad in ("Warning: something", "WARNING database", "Error: x", "multi-part search", "target split into 3 parts",
-                    "Out of memory", "result truncated", "--split-memory-limit override", "cannot fit in memory"):
-            self.assertTrue(rx.search(bad), bad)
-        for ok in ("/tmp/split_dir/query_db", "Time for processing: 0h 0m 1s", "createdb done", "splitted_file.txt"):
-            self.assertIsNone(rx.search(ok), ok)
+    def test_f2_diagnostics_are_fatal_advisory_or_normal(self):
+        for bad in (
+            "Error: x", "multi-part search", "target split into 3 parts", "database was split into 2 parts",
+            "Out of memory", "result truncated", "--split-memory-limit override", "cannot fit in memory",
+            "Process prefiltering step 1 of 2",
+        ):
+            with self.subTest(bad=bad):
+                self.assertEqual(r2.classify_mmseqs_diagnostics(bad)["fatal"], [bad])
+        for advisory in ("Warning: something", "WARNING database"):
+            with self.subTest(advisory=advisory):
+                result = r2.classify_mmseqs_diagnostics(advisory)
+                self.assertEqual(result["fatal"], [])
+                self.assertEqual(result["advisory"], [advisory])
+        for ok in (
+            "/tmp/split_dir/query_db", "Time for processing: 0h 0m 1s", "createdb done",
+            "splitted_file.txt", "Split database\t0", "Split memory limit\t0",
+            "prefilter query_seqs_split target_seqs_split result --split 0 --split-mode 2 --split-memory-limit 0",
+            "target split into 1 part", "0 overflows",
+            "Process prefiltering step 1 of 1",
+        ):
+            with self.subTest(ok=ok):
+                self.assertEqual(r2.classify_mmseqs_diagnostics(ok), {"fatal": [], "advisory": []})
+
+    def test_real_darwin_mmseqs18_verbose_excerpt_is_not_a_warning(self):
+        fixture = Path(__file__).parent / "fixtures/splits/mmseqs18_darwin_probe500_diagnostics_excerpt.txt"
+        self.assertEqual(r2.classify_mmseqs_diagnostics(fixture.read_text()), {"fatal": [], "advisory": []})
+
+    def test_generic_warning_is_retained_and_reviewed_after_all_widths(self):
+        os.environ["FAKE_MODE"] = "advisory"
+        summary = self.run_probe()
+        self.assertEqual(summary["status"], "SUCCESS")
+        self.assertEqual(set(summary["advisory_diagnostics"]), set(PROBE_STAGES))
+        returned = r2.build_return_summary(self.root / "out")
+        for stage in PROBE_STAGES:
+            search = returned["stages"][stage]["step_resources"]["search"]
+            self.assertEqual(search["fatal_diagnostics"], [])
+            self.assertEqual(search["advisory_diagnostics"], ["Warning: synthetic non-fatal operator note"])
 
     def test_f3_stage_disk_minimum_includes_every_command(self):
         # free disk dips only during the createtsv command (fourth launch)

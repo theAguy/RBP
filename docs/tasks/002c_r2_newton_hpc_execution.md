@@ -1,4 +1,9 @@
-# Task 002C-R2N — Newton HPC execution of the guarded resource probe
+# Task 002C-R2N — Darwin/Linux Slurm execution of the guarded resource probe
+
+The `newton` names in code and package paths are retained for compatibility
+with the already-reviewed adapter. The Technion public Newton cluster rejects
+CPU-only jobs; the actual CPU probe is submitted from Darwin, whose shared
+home directory exposes the same package and environment.
 
 ## Purpose and current scientific state
 
@@ -26,13 +31,23 @@ It creates no scientific component edges and cannot continue into R3.
 
 The Apple-Silicon portable R2 package was valid, but the collaborator run
 stopped before MMseqs2 because only 90.76 GiB of disk was free, below the
-frozen 100-GiB gate.  Newton provides a suitable scheduled Linux host.  This
+frozen 100-GiB gate. Darwin provides the suitable scheduled CPU/Linux host. This
 task adapts only the execution environment and resource monitors; it does not
 change the scientific relation, sample, widths, thresholds or stop rules.
 
+The first Darwin execution reached and cleanly completed the 500-nt MMseqs2
+search, then stopped because the original text guard mistook normal verbose
+parameter and internal-command output for a split warning. The corrected
+policy does not infer failure from words in paths or command echoes. It stops
+on nonzero tool exits and concrete OOM, cannot-fit, truncation, multi-part or
+split-count diagnostics. Generic `Warning:` lines are retained in the step
+record, raw logs and return summary for end-of-run review, but do not alone
+discard a complete probe. This reduces avoidable handoffs without weakening
+objective resource and integrity gates.
+
 ## Frozen scientific behavior
 
-The Newton run uses the accepted implementation in
+The Darwin run uses the accepted implementation in
 `src/rbpbench/splits/resource_probe_r2.py` and the command builder in
 `src/rbpbench/splits/commands.py`.
 
@@ -64,13 +79,14 @@ The core R2 gates are unchanged:
 - at most 10 GiB temporary/output growth per width;
 - at most two hours per probe width;
 - swap growth at most 2 GiB;
-- no MMseqs2 warning about splitting, override, OOM, truncation or result cap;
+- no concrete MMseqs2 OOM, cannot-fit, truncation, multi-part or greater-than-one
+  database-split diagnostic (generic warnings are retained for review);
 - conservative projected RSS at most 48 GiB;
 - conservative projected retained output at most 25 GiB total;
 - conservative projected transient disk at most 20 GiB; and
 - conservative projected time at most 12 hours per width and 24 hours total.
 
-Newton additionally must provide exactly four Slurm CPUs and at least 64 GiB
+Darwin additionally must provide exactly four Slurm CPUs and at least 64 GiB
 of allocated memory.  The submission default is 96 GiB, providing headroom
 without changing a scientific parameter.  The job is CPU-only: MMseqs2 in
 this workflow does not use the GPU.  The wrapper rejects any memory override
@@ -78,7 +94,7 @@ below 96 GiB or time override below eight hours.
 
 ## Linux operational adaptation
 
-The original R2 monitor used macOS `sysctl`.  The Newton adapter adds:
+The original R2 monitor used macOS `sysctl`. The Linux/Slurm adapter adds:
 
 - process-tree RSS from portable `ps` columns;
 - swap use from `/proc/meminfo`;
@@ -93,12 +109,12 @@ Transient disk is measured conservatively as the larger of the observed
 filesystem free-space drop and the peak size of the probe's own candidate
 generation.  This prevents unrelated deletions on shared storage from hiding
 the probe's growth.  Host preflight also retains `quota -s` and `lfs quota`
-diagnostics when those commands exist; because Newton storage policies vary,
+diagnostics when those commands exist; because cluster storage policies vary,
 the operator still confirms quota headroom before submitting.
 
 ## Deliverable layout
 
-The Newton bundle is built locally by
+The Linux/Slurm bundle is built locally by
 `scripts/build_002c_r2_newton_bundle.py`.  It contains only the R2 source
 closure, the accepted decode manifest, the three accepted FASTAs and:
 
@@ -121,16 +137,15 @@ conda-forge/bioconda. It records the exact Linux
 package lock and the exact MMseqs2 binary SHA-256.  The batch job revalidates
 that receipt and binary before reading a FASTA.
 
-## Operator procedure on Newton
+## Operator procedure on Darwin
 
 ### 1. Connect and choose storage
 
-Connect to `newton.cs.technion.ac.il` over SSH (Technion VPN is required when
-off campus), or use Newton Open OnDemand.  Do not run the probe on the login
-node.  Copy the verified bundle archive and its `.sha256` file to a location
-with at least 100 GiB free and sufficient user quota.  Newton documents
-`/home` and `/datasets`; the operator may instead use an authorized lab
-volume.
+Connect to `darwin.cs.technion.ac.il` over SSH (Technion VPN is required when
+off campus), or use `132.68.38.100`. Do not run the probe on the login node.
+Copy the verified bundle archive and its `.sha256` file to a location
+with at least 100 GiB free and sufficient user quota. The operator may use
+the shared home directory or an authorized lab volume.
 
 Before extraction or submission, inspect quota as supported by the selected
 filesystem:
@@ -141,7 +156,7 @@ lfs quota -u "$USER" /the/selected/storage/path
 ```
 
 Proceed only after confirming at least 100 GiB of quota headroom.  If neither
-command reports meaningful information, confirm the limit with the Newton
+command reports meaningful information, confirm the limit with the cluster
 administrator; `df` free space alone is not sufficient on shared storage.
 
 ### 2. Verify and extract
@@ -171,7 +186,7 @@ bash hpc/newton/002c_r2/01_INSTALL_ENVIRONMENT.sh
 
 ### 4. Select account/partition only if needed
 
-Newton can display account associations with:
+Darwin can display account associations with:
 
 ```bash
 sacctmgr show user "$USER" withassoc format=user,account
@@ -184,7 +199,7 @@ export NEWTON_ACCOUNT=the_approved_account
 export NEWTON_PARTITION=the_approved_partition
 ```
 
-If unset, the submit wrapper uses Newton's defaults.  The wrapper requests
+If unset, the submit wrapper uses Darwin's defaults. The wrapper requests
 four CPUs, 96 GiB RAM, eight hours and no GPU.  Operational overrides may
 increase memory/time only; they must not change the R2 program or scientific
 flags:
@@ -193,6 +208,16 @@ flags:
 export NEWTON_MEMORY=128G
 export NEWTON_TIME_LIMIT=10:00:00
 ```
+
+The environment-variable names retain `NEWTON_` for compatibility. To enable
+Slurm email without changing the script, set exactly one address:
+
+```bash
+export RBP_SLURM_MAIL_USER=your-address@example.org
+```
+
+The wrapper then requests `BEGIN,END,FAIL` notifications. It never requests a
+GPU.
 
 ### 5. Submit exactly once
 
@@ -232,7 +257,7 @@ bash hpc/newton/002c_r2/04_VERIFY_RETURN.sh
 ```
 
 Return only the generated ZIP and its SHA-256 sidecar.  Raw FASTAs, databases
-and result TSVs remain on Newton and are excluded from the return.
+and result TSVs remain on Darwin and are excluded from the return.
 
 ## Success and failure interpretation
 
@@ -260,7 +285,7 @@ or start R3.
   `manifests/sequence_r2_portable_package_build.json`
 - Prior stopped return: `artifacts/teammate_run_results/return.zip`
 
-## Boundary after Newton R2
+## Boundary after Darwin R2
 
 After the ZIP returns, the planning reviewer must independently verify hashes,
 commands, resource measurements, projections and gates.  Only then may a new

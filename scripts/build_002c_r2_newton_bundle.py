@@ -129,7 +129,7 @@ def build(repo: Path, destination: Path, decode_dir: Path) -> tuple[Path, dict]:
         "checkpoint": newton.CHECKPOINT,
         "source_commit": commit,
         "created_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "platform": "Newton Slurm / Linux x86_64",
+        "platform": "Technion Darwin Slurm / Linux x86_64 (legacy newton adapter path)",
         "environment_bundled": False,
         "environment_setup": "hpc/newton/002c_r2/01_INSTALL_ENVIRONMENT.sh",
         "single_submit_entrypoint": "hpc/newton/002c_r2/02_SUBMIT_R2_PROBE.sh",

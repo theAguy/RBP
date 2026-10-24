@@ -248,9 +248,13 @@ within the current query), per-block rows *and bytes* per query are reported
 and both are subject to the 1.5x heterogeneity gate, the transient-disk
 projection uses the larger of the whole-width free-space drop and the peak
 size of the probe's own candidate generation (important on shared storage), the retained
-figure is an upper bound `max(raw result DB, rendered TSV)`, peak RSS also
-includes a post-run child measurement, and MMseqs2 warnings stop the stage
-before the next command. Block bytes are the exact supplied TSV bytes, the whole-width disk
+figure is an upper bound `max(raw result DB, rendered TSV)`, and peak RSS also
+includes a post-run child measurement. MMseqs2 diagnostics are classified:
+nonzero exits and concrete OOM/cannot-fit/truncation/multi-part or split-count
+diagnostics stop before the next command; generic `Warning:` lines are retained
+in the per-step evidence and final return for review without discarding an
+otherwise complete probe; normal verbose parameter lines and internal
+`*_seqs_split` paths are neither. Block bytes are the exact supplied TSV bytes, the whole-width disk
 measurement starts before candidate-generation/subset writing, and a child observed
 after the width deadline is rejected even if it already exited. R2 uses separate query/target databases; R3's
 same-database search is not claimed to behave identically. Tests:
@@ -299,7 +303,7 @@ stopped before any MMseqs2 command because only 90.76 GiB was free, below the
 frozen 100-GiB pre-width gate; that STOPPED return is preserved at
 `artifacts/teammate_run_results/return.zip`.
 
-### Task 002C-R2N Newton/Slurm adapter (awaiting second review)
+### Task 002C-R2N Linux/Slurm adapter
 
 `rbpbench.splits.newton_002c_r2` and `hpc/newton/002c_r2/` adapt the same R2
 core to a scheduled Linux x86_64 node. The scientific command, seed, sample,
@@ -307,11 +311,23 @@ widths, target universe, four-thread cap and projection gates are unchanged.
 Linux monitoring uses process-tree RSS, `/proc/meminfo` swap and
 `MemAvailable`, plus raw PSI evidence; an unreadable measurement fails closed.
 The submit wrapper requests four CPUs, 96 GiB RAM, eight hours, no requeue and
-no GPU, and the launcher refuses to run outside Slurm. A separate conda setup
+no GPU, and the launcher refuses to run outside Slurm. The public Newton GPU
+cluster rejects CPU-only jobs, so real CPU execution uses the Darwin cluster;
+the historical `newton` module/directory names are retained for package
+compatibility. A separate conda setup
 pins MMseqs2 18.8cc5c build `hd6d6fdc_0`, exports an explicit lock and records the exact Linux
 binary hash; the job revalidates that receipt. The full operator procedure and
 review boundary are in `docs/tasks/002c_r2_newton_hpc_execution.md` and
 `docs/reviews/002c_r2_newton_hpc_execution_review_request.md`.
+
+The first Darwin attempt is preserved under
+`artifacts/teammate_run_results/002c_r2_darwin_stopped_20261024/`. Its 500-nt
+search exited cleanly, but an over-broad text matcher treated the normal
+MMseqs2 18.8cc5c lines `Split database 0`, `Split memory limit 0`, and internal
+`*_seqs_split` command paths as a fatal warning. The corrected classifier is
+regression-tested against a sanitized excerpt of that exact output. This stop
+contains no accepted R2 result because `createtsv` and the projection gates had
+not yet run.
 
 Each checkpoint requires its own executor handoff and review; this
 implementation does not silently continue into a later checkpoint.

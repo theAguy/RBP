@@ -1,0 +1,12 @@
+Split database                         	0
+Split mode                             	2
+Split memory limit                     	0
+Sequence split mode                    	1
+Header split mode                      	0
+splitsequence /home/guy.assa/rbp_newton/RBP_Task002C_R2_Newton_f65a415/r2_output/generations/probe_500_ab48ee101aa54c8f/target_db /home/guy.assa/rbp_newton/RBP_Task002C_R2_Newton_f65a415/r2_output/generations/probe_500_ab48ee101aa54c8f/tmp/13750564253665254098/target_seqs_split --max-seq-len 10000 --sequence-overlap 0 --sequence-split-mode 1 --headers-split-mode 0 --create-lookup 0 --threads 4 --compressed 0 -v 3
+prefilter /home/guy.assa/rbp_newton/RBP_Task002C_R2_Newton_f65a415/r2_output/generations/probe_500_ab48ee101aa54c8f/tmp/13750564253665254098/query_seqs_split /home/guy.assa/rbp_newton/RBP_Task002C_R2_Newton_f65a415/r2_output/generations/probe_500_ab48ee101aa54c8f/tmp/13750564253665254098/target_seqs_split /home/guy.assa/rbp_newton/RBP_Task002C_R2_Newton_f65a415/r2_output/generations/probe_500_ab48ee101aa54c8f/tmp/13750564253665254098/search/pref_0 --max-seqs 361180 --split 0 --split-mode 2 --split-memory-limit 0 -c 0.8 --cov-mode 0 --threads 4 -s 7.5
+Process prefiltering step 1 of 1
+0 overflows
+61821 sequence pairs passed the thresholds (0.002021 of overall calculated)
+3.091050 hits per query sequence
+Time for processing: 0h 12m 47s 761ms

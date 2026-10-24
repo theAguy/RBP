@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "checkpoint": "002C-R2 Darwin first execution STOPPED",
+  "source_commit": "f65a415f32511c505e19390d71d73146974a55c6",
+  "slurm": {
+    "cluster": "darwin",
+    "job_id": "451482",
+    "account": "cs",
+    "partition": "public",
+    "cpus_per_task": 4,
+    "allocated_memory_mib": 98304
+  },
+  "execution": {
+    "started_at_utc": "2026-10-24T10:21:10Z",
+    "finished_at_utc": "2026-10-24T10:35:26Z",
+    "status": "STOPPED",
+    "accepted_probe_widths": [],
+    "r3_authorized": false,
+    "stop_classification": "false_positive_diagnostic_classifier",
+    "explanation": "The width-500 search exited zero and stderr was empty. The old matcher incorrectly treated MMseqs2 18.8cc5c verbose parameter output (Split database 0, Split memory limit 0) and internal *_seqs_split command paths as fatal warnings. createtsv and projection gates did not run, so this is not accepted R2 evidence."
+  },
+  "observed_width_500_search": {
+    "candidate_alignments": 30587908,
+    "pairs_passing_thresholds": 61821,
+    "hits_per_query": 3.09105,
+    "alignment_processing_time": "0h 12m 47s 761ms",
+    "interpretation": "diagnostic only; not an accepted R2 projection"
+  },
+  "return_archive": {
+    "local_ignored_path": "artifacts/teammate_run_results/002c_r2_darwin_stopped_20261024/RBP_002C_R2_NEWTON_RETURN_20261024T103526Z_newton8.zip",
+    "byte_size": 74674,
+    "sha256": "de958ce839e0a3ef43da0457166696fa5ff0fa8af0da41cdc4341346970cc2c0",
+    "sidecar_sha256": "18119d66f55720aa23acb8291e98c980961b34597ebd71975e91d0071640284d",
+    "zip_test": "passed",
+    "sidecar_check": "passed"
+  },
+  "selected_internal_evidence": {
+    "status_json_sha256": "3b666130e537422c97600a466ac37a81c120e313846af9117d1a377fc485058d",
+    "return_manifest_sha256": "951298a42d5d31281bf0be8a973299ab62f6d04e24c297cdbb5954ba630bab8b",
+    "return_inventory_sha256": "a7772f623156eed722139160d772d1efd68e446317795d1763664db350274fc0",
+    "probe_stopped_sha256": "a934f42a03f62861d48ccfa7bb17c50e36297a5f9bdd820827855b21a980a61e",
+    "probe_summary_sha256": "f7311e74de2a50505aeccae2cf0223453f80288b034251a492c7838c36250056",
+    "search_stdout_sha256": "4aef4ba0d4564010e9f43ffc10d35b3a2ab7348bf0d0d830ceaa50c1b66aaa9e",
+    "search_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

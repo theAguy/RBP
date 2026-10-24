@@ -272,6 +272,23 @@ class SubmitWrapperTests(unittest.TestCase):
             receipt = Path(str(bundle) + ".slurm_submission/submission.txt")
             self.assertEqual(receipt.read_text(), "12345;newton\n")
 
+    def test_optional_email_notifications_are_fixed_and_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle, env, fake_log = self.fixture(Path(tmp))
+            done = self.run_submit(bundle, env | {"RBP_SLURM_MAIL_USER": "researcher@example.org"})
+            self.assertEqual(done.returncode, 0, done.stderr)
+            call = fake_log.read_text()
+            self.assertIn("--mail-type=BEGIN,END,FAIL", call)
+            self.assertIn("--mail-user=researcher@example.org", call)
+
+        for bad in ("not-an-email", "a@b", "a@example.org,b@example.org", "a@example.org\n--gres=gpu:1"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                bundle, env, fake_log = self.fixture(Path(tmp))
+                done = self.run_submit(bundle, env | {"RBP_SLURM_MAIL_USER": bad})
+                self.assertNotEqual(done.returncode, 0)
+                self.assertFalse(fake_log.exists())
+                self.assertFalse(Path(str(bundle) + ".slurm_submission").exists())
+
     def test_scheduler_rejection_leaves_auditable_recovery_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             bundle, env, fake_log = self.fixture(Path(tmp))

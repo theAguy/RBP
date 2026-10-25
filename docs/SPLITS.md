@@ -242,7 +242,9 @@ database, using only `components_v2_direct_search_command` plus a
 `probe_101`. It projects with the 36.118 linear scale and a separately
 labelled 1.5 safety factor (database creation is reported unscaled), runs
 live RSS/disk/temp/swap/memory-pressure supervision, and stops without retry
-on any failure or gate crossing. **Probe output is resource evidence only: no
+on any hard live-resource, tool, timeout, or integrity failure. Projection
+and block-heterogeneity findings are accumulated across the otherwise safe
+widths and returned once as `REVIEW_REQUIRED`. **Probe output is resource evidence only: no
 probe edge is scientific component evidence**, and the module has no
 normalized-edge writer, components-v2 build, full-query database, assignment,
 audit, or R3 stage. Result parsing is bounded streaming: query and target are
@@ -252,8 +254,9 @@ column-count distribution are retained as resource/schema evidence. The raw
 output must be grouped by query (duplicates are checked only
 within the current query), per-block rows *and bytes* per query are reported
 and both are subject to the 1.5x heterogeneity gate, the transient-disk
-projection uses the larger of the whole-width free-space drop and the peak
-size of the probe's own candidate generation (important on shared storage), the retained
+projection uses the peak size of the probe's own candidate generation;
+whole-filesystem free-space movement is retained only as diagnostic and
+absolute-floor evidence on shared storage. The retained
 figure is an upper bound `max(raw result DB, rendered TSV)`, and peak RSS also
 includes a post-run child measurement. MMseqs2 diagnostics are classified:
 nonzero exits and concrete OOM/cannot-fit/truncation/multi-part or split-count
@@ -345,6 +348,18 @@ R2 parser uses only the first two endpoint fields and counts the complete raw
 row; the R3 raw direct-edge parser was corrected at the same time so this root
 cause cannot recur there. Normalized v2 edge artifacts remain canonical,
 strictly two-column files.
+
+The third Darwin attempt is preserved under
+`artifacts/teammate_run_results/002c_r2_darwin_gate_stop_20261025/`. Its
+500-nt probe completed with valid 15-column result evidence. The conservative
+time projection was 12.51 hours, narrowly above the 12-hour review threshold.
+Its apparent 1,435-GiB transient projection was invalid: it scaled a 26.49-GiB
+change in free space across the shared 45-TiB filesystem as if this job wrote
+it, while the job-owned candidate generation peaked at 0.828 GiB. The runner
+now separates hard immediate failures from projection-only findings, uses
+job-owned candidate size for transient projection, and gathers all safe-width
+projection findings in one return. Scientific search settings are unchanged,
+and R3 remains blocked until the completed projections are reviewed.
 
 Each checkpoint requires its own executor handoff and review; this
 implementation does not silently continue into a later checkpoint.

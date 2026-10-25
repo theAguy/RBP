@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "checkpoint": "002C-R2 Darwin third execution projection stop",
+  "source_commit": "5c9b59e24fda1a7fe9b404f4d121a69a18531003",
+  "slurm": {
+    "cluster": "darwin",
+    "job_id": "452306",
+    "account": "cs",
+    "partition": "public",
+    "cpus": 4,
+    "requested_memory_mib": 98304
+  },
+  "execution": {
+    "started_utc": "2026-10-25T06:47:12Z",
+    "return_created_utc": "2026-10-25T07:01:27Z",
+    "status": "STOPPED",
+    "completed_widths": [500],
+    "accepted_for_r3": false
+  },
+  "width_500": {
+    "query_count": 10000,
+    "result_rows": 61821,
+    "distinct_targets": 49821,
+    "self_hit_rate": 1.0,
+    "result_cap_reached": false,
+    "column_count_histogram": {
+      "15": 61821
+    },
+    "search_seconds": 831.5754015687853,
+    "linear_search_hours": 8.343011209405942,
+    "conservative_search_hours": 12.514516814108912,
+    "peak_rss_gib": 9.303009033203125,
+    "conservative_peak_rss_gib": 13.954513549804688,
+    "conservative_retained_gib": 0.23021860818564893,
+    "shared_filesystem_free_space_drop_gib": 26.490234375,
+    "peak_job_generation_size_gib": 0.8276684107258916,
+    "old_conservative_transient_projection_gib": 1435.1614277343751,
+    "block_row_density_ratio_max": 1.1225958816583361,
+    "block_byte_density_ratio_max": 1.1255461635299522
+  },
+  "stop_findings": [
+    "conservative search 12.51 h exceeds 12.0 h per width",
+    "old transient formula scaled shared-filesystem movement as job output"
+  ],
+  "return_archive": {
+    "path": "artifacts/teammate_run_results/002c_r2_darwin_gate_stop_20261025/RBP_002C_R2_NEWTON_RETURN_20261025T070127Z_newton8.zip",
+    "byte_size": 157423,
+    "sha256": "ad361c7743130df2c6863f778fbddd70e15c91b5b4a5a3f46ff2c7bca2c98b5e",
+    "sha256_sidecar_sha256": "78264014007d504b65ce9e5de64a01d71126cc60f14e2d5acddbdf991b41c44e"
+  },
+  "returned_evidence_sha256": {
+    "STATUS.json": "5357e1b54f75bdd8210a48dfc7334785dfb1247e33d480deea82148402292082",
+    "RETURN_MANIFEST.json": "b57da43d15051ca6f1d7383e275d56981bb737aa44271d7a3d57e27da4652b55",
+    "RETURN_INVENTORY.json": "07a6d02bd4a9e29ede2bb5e68930d59a0afb8ba0e79b83ada278fde1d586dcff",
+    "probe/stopped.json": "cf1e7d0494e13be2a923c3a08c739e7409ccd0070197b56ea0412433a60f39ee",
+    "probe_summary.json": "0997f3c097da92e534981cd6bc590576ae095b3acba089cd52ef2f8be5d6ab32"
+  },
+  "correction_boundary": {
+    "scientific_settings_changed": false,
+    "hard_live_safety_gates_relaxed": false,
+    "projection_findings_accumulated_across_safe_widths": true,
+    "shared_filesystem_delta_excluded_from_job_attribution": true,
+    "r3_authorized": false
+  }
+}

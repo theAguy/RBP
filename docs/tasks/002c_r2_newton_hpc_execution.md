@@ -56,6 +56,18 @@ real row is now a regression fixture, and the future R3 raw-edge parser uses
 the same endpoint rule while keeping normalized edge artifacts strictly
 two-column. No threshold, search flag, gate or sample changed.
 
+The third Darwin execution completed the corrected 500-nt probe and produced
+valid resource evidence. It then stopped on two projection findings: 12.51
+hours versus the 12-hour conservative per-width time threshold, and a false
+1,435-GiB transient-disk projection. The latter came from scaling a 26.49-GiB
+drop in free space across the entire shared 45-TiB filesystem as though this
+single job had written it. The job-owned candidate generation peaked at only
+0.828 GiB. The corrected policy continues to enforce the absolute shared-disk
+floors live, but attributes and scales only the job-owned candidate
+generation. Projection findings are accumulated across all otherwise safe
+widths and returned once for review; hard resource, tool, timeout, and
+integrity failures still stop immediately. R3 remains blocked pending review.
+
 ## Frozen scientific behavior
 
 The Darwin run uses the accepted implementation in
@@ -116,10 +128,10 @@ An unavailable RSS, available-memory or swap measurement stops the run.  The
 24-GiB available-memory floor is enforced live on Linux.  Slurm allocation
 memory is verified independently from physical node memory.
 
-Transient disk is measured conservatively as the larger of the observed
-filesystem free-space drop and the peak size of the probe's own candidate
-generation.  This prevents unrelated deletions on shared storage from hiding
-the probe's growth.  Host preflight also retains `quota -s` and `lfs quota`
+Transient disk projection uses the peak size of the probe's own candidate
+generation. Whole-filesystem free-space movement is retained as diagnostic
+and absolute-floor evidence, but is not attributed to the job or scaled on
+shared storage. Host preflight also retains `quota -s` and `lfs quota`
 diagnostics when those commands exist; because cluster storage policies vary,
 the operator still confirms quota headroom before submitting.
 
@@ -238,8 +250,10 @@ bash hpc/newton/002c_r2/02_SUBMIT_R2_PROBE.sh
 
 The wrapper invokes `sbatch`; it never performs the search on the login node.
 It atomically creates a submission receipt and refuses if that receipt already
-exists, so two queued jobs cannot race on one extraction.  The package is
-single-use and the job stops without retry at the first failed gate.  Slurm is
+exists, so two queued jobs cannot race on one extraction. The package is
+single-use. Hard live-resource, tool, timeout, or integrity failures stop
+without retry. Projection-only findings are accumulated across the safe
+widths and returned once for review. Slurm is
 asked to send `USR1` ten minutes before the time limit; `USR1` and `SIGTERM`
 both terminate any active MMseqs2 process group and route through the normal
 small STOPPED-return path.  Later termination signals are ignored while that
@@ -276,7 +290,10 @@ and result TSVs remain on Darwin and are excluded from the return.
 can be reviewed.  It does **not** mean the split is fixed and it does not
 authorize R3.
 
-`STOPPED` is a valid, informative outcome.  Preserve and return its ZIP; do
+`STOPPED` is a valid, informative outcome. A return whose probe summary is
+`REVIEW_REQUIRED` means the safe probe measurements completed but one or more
+planning projections exceeded their thresholds; it still blocks R3.
+Preserve and return its ZIP; do
 not alter thresholds, reduce `--max-seqs`, omit a width, retry automatically
 or start R3.
 

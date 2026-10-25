@@ -358,8 +358,10 @@ def project_width(measured: Mapping, limits: ProbeLimits = ProbeLimits()) -> dic
     peak_rss_gib, result_bytes (rendered TSV), retained_upper_bound_bytes
     (max of raw result-DB and rendered-TSV bytes; an UPPER-BOUND estimate,
     not actual R3 retained output), and transient_free_disk_drop_gib (the
-    larger of whole-width free-space drop and peak candidate-generation
-    size).
+    peak size of this job's candidate generation). Whole-filesystem free-space
+    movement is recorded separately but is not attributed to this job: on a
+    shared cluster filesystem it includes unrelated users' activity. The live
+    absolute disk floor remains enforced independently throughout execution.
     """
 
     def pair(value: float) -> dict:
@@ -812,7 +814,14 @@ def run_probe_stage(
             )
     with tsv.open() as handle:
         metrics = analyze_probe_result(handle, selected_ids=selected_ids, universe=universe)
-    check_block_heterogeneity(metrics, limits)
+    block_failures: list[str] = []
+    try:
+        check_block_heterogeneity(metrics, limits)
+    except ProbeGateFailure as exc:
+        # This invalidates the fixed projection envelope, but it is not a
+        # live safety/integrity failure. Preserve it and finish the other safe
+        # widths so planning can review one complete evidence package.
+        block_failures.append(str(exc))
     result_bytes = tsv.stat().st_size
     result_db_bytes = sum(p.stat().st_size for p in gen.glob("result*") if p.is_file() and p != tsv)
     retained_upper = max(result_db_bytes, result_bytes)
@@ -832,12 +841,16 @@ def run_probe_stage(
         "stage_start_free_disk_gib": stage_start_free,
         "stage_min_free_disk_gib": stage_min_free,
         "free_space_drop_gib": free_space_drop,
+        "shared_filesystem_free_space_drop_gib": free_space_drop,
+        "shared_filesystem_free_space_drop_role": (
+            "live absolute-floor evidence only; not job-attributable and not scaled for projection"
+        ),
         "peak_generation_size_gib": peak_generation_size,
-        "transient_free_disk_drop_gib": max(free_space_drop, peak_generation_size),
-        "transient_disk_measurement": "max(filesystem free-space drop, peak candidate-generation size)",
+        "transient_free_disk_drop_gib": peak_generation_size,
+        "transient_disk_measurement": "peak size of this job's candidate generation; conservatively scaled as a whole",
     }
     projection = project_width(measured, limits)
-    failures = evaluate_width_gates(projection, limits)
+    failures = block_failures + evaluate_width_gates(projection, limits)
     record = {
         "stage": stage,
         "width": width,
@@ -848,6 +861,7 @@ def run_probe_stage(
         "measured": measured,
         "projection": projection,
         "gate_failures": failures,
+        "measurement_status": "REVIEW_REQUIRED" if failures else "PASSED",
         "advisory_diagnostics": [
             {"step": name, "lines": value["advisory_diagnostics"]}
             for name, value in steps.items() if value["advisory_diagnostics"]
@@ -855,9 +869,11 @@ def run_probe_stage(
         "raw_artifact_inventory": inventory_files(gen, names=[p for p in gen.rglob("*") if p.parent != logs]),
         "scientific_edge_evidence": False,
     }
-    if failures:
-        _atomic_write_json(output_root / "stopped.json", {"stage": stage, "gate_failures": failures, "record": record})
-        raise ProbeGateFailure(f"{stage}: " + "; ".join(failures))
+    # A projection threshold is a planning result, not an immediate danger to
+    # the already-running small probe. Transactionally retain the completed
+    # measurement and let run_probe collect every width before returning one
+    # consolidated REVIEW_REQUIRED stop. Hard tool/resource/integrity failures
+    # still raise before this point and stop immediately.
     _atomic_write_json(output_root / "selected" / f"{stage}.json", record)
     return record
 
@@ -876,10 +892,14 @@ def run_probe(
     threads: int = MAX_THREADS,
     poll_interval: float = 1.0,
 ) -> dict:
-    """Runs exactly probe_500, probe_251, probe_101 in order; stops (no
-    retry, no later width) on the first failure, always leaving a
-    ``stopped.json`` for failures. Returns the SUCCESS summary. Never
-    continues into any later task."""
+    """Runs exactly probe_500, probe_251, probe_101 in order.
+
+    Hard live-resource, tool, or reconciliation failures stop immediately.
+    Projection/heterogeneity gate findings are accumulated across all safe
+    widths and returned together as one ``REVIEW_REQUIRED`` stop, preventing
+    serial reruns merely to discover the next planning result. Never continues
+    into any later task.
+    """
     monitors = monitors or ResourceMonitors()
     uni = validate_canonical_ids(universe)
     if set(fasta_paths) != set(STAGE_WIDTH.values()):
@@ -895,10 +915,30 @@ def run_probe(
                 selection=selection, mmseqs_bin=mmseqs_bin, binary=binary, monitors=monitors, limits=limits,
                 threads=threads, poll_interval=poll_interval,
             )
-        failures = evaluate_total_gates({s: r["projection"] for s, r in records.items()}, limits)
+        failures = [
+            f"{stage}: {failure}"
+            for stage, record in records.items()
+            for failure in record["gate_failures"]
+        ]
+        failures.extend(evaluate_total_gates({s: r["projection"] for s, r in records.items()}, limits))
         if failures:
-            _atomic_write_json(root / "stopped.json", {"stage": "total", "gate_failures": failures})
-            raise ProbeGateFailure("; ".join(failures))
+            summary = {
+                "status": "REVIEW_REQUIRED",
+                "stages": list(records),
+                "selection_digest": selection["digest"],
+                "projections": {s: r["projection"] for s, r in records.items()},
+                "gate_failures": failures,
+                "advisory_diagnostics": {
+                    stage: record["advisory_diagnostics"]
+                    for stage, record in records.items() if record["advisory_diagnostics"]
+                },
+            }
+            _atomic_write_json(root / "summary.json", summary)
+            _atomic_write_json(
+                root / "stopped.json",
+                {"stage": "projection_review", "completed_stages": list(records), "gate_failures": failures},
+            )
+            raise ProbeGateFailure("projection review required after all safe widths: " + "; ".join(failures))
     except ProbeGateFailure:
         raise
     except Exception as exc:

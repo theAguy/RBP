@@ -56,8 +56,12 @@ and measures per-query hit/output density without pretending that a
 10,000-by-10,000 search represents the full run. Probe output is resource
 evidence only and must never be consumed as components-v2 scientific edges.
 
-The three widths run sequentially. A failed width stops the package without
-retry or progression to a later width.
+The three widths run sequentially. A hard live-resource, tool, timeout, or
+result-integrity failure stops the package immediately without retry.
+Projection-only findings do not end an otherwise safe 10,000-query probe:
+they are retained as `REVIEW_REQUIRED`, the remaining widths run, and the
+package returns one consolidated stop for planning review. No such finding
+authorizes R3.
 
 ### Raw `createtsv` schema clarification
 
@@ -149,16 +153,22 @@ components-v2 membership/report, and required provenance that must remain
 after each width completes. Define **transient artifacts** as every temporary
 database, result database, TSV, and temporary working file present before
 cleanup. Record the size of each stage's temporary directory and the minimum
-free disk observed live. Conservatively project transient peak growth as:
+free disk observed live. Conservatively project transient peak growth from
+the job-owned candidate generation as:
 
 ```text
-(probe_start_free_disk - probe_min_free_disk) * 36.118 * 1.5
+probe_peak_candidate_generation_size * 36.118 * 1.5
 ```
 
-The projected transient growth must be at most 20 GiB, leaving the fixed
-20-GiB margin between R3's 100-GiB pre-width disk requirement and its 80-GiB
-live disk floor. This deliberately conservative calculation may stop R3 for
-review; it may not be relaxed by omitting temporary artifacts.
+Whole-filesystem free-space movement is recorded separately and continues to
+enforce the absolute 100-GiB pre-width and 80-GiB live floors. It is not
+attributed to this job or scaled: on shared cluster storage it also contains
+other users' writes and deletions.
+
+The projected job-owned transient growth must be at most 20 GiB, leaving the
+fixed 20-GiB margin between R3's 100-GiB pre-width disk requirement and its
+80-GiB live disk floor. This deliberately conservative calculation may stop
+R3 for review; it may not be relaxed by omitting temporary artifacts.
 
 Available RAM on macOS is the existing fail-closed estimate from
 `detect_available_memory_gib()`: free + inactive + speculative pages reported
@@ -168,7 +178,10 @@ parsed macOS memory-pressure state at stage start and peak. An unavailable
 reading, a non-normal/unknown pressure reading, or a swap-use increase above
 2 GiB in any stage is a stop for review even if MMseqs2 exits successfully.
 
-Crossing any gate is a stop for review. It is not permission to reduce
+Crossing a live safety or integrity gate is an immediate stop. Crossing a
+projection or block-heterogeneity gate marks that width `REVIEW_REQUIRED`;
+the runner completes the other safe probe widths and then stops once with all
+findings. Either outcome blocks R3. It is not permission to reduce
 `--max-seqs`, sample the future scientific run, lower sensitivity, change the
 similarity thresholds, or omit a width.
 
@@ -190,7 +203,8 @@ The package must:
 - sample live process-tree RSS, disk, swap, and macOS memory pressure during
   every external stage;
 - preserve accepted evidence transactionally;
-- stop without retry on any failure;
+- stop without retry on any hard failure, while accumulating projection-only
+  findings across the safe widths;
 - exclude FASTAs, raw MMseqs2 databases, and raw result TSVs from the returned
   package; and
 - always produce one small SUCCESS or STOPPED return ZIP containing commands,

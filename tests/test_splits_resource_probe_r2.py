@@ -525,7 +525,18 @@ class WorkflowTests(ProbeBase):
             self.run_probe(limits=limits)
         stopped = json.loads((self.root / "out" / "stopped.json").read_text())
         self.assertTrue(stopped["gate_failures"])
-        self.assertEqual(list((self.root / "out" / "selected").glob("*.json")), [])
+        self.assertEqual(stopped["stage"], "projection_review")
+        self.assertEqual(stopped["completed_stages"], list(PROBE_STAGES))
+        self.assertEqual(
+            sorted(p.stem for p in (self.root / "out" / "selected").glob("*.json")),
+            sorted(PROBE_STAGES),
+        )
+        for stage in PROBE_STAGES:
+            record = json.loads((self.root / "out" / "selected" / f"{stage}.json").read_text())
+            self.assertEqual(record["measurement_status"], "REVIEW_REQUIRED")
+            self.assertTrue(record["gate_failures"])
+        summary = json.loads((self.root / "out" / "summary.json").read_text())
+        self.assertEqual(summary["status"], "REVIEW_REQUIRED")
         self.assertEqual(r2.build_return_summary(self.root / "out")["status"], "STOPPED")
 
     def test_wrong_fasta_widths_refused(self):
@@ -596,8 +607,10 @@ class CorrectionTests(ProbeBase):
             self.assertEqual(search["fatal_diagnostics"], [])
             self.assertEqual(search["advisory_diagnostics"], ["Warning: synthetic non-fatal operator note"])
 
-    def test_f3_stage_disk_minimum_includes_every_command(self):
-        # free disk dips only during the createtsv command (fourth launch)
+    def test_f3_shared_filesystem_drop_is_recorded_but_not_attributed_to_job(self):
+        # Shared free disk dips only during the createtsv command (fourth
+        # launch). It remains live-floor evidence, but unrelated users' writes
+        # must not be scaled as this job's projected transient output.
         launches = {"n": 0}
 
         def free(p):
@@ -612,15 +625,15 @@ class CorrectionTests(ProbeBase):
         r2.check_pre_launch = counting_pre
         self.addCleanup(setattr, r2, "check_pre_launch", real_pre)
         limits = replace(ProbeLimits(), min_free_disk_gib_live=0.0)
-        with self.assertRaises(ProbeGateFailure) as ctx:  # 400 GiB drop => projected >> 20 GiB
-            self.run_probe(monitors=good_monitors(free_disk_gib=free), limits=limits)
-        self.assertIn("transient", str(ctx.exception))
-        stopped = json.loads((self.root / "out" / "stopped.json").read_text())
-        measured = stopped["record"]["measured"]
+        summary = self.run_probe(monitors=good_monitors(free_disk_gib=free), limits=limits)
+        self.assertEqual(summary["status"], "SUCCESS")
+        record = json.loads((self.root / "out" / "selected" / "probe_500.json").read_text())
+        measured = record["measured"]
         self.assertEqual(measured["stage_start_free_disk_gib"], 500.0)
         self.assertEqual(measured["stage_min_free_disk_gib"], 100.0)
-        self.assertEqual(measured["transient_free_disk_drop_gib"], 400.0)
-        self.assertLess(stopped["record"]["steps"]["search"]["start_free_disk_gib"] - stopped["record"]["steps"]["search"]["min_free_disk_gib"], 1.0)
+        self.assertEqual(measured["shared_filesystem_free_space_drop_gib"], 400.0)
+        self.assertLess(measured["transient_free_disk_drop_gib"], 0.001)
+        self.assertLess(record["steps"]["search"]["start_free_disk_gib"] - record["steps"]["search"]["min_free_disk_gib"], 1.0)
 
     def test_f3_retained_upper_bound_uses_larger_of_db_and_tsv(self):
         m = {"search_seconds": 1, "createtsv_seconds": 1, "db_creation_seconds": 1, "peak_rss_gib": 1,
@@ -656,7 +669,9 @@ class CorrectionTests(ProbeBase):
                          sample_size=10, poll_interval=30.0)
         self.assertIn("RSS", str(ctx.exception))
         stopped = json.loads((self.root / "o4" / "stopped.json").read_text())
-        step = stopped["record"]["steps"]["search"]
+        self.assertEqual(stopped["completed_stages"], list(PROBE_STAGES))
+        record = json.loads((self.root / "o4" / "selected" / "probe_500.json").read_text())
+        step = record["steps"]["search"]
         self.assertEqual(step["peak_rss_kib"], big)
         self.assertEqual(step["peak_rss_source"]["cumulative_children_kib"], big)
         self.assertIn("limitation", step["peak_rss_source"])
@@ -701,18 +716,19 @@ class FinalCorrectionTests(ProbeBase):
         m2 = r2.analyze_probe_result(rows[:2] + [rows[2] + "\n"], selected_ids=sel, universe=[f"row_{i}" for i in range(10)])
         self.assertEqual(m2["bytes"], len(raw) + 1)
 
-    def test_g2_setup_included_in_stage_disk_measurement(self):
+    def test_g2_setup_shared_space_change_is_recorded_not_job_attributed(self):
         root = self.root / "out"
 
         def free(p):
             return 450.0 if any(root.rglob("query_*.fasta")) else 500.0  # only subset creation drops disk
 
-        with self.assertRaises(ProbeGateFailure):
-            self.run_probe(monitors=good_monitors(free_disk_gib=free))
-        measured = json.loads((root / "stopped.json").read_text())["record"]["measured"]
+        summary = self.run_probe(monitors=good_monitors(free_disk_gib=free))
+        self.assertEqual(summary["status"], "SUCCESS")
+        measured = json.loads((root / "selected" / "probe_500.json").read_text())["measured"]
         self.assertEqual(measured["stage_start_free_disk_gib"], 500.0)
         self.assertEqual(measured["stage_min_free_disk_gib"], 450.0)
-        self.assertEqual(measured["transient_free_disk_drop_gib"], 50.0)
+        self.assertEqual(measured["shared_filesystem_free_space_drop_gib"], 50.0)
+        self.assertLess(measured["transient_free_disk_drop_gib"], 0.001)
 
     def test_shared_filesystem_deletions_cannot_hide_generation_growth(self):
         # Free space remains flat (another user could be deleting files), but
@@ -723,7 +739,11 @@ class FinalCorrectionTests(ProbeBase):
                 free_disk_gib=lambda _p: 500.0,
                 dir_size_bytes=lambda _p: GIB,
             ))
-        measured = json.loads((self.root / "out" / "stopped.json").read_text())["record"]["measured"]
+        stopped = json.loads((self.root / "out" / "stopped.json").read_text())
+        self.assertEqual(stopped["completed_stages"], list(PROBE_STAGES))
+        measured = json.loads(
+            (self.root / "out" / "selected" / "probe_500.json").read_text()
+        )["measured"]
         self.assertEqual(measured["free_space_drop_gib"], 0.0)
         self.assertEqual(measured["peak_generation_size_gib"], 1.0)
         self.assertEqual(measured["transient_free_disk_drop_gib"], 1.0)

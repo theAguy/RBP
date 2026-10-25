@@ -379,7 +379,11 @@ audits, and any cross-partition hit prevents finalization. Safe audit failures
 are accumulated so one return describes the complete problem. No baseline or
 model stage is present.
 
-The combined R3-R5 package requires one plan review and one implementation/
-package review. Its internal stages advance automatically only after their
-frozen prerequisites pass; no separate human handoff is required between
-them.
+The combined R3-R5 plan is accepted in
+`docs/reviews/002c_r3_r5_end_to_end_v2_execution_plan_acceptance.md`. Its
+bounded corrections add internally consistent disk/quota gates, audit-input
+and database round-trip proof, protected v1 co-membership, role-aware return
+sanitation, and a closed resume contract. The package now requires one
+implementation/package review. Its internal stages advance automatically only
+after their frozen prerequisites pass; no separate human handoff is required
+between them.

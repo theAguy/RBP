@@ -1,0 +1,9 @@
+Please execute the complete Task 002C-R3–R5 implementation handoff:
+
+docs/handoffs/002c_r3_r5_implementation_claude_handoff.md
+
+This is one bounded implementation checkpoint for the accepted end-to-end
+workflow. Implement and test the complete synthetic/tiny-fixture package, then
+commit locally and stop for review. Do not open ignored real inputs, build the
+real bundle, submit Darwin, start baselines, or train a model. Do not create
+separate human handoffs for E0–E8.

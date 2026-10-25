@@ -3,10 +3,10 @@
 **Purpose:** provide one plain-language, end-to-end source of truth for the
 investigation and comparison of the former teammate's 122-protein RBP model.
 
-**Last updated:** 2026-10-22
-**Current stage:** Task 002C-R2 Newton/Linux execution adaptation prepared for
-second review. The Apple-Silicon package was valid but its one collaborator
-attempt stopped before MMseqs2 because free disk was below the frozen gate.
+**Last updated:** 2026-10-25
+**Current stage:** Task 002C-R2 is complete. All three Darwin resource probes
+finished; the reviewed projections support a single restart-safe R3-R5
+components-v2 execution plan, now awaiting one comprehensive second review.
 
 **Model comparison status:** not started; the benchmark split must be frozen
 first
@@ -64,7 +64,7 @@ negatives.
 | 1. Coordinate feasibility | Test whether genomic coordinates can be recovered safely | Deferred; not required for the core comparison |
 | 2A. Sequence decoding | Convert bit-encoded sequences to validated nucleotide strings | Complete |
 | 2B. Similarity grouping | Identify related sequences at 500, 251, and 101 nt | v1 preserved; insufficient for the direct audit |
-| 2C. Partition construction | Assign intact groups to train/validation/test and audit leakage | v1 rejected; components-v2 rebuild in progress |
+| 2C. Partition construction | Assign intact groups to train/validation/test and audit leakage | v1 rejected; R2 complete; end-to-end components-v2 execution planned |
 | 3. Simple baselines | Establish how far trivial sequence properties can predict binding | Not started |
 | 4. Development pilot | Verify model implementations and compute requirements on eight proteins | Not started |
 | 5. Controlled comparison | Compare architectures under common data, windows, and loss | Not started |
@@ -381,10 +381,15 @@ at each protected width, normalize its pairwise edges, union them with exact/RC
 edges, and rebuild connected components before reassignment. The synthetic
 components-v2 core and the synthetic guarded R2 probe core are accepted. The
 first portable Mac attempt stopped safely before MMseqs2 at the 100-GiB disk
-gate (90.76 GiB was available). A Newton/Slurm Linux package is now prepared
-for second review; its deterministic 10,000-query/full-target probe will
-measure resource cost before any full edge discovery is authorized. The GPU
-is not used for this MMseqs2 workload.
+gate (90.76 GiB was available). The subsequent Newton/Slurm Linux package's
+deterministic 10,000-query/full-target probe measured
+all three widths successfully on Darwin. The full-search projections are
+approximately 8.42/1.33/0.28 hours linearly and 12.62/2.00/0.42 hours under
+the 1.5 conservative envelope for 500/251/101 nt. Peak observed RSS was about
+9.31 GiB. The 500-nt time and transient-disk planning thresholds require
+explicit exceptions, documented in
+`docs/reviews/002c_r2_darwin_convergence_acceptance.md`; no scientific setting
+changed. The GPU is not used for this MMseqs2 workload.
 
 ### 12.4 Freeze the final split
 
@@ -484,16 +489,15 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Close the bounded operational review corrections for the Newton/Linux
-   Task 002C-R2 resource probe, then build its immutable archive.
-2. Run that one-shot CPU-only R2 probe through Slurm and review its returned
-   resource projections. R2 creates no scientific edges.
-3. Authorize the full direct-edge discovery (R3) only if R2 passes; then build
-   components v2, reassign whole components, and rerun the fresh leakage
-   audits.
-4. Freeze the final partition only when every protected-width,
-   cross-partition audit reports zero qualifying hits.
-5. Begin simple baselines only after that split is locked.
+1. Obtain one comprehensive second review of
+   `docs/tasks/002c_r3_r5_end_to_end_v2_execution.md`.
+2. Implement, test, and package the restart-safe end-to-end Darwin workflow as
+   one unit; do not create separate operator handoffs for its internal stages.
+3. Run full direct-edge discovery, components v2, deterministic assignment,
+   exact/RC audits, and all 18 fresh directed audits in that package.
+4. Freeze the final partition only when every giant-component, balance,
+   floor, reproducibility, and cross-partition zero-hit gate passes.
+5. Begin simple baselines immediately after that split is locked.
 
 ## 19. Claims we can and cannot make today
 
@@ -503,15 +507,17 @@ We can say:
 - the former notebook interpreted unsigned positives correctly;
 - many rows have sequence-similar partners, so leakage-safe grouping is
   justified;
-- no giant sequence component makes the dataset obviously unusable; and
+- no giant component appears under the historical v1 relation, while the
+  stronger components-v2 giant-component gate remains to be run; and
 - the accepted similarity evidence is reproducible and hash-bound.
 
 We can now also say:
 
 - the former row-level fold is not leakage-safe under the frozen sequence
   relation; and
-- the new component assignment contains no exact/reverse-complement leakage at
-  the protected widths.
+- the rejected v1 assignment nevertheless contains no exact/reverse-complement
+  leakage at the protected widths; its near-similarity leakage is why v2 is
+  required.
 
 We still cannot say:
 

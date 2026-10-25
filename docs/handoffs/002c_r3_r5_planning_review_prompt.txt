@@ -1,0 +1,10 @@
+Please act as the second planning reviewer for Task 002C-R3–R5.
+
+Read and follow:
+docs/reviews/002c_r3_r5_end_to_end_v2_execution_review_request.md
+
+This is a plan review only. Do not implement code, open ignored real data,
+run MMseqs2, build a package, submit a job, or begin R3. Return one verdict
+and only genuinely blocking or bounded corrections. The goal is to converge
+on one comprehensive, restart-safe Darwin execution package rather than
+creating separate human handoffs for every internal stage.

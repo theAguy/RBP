@@ -361,5 +361,25 @@ job-owned candidate size for transient projection, and gathers all safe-width
 projection findings in one return. Scientific search settings are unchanged,
 and R3 remains blocked until the completed projections are reviewed.
 
-Each checkpoint requires its own executor handoff and review; this
-implementation does not silently continue into a later checkpoint.
+The convergence run is preserved under
+`artifacts/teammate_run_results/002c_r2_darwin_convergence_b35f304/` and is
+accepted in `docs/reviews/002c_r2_darwin_convergence_acceptance.md`. All three
+widths completed. The 251- and 101-nt projections passed; 500 nt requires
+reviewed time and transient-storage exceptions without changing any scientific
+setting. R2 is complete and must not be rerun.
+
+### Task 002C-R3–R5 end-to-end components-v2 execution (planned)
+
+`docs/tasks/002c_r3_r5_end_to_end_v2_execution.md` combines full direct-edge
+discovery, components-v2 closure, deterministic whole-component assignment,
+independent exact/RC checks, all 18 fresh directed MMseqs2 audits, and final
+split freezing into one restart-safe Darwin package. Internal gates remain:
+giant components stop before assignment, infeasible label floors stop before
+audits, and any cross-partition hit prevents finalization. Safe audit failures
+are accumulated so one return describes the complete problem. No baseline or
+model stage is present.
+
+The combined R3-R5 package requires one plan review and one implementation/
+package review. Its internal stages advance automatically only after their
+frozen prerequisites pass; no separate human handoff is required between
+them.

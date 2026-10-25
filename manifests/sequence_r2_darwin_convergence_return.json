@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "checkpoint": "002C-R2 Darwin convergence resource probe",
+  "status": "accepted_with_reviewed_projection_exceptions",
+  "source_commit": "b35f304be6952efd495c2a2e92ab98c9fdf85184",
+  "execution": {
+    "started_utc": "2026-10-25T08:55:26Z",
+    "finished_utc": "2026-10-25T09:12:46Z",
+    "slurm_cluster": "darwin",
+    "slurm_job_id": "452400",
+    "slurm_partition": "public",
+    "slurm_cpus": 4,
+    "slurm_memory_mib": 98304,
+    "host": "newton8",
+    "physical_ram_gib": 503.5859260559082,
+    "available_ram_gib_at_preflight": 485.5261688232422,
+    "free_disk_gib_at_preflight": 45007.048828125
+  },
+  "tool": {
+    "name": "mmseqs",
+    "version": "18.8cc5c",
+    "conda_build": "hd6d6fdc_0",
+    "sha256": "d6d1bf1b50c095eb0cb66f685a7fb1d9b8b69497e1e88416fd48f28e313cc773"
+  },
+  "selection": {
+    "sample_size": 10000,
+    "digest": "f077d08637956a78f39b08e81f68a257f7bf01a167625f151d68cf2e1b17ac4a",
+    "identical_across_widths": true,
+    "label_blind": true
+  },
+  "widths": {
+    "500": {
+      "measurement_status": "REVIEW_REQUIRED",
+      "search_seconds": 838.7591643910855,
+      "result_rows": 61821,
+      "distinct_targets": 49821,
+      "self_hit_rate": 1.0,
+      "result_cap_reached": false,
+      "peak_rss_gib": 9.308483123779297,
+      "peak_job_generation_gib": 0.8276690123602748,
+      "linear_full_search_hours": 8.41508430541034,
+      "conservative_full_search_hours": 12.62262645811551,
+      "conservative_transient_disk_gib": 44.84062408264261,
+      "conservative_retained_gib": 0.23023298822063953,
+      "gate_findings": [
+        "conservative search 12.62 h exceeds the original 12.0-h per-width review threshold",
+        "conservative job-owned transient projection 44.84 GiB exceeds the original 20.0-GiB review threshold"
+      ],
+      "selected_record_sha256": "54705ab930cfc466ad5db2e29f0a09fe94efe903c3bcba7ccb8fc046ec85d126"
+    },
+    "251": {
+      "measurement_status": "PASSED",
+      "search_seconds": 132.86185150407253,
+      "result_rows": 21728,
+      "distinct_targets": 20736,
+      "self_hit_rate": 1.0,
+      "result_cap_reached": false,
+      "peak_rss_gib": 9.306636810302734,
+      "peak_job_generation_gib": 0.3005182845517993,
+      "linear_full_search_hours": 1.33297343128447,
+      "conservative_full_search_hours": 1.999460146926705,
+      "conservative_transient_disk_gib": 16.28117910216283,
+      "conservative_retained_gib": 0.07990561611671002,
+      "gate_findings": [],
+      "selected_record_sha256": "55f3c1e017c5918c6805880b807b66c8d18bb629b271c13303287d532d0a30ee"
+    },
+    "101": {
+      "measurement_status": "PASSED",
+      "search_seconds": 27.837645050138235,
+      "result_rows": 15552,
+      "distinct_targets": 15250,
+      "self_hit_rate": 1.0,
+      "result_cap_reached": false,
+      "peak_rss_gib": 9.306636810302734,
+      "peak_job_generation_gib": 0.13547791074961424,
+      "linear_full_search_hours": 0.27928890664469247,
+      "conservative_full_search_hours": 0.4189333599670387,
+      "conservative_transient_disk_gib": 7.339786770681851,
+      "conservative_retained_gib": 0.05595872044377029,
+      "gate_findings": [],
+      "selected_record_sha256": "ab44bbffea9fa139cce95b958325c6330bd1bf2a93d5f6ce3552c179d466bd5b"
+    }
+  },
+  "combined_projection": {
+    "linear_search_hours": 10.027346643339503,
+    "conservative_search_hours": 15.041019965009254,
+    "original_total_24_hour_gate_passed": true,
+    "conservative_peak_rss_gib": 13.962724685668945
+  },
+  "acceptance_decisions": {
+    "r2_complete": true,
+    "rerun_required": false,
+    "r3_allowed_only_under_new_reviewed_resource_plan": true,
+    "minimum_confirmed_storage_headroom_gib_for_r3": 100,
+    "minimum_r3_slurm_time_request_hours": 48,
+    "scientific_settings_changed": false,
+    "r3_executed": false
+  },
+  "return_archive": {
+    "path": "artifacts/teammate_run_results/002c_r2_darwin_convergence_b35f304/RBP_002C_R2_NEWTON_RETURN_20261025T091246Z_newton8.zip",
+    "byte_size": 222154,
+    "sha256": "79ab19172d945f9e3957174c33f8c30bcfa0cd98c8e7fdbde0fa84893a803563",
+    "sha256_sidecar_sha256": "91ef63e706a6ebde031389323959c02d197cdc96faf0c64d5509659c8fe7d53a",
+    "zip_integrity": "passed"
+  },
+  "returned_evidence_sha256": {
+    "STATUS.json": "8c85f4ae4e69f1ea9274f3e8eac3fd41bc8673484611e382482865ecdfba5271",
+    "RETURN_MANIFEST.json": "888b84ad8fe19efd94e43bc51abc4ed69e5f6fab8371857d7df8fbe166324512",
+    "RETURN_INVENTORY.json": "980458322dbae5fe54a8f8cbf2c49adfa06185aed71fafe783efe5faf2d4b753",
+    "probe/stopped.json": "b061126a5a84e1cad87f3134c491d57660488bdd620ada08f38209e8c00101a4",
+    "probe/summary.json": "b0a321ca3c58a09e3efa5b78e8bbf5e9bb613fd05fcac76ee38ab78ef6603518",
+    "probe_summary.json": "79f555a784304a0f09626c58ea3ca7249bbc2438f8bf42013c3c20869e4205e5"
+  },
+  "boundary": {
+    "scientific_edges_created": false,
+    "components_v2_built": false,
+    "assignment_run": false,
+    "audit_run": false,
+    "model_or_baseline_run": false
+  }
+}

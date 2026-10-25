@@ -232,28 +232,37 @@ def archive_bundle(bundle: Path) -> dict:
     for name in (MANIFEST_REL, MANIFEST_HASH_REL):
         path = bundle / name
         expected[str(name)] = {"path": str(name), "byte_size": path.stat().st_size, "sha256": sha256_file(path)}
-    with tarfile.open(output, "x:gz") as handle:
-        handle.add(bundle, arcname=bundle.name)
-    seen = set()
-    with tarfile.open(output, "r:gz") as handle:
-        for member in handle.getmembers():
-            if member.isdir():
-                continue
-            prefix = bundle.name + "/"
-            if not member.name.startswith(prefix) or not member.isfile():
-                raise BundleError(f"unexpected archive member {member.name}")
-            rel = member.name[len(prefix):]
-            entry = expected.get(rel)
-            if entry is None or rel in seen:
-                raise BundleError(f"unexpected or duplicate archive member {rel}")
-            digest = hashlib.sha256(handle.extractfile(member).read()).hexdigest()
-            if member.size != entry["byte_size"] or digest != entry["sha256"]:
-                raise BundleError(f"archive member {rel} differs from the bundle")
-            seen.add(rel)
-    if seen != set(expected):
-        raise BundleError(f"archive lacks members {sorted(set(expected) - seen)[:5]}")
-    digest = sha256_file(output)
-    sidecar.write_text(f"{digest}  {output.name}\n")
+    try:
+        # Compression level affects only transfer size/time, never bundle
+        # contents. Level 1 avoids spending tens of minutes recompressing the
+        # already validated ~1-GiB CSV/FASTA payload; every archive member is
+        # still reread and verified below.
+        with tarfile.open(output, "x:gz", compresslevel=1) as handle:
+            handle.add(bundle, arcname=bundle.name)
+        seen = set()
+        with tarfile.open(output, "r:gz") as handle:
+            for member in handle.getmembers():
+                if member.isdir():
+                    continue
+                prefix = bundle.name + "/"
+                if not member.name.startswith(prefix) or not member.isfile():
+                    raise BundleError(f"unexpected archive member {member.name}")
+                rel = member.name[len(prefix):]
+                entry = expected.get(rel)
+                if entry is None or rel in seen:
+                    raise BundleError(f"unexpected or duplicate archive member {rel}")
+                digest = hashlib.sha256(handle.extractfile(member).read()).hexdigest()
+                if member.size != entry["byte_size"] or digest != entry["sha256"]:
+                    raise BundleError(f"archive member {rel} differs from the bundle")
+                seen.add(rel)
+        if seen != set(expected):
+            raise BundleError(f"archive lacks members {sorted(set(expected) - seen)[:5]}")
+        digest = sha256_file(output)
+        sidecar.write_text(f"{digest}  {output.name}\n")
+    except BaseException:
+        output.unlink(missing_ok=True)
+        sidecar.unlink(missing_ok=True)
+        raise
     return {"archive": str(output), "sha256": digest, "byte_size": output.stat().st_size, "members": len(seen)}
 
 

@@ -115,8 +115,28 @@ class ScriptTests(unittest.TestCase):
         done = self.submit(FAKE_QUOTA_STATUS="4", RBP_CONFIRM_NO_QUOTA_BELOW_80GIB="yes")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue((self.receipt() / "quota_attestation.json").is_file())
-        self.assertIn("RBP_QUOTA_ATTESTATION=" + str(self.receipt() / "quota_attestation.json"),
-                      next(a for a in self.calls()[0] if a.startswith("--export=")))
+        # H5: the script binds the physical (pwd -P) path; compare resolved paths so
+        # /var vs /private/var (macOS) or other symlinked temp roots cannot matter.
+        export = next(a for a in self.calls()[0] if a.startswith("--export="))
+        values = dict(item.split("=", 1) for item in export[len("--export="):].split(",") if "=" in item)
+        exported = Path(values["RBP_QUOTA_ATTESTATION"])
+        self.assertTrue(exported.is_absolute())
+        self.assertEqual(exported.resolve(), (self.receipt() / "quota_attestation.json").resolve())
+        self.assertEqual(Path(values["RBP_BUNDLE_ROOT"]).resolve(), self.bundle.resolve())
+        self.assertEqual(Path(values["RBP_BUNDLE_ROOT"]), Path(values["RBP_BUNDLE_ROOT"]).resolve())  # physical path kept
+
+    def test_quota_attestation_through_a_symlinked_bundle_path(self):
+        link = Path(self.tmp.name) / "linked_root"
+        link.symlink_to(self.bundle.parent, target_is_directory=True)
+        script = link / "bundle" / "hpc/darwin/002c_r3r5/02_SUBMIT_R3R5.sh"
+        done = subprocess.run(["bash", str(script)], env={**self.env, "FAKE_QUOTA_STATUS": "4",
+                                                          "RBP_CONFIRM_NO_QUOTA_BELOW_80GIB": "yes"},
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        export = next(a for a in self.calls()[0] if a.startswith("--export="))
+        values = dict(item.split("=", 1) for item in export[len("--export="):].split(",") if "=" in item)
+        self.assertEqual(values["RBP_BUNDLE_ROOT"], str(self.bundle.resolve()))  # physical, not the symlink path
+        self.assertEqual(Path(values["RBP_QUOTA_ATTESTATION"]).resolve(), (self.receipt() / "quota_attestation.json").resolve())
 
     def test_second_submission_and_reused_bundle_are_refused(self):
         self.assertEqual(self.submit().returncode, 0)

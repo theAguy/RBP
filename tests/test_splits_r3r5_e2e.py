@@ -145,6 +145,52 @@ class RemediationTests(E2EBase):
         comps = json.loads((next((self.h.work / "generations" / "cycle2_components").glob("*/components_report.json"))).read_text())
         self.assertEqual(comps["metadata"]["relations"]["audit_discovered_direct"]["pair_count"], len(discovered))
 
+    def test_cycle1_artifact_mutated_after_remediation_is_refused_by_e8(self):
+        """H3: E8 rehashes the complete provenance graph, including cycle-1 records behind the remediation."""
+        os.environ["FAKE_EXTRA_HIT_MATCH"] = "cycle1_audit_500"
+        original = engine.Workflow.stage_final
+        mutated = {}
+
+        def mutate_then_finalize(wf, *args, **kwargs):
+            record = json.loads((self.h.work / "selected" / "cycle1_audit_251_test_to_validation.json").read_text())
+            entry = next(e for e in record["retained"] if e["path"].endswith(".json"))
+            path = self.h.work / entry["path"]
+            path.write_text(path.read_text().replace('"cycle": 1', '"cycle": 1 '))
+            mutated["path"] = entry["path"]
+            return original(wf, *args, **kwargs)
+        with mock.patch.object(engine.Workflow, "stage_final", mutate_then_finalize):
+            code, archive, state = self.h.launch("execute")
+        self.assertEqual((code, state), (1, "INTEGRITY_STOP"), self.h.last_log[-2000:])
+        self.assertIn("cycle1_audit_251_test_to_validation", self.h.status(archive)["message"])
+        self.assertTrue(mutated)
+        self.assertIn("cycle2_audit_summary", self.h.selected())  # the rebuild itself completed
+        self.assertNotIn("final", self.h.selected())
+
+    def test_final_manifest_covers_the_complete_reachable_closure_and_restart_skip_rechecks_it(self):
+        os.environ["FAKE_EXTRA_HIT_MATCH"] = "cycle1_audit_500"
+        self.assertEqual(self.h.launch("execute")[2], "SUCCESS")
+        manifest = json.loads(next((self.h.work / "generations" / "final").glob("*/final_manifest.json")).read_text())
+        everything_but_final = set(self.h.selected()) - {"final"}
+        self.assertEqual(set(manifest["selected_records"]), everything_but_final)
+        self.assertEqual(set(manifest["retained_artifacts"]), everything_but_final)
+        self.assertIn("cycle1_audit_500_train_to_validation", manifest["selected_records"])
+        self.assertNotIn("cycle1_audit_500_train_to_validation", manifest["direct_selected_records"])
+        # restart-skip path: an accepted final is not reused once a cycle-1 artifact changes
+        from rbpbench.splits.r3r5.state import Workspace
+        ws = Workspace(self.h.work)
+        record = ws.load_record("cycle1_auditprep_101")
+        path = ws.retained_path(record, "audit_prep_101.json")
+        path.write_bytes(path.read_bytes() + b" ")
+        rt = engine.Runtime(contract=self.h.contract, bundle_root=self.h.bundle, workspace=ws, mmseqs_bin=str(self.h.fake),
+                            binary={"sha256": "fake-sha"}, monitors=S.fake_monitors(),
+                            allocation_deadline=time.monotonic() + 48 * 3600, quota_check=lambda p, w: {})
+        final = ws.load_record("final")
+        direct = [ws.load_record(stage) for stage in json.loads(json.dumps(final["upstream"]))]
+        edges = {w: ws.load_record(f"edges_{w}") for w in (500, 251, 101)}
+        with self.assertRaisesRegex(IntegrityStop, "cycle1_auditprep_101"):
+            engine.Workflow(rt).stage_final(2, direct, ws.load_record("cycle2_components"), ws.load_record("cycle2_assignment"),
+                                            edges, [])
+
     def test_second_cycle_violation_is_a_terminal_scientific_stop_with_complete_pairs(self):
         os.environ["FAKE_EXTRA_HIT_MATCH"] = "_audit_251"  # matches cycle 1 and cycle 2 audit databases
         code, archive, state = self.h.launch("execute")

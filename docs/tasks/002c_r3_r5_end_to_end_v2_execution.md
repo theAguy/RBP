@@ -107,8 +107,11 @@ The bundle must hash and size-bind before any real operation:
   `ec64969ca0d3936fc5b2d5cdbc301e9613ae644e1a7b59be41118fe73d008dd9`,
   and MMseqs2 binary hash
   `d6d1bf1b50c095eb0cb66f685a7fb1d9b8b69497e1e88416fd48f28e313cc773`;
-- accepted R2 return manifest, 5,002 bytes,
-  `0f0edca2487955866194f0f7e63e2bff4a1b3b47025aed09065666c3dd163e53`;
+- accepted R2 return manifest (the tracked
+  `manifests/sequence_r2_darwin_convergence_return.json`), 5,001 bytes,
+  `3a275d538f2167ed6a1a01b80bfb34295890ac1f5d30611fb5e34bf2e5d02123`
+  (corrected by implementation review H1; the earlier 5,002-byte value
+  described the same content with an extra blank line);
 - historical v1 component membership, 14,578,797 bytes,
   `6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692`,
   and report, 13,036,977 bytes,

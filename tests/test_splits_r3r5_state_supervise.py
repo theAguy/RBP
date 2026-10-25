@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -142,6 +143,82 @@ class PromotionTests(unittest.TestCase):
         self.ws.finish_attempt(attempt, stop_class=StopClass.SCIENTIFIC, message="giant", signals=[])
         self.assertEqual(self.ws.terminal()["class"], "SCIENTIFIC_STOP")
         self.assertEqual([a["stop"]["class"] for a in self.ws.attempts()], ["SIGNAL_STOP", "SCIENTIFIC_STOP"])
+
+
+class ProvenanceClosureTests(unittest.TestCase):
+    """H3 unit regressions for the shared provenance-closure verifier."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ws = state.Workspace(Path(self.tmp.name) / "work")
+        self.ws.create()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def add(self, key, upstream_keys=(), text=None):
+        gen = self.ws.new_generation("g", key)
+        (gen / f"{key}.json").write_text(text or f'{{"stage": "{key}"}}\n')
+        upstream = {k: self.ws.record_digest(k) for k in upstream_keys}
+        self.ws.promote(key, group="g", generation=gen, fingerprint="fp", upstream=upstream, retained=[gen / f"{key}.json"])
+        return self.ws.record_digest(key)
+
+    def chain(self):
+        self.add("a")
+        self.add("b", ["a"])
+        self.add("c", ["a"])
+        return self.add("d", ["b", "c"])
+
+    def test_complete_transitive_closure_is_verified(self):
+        top = self.chain()
+        closure = self.ws.verify_provenance_closure({"d": top})
+        self.assertEqual(sorted(closure), ["a", "b", "c", "d"])
+
+    def test_deep_retained_artifact_mutation_is_detected(self):
+        top = self.chain()
+        artifact = self.ws.retained_path(self.ws.load_record("a"), "a.json")
+        artifact.write_text("mutated\n")
+        with self.assertRaises(IntegrityStop):
+            self.ws.verify_provenance_closure({"d": top})
+
+    def test_missing_upstream_record(self):
+        top = self.chain()
+        self.ws.record_path("a").unlink()
+        with self.assertRaisesRegex(IntegrityStop, "missing"):
+            self.ws.verify_provenance_closure({"d": top})
+
+    def test_record_digest_mismatch_and_substitution(self):
+        top = self.chain()
+        record = json.loads(self.ws.record_path("c").read_text())
+        record["payload"] = {"substituted": True}
+        self.ws.record_path("c").write_text(json.dumps(record))
+        with self.assertRaisesRegex(IntegrityStop, "differs"):
+            self.ws.verify_provenance_closure({"d": top})
+
+    def test_stage_identity_substitution(self):
+        self.add("a")
+        self.add("b")
+        a_bytes = self.ws.record_path("b").read_bytes()
+        self.ws.record_path("a").write_bytes(a_bytes)  # b's record placed under a's name
+        with self.assertRaisesRegex(IntegrityStop, "declares stage"):
+            self.ws.verify_provenance_closure({"a": self.ws.record_digest("a")})
+
+    def test_upstream_cycle(self):
+        self.add("a")
+        self.add("b", ["a"])
+        record = json.loads(self.ws.record_path("a").read_text())
+        record["upstream"] = {"b": self.ws.record_digest("b")}
+        self.ws.record_path("a").write_text(json.dumps(record))
+        with self.assertRaisesRegex(IntegrityStop, "cycle"):
+            self.ws.verify_provenance_closure({"b": self.ws.record_digest("b"), "a": self.ws.record_digest("a")})
+
+    def test_contradictory_duplicate_references(self):
+        top = self.chain()
+        gen = self.ws.new_generation("g", "e")
+        (gen / "e.json").write_text("{}\n")
+        self.ws.promote("e", group="g", generation=gen, fingerprint="fp", upstream={"a": "0" * 64}, retained=[gen / "e.json"])
+        with self.assertRaisesRegex(IntegrityStop, "contradictory"):
+            self.ws.verify_provenance_closure({"d": top, "e": self.ws.record_digest("e")})
 
 
 SLEEPER = ToolCommand(tool="fake_child", argv=(sys.executable, "-c", "import time,os,sys; "

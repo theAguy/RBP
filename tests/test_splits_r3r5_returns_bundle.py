@@ -158,6 +158,153 @@ class ReturnSeriesTests(unittest.TestCase):
             self.assertFalse([n for n in z.namelist() if "leak" in n])
 
 
+def rewrite_return(archive: Path, edits: dict, *, regen_inventory=True, regen_checksums=True, sidecar_name=None):
+    """Mutates members of one return, optionally re-deriving its inventory and
+    CHECKSUMS so only the targeted semantic check can catch the change, then
+    rebuilds the outer digest sidecar."""
+    import hashlib
+    top = returns.archive_top(archive)
+    with zipfile.ZipFile(archive) as z:
+        members = {n[len(top) + 1:]: z.read(n) for n in z.namelist()}
+    for rel, value in edits.items():
+        if value is None:
+            members.pop(rel, None)
+        else:
+            members[rel] = value(members.get(rel)) if callable(value) else value
+    if regen_inventory:
+        entries = [{"path": r, "byte_size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+                   for r, b in sorted(members.items()) if r not in {"RETURN_INVENTORY.json", "CHECKSUMS.sha256"}]
+        members["RETURN_INVENTORY.json"] = (json.dumps({"entries": entries}, indent=2, sort_keys=True) + "\n").encode()
+    if regen_checksums:
+        members["CHECKSUMS.sha256"] = "".join(f"{hashlib.sha256(b).hexdigest()}  {r}\n" for r, b in sorted(members.items())
+                                              if r != "CHECKSUMS.sha256").encode()
+    archive.unlink()
+    with zipfile.ZipFile(archive, "x") as z:
+        for rel, data in sorted(members.items()):
+            z.writestr(f"{top}/{rel}", data)
+    Path(f"{archive}.sha256").write_text(f"{returns.sha256_file(archive)}  {sidecar_name or archive.name}\n")
+
+
+def json_edit(**changes):
+    def apply(data):
+        doc = json.loads(data)
+        doc.update(changes)
+        return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode()
+    return apply
+
+
+class DottedHostnameAndInternalConsistencyTests(unittest.TestCase):
+    """H2 and H4 regressions."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.contract = fixture_contract(row_count=10)
+        self.ws = state.Workspace(self.root / "r3r5_work")
+        self.ws.create()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def make(self, cls=StopClass.SIGNAL, status="STOPPED", host="GuyA.local"):
+        return returns.package_return(bundle_root=self.root, workspace=self.ws, contract=self.contract, status=status,
+                                      stop_class=cls, message="m", attempt=None, host=None, host_name=host)[0]
+
+    def test_dotted_hostname_is_preserved_and_verifiable(self):
+        archive = self.make()
+        self.assertTrue(archive.name.endswith("_GuyA.local.zip"), archive.name)            # 1: hostname intact
+        with zipfile.ZipFile(archive) as z:
+            tops = {n.split("/", 1)[0] for n in z.namelist()}
+        self.assertEqual(tops, {archive.name[:-len(".zip")]})                            # 2: top dir == basename
+        self.assertEqual(returns.verify_return_series(self.root / "returns")["count"], 1)  # 3: series verifies
+        status = json.loads(returns.read_return_member(archive, "STATUS.json"))          # 4: member readable
+        self.assertEqual(status["return_index"], 1)
+        self.assertEqual(Path(f"{archive}.sha256").read_text().split()[1], archive.name)
+        for host in ("node.cluster.example.org", "a.b", "trailing."):
+            time.sleep(1.05)
+            other = self.make(cls=StopClass.SCHEDULER_TIME, host=host)
+            self.assertTrue(other.name.endswith(f"_{host}.zip"), other.name)
+        self.assertEqual(returns.verify_return_series(self.root / "returns")["count"], 4)
+
+    def test_existing_archive_or_sidecar_is_never_overwritten(self):
+        from unittest import mock
+        fixed = "2026-10-25T12:00:00Z"
+        with mock.patch.object(returns, "utc_now", lambda: fixed):
+            first = self.make()
+            first_bytes = first.read_bytes()
+            sidecar_bytes = Path(f"{first}.sha256").read_bytes()
+            # force the next package to target the same name (same index, status, stamp, host)
+            with mock.patch.object(returns, "existing_returns", lambda d: []):
+                with self.assertRaises(returns.ReturnSeriesError):
+                    self.make()
+            first.rename(first.with_name(first.name + ".moved"))
+            with mock.patch.object(returns, "existing_returns", lambda d: []):
+                with self.assertRaises(returns.ReturnSeriesError):  # sidecar alone still blocks
+                    self.make()
+            first.with_name(first.name + ".moved").rename(first)
+        self.assertEqual(first.read_bytes(), first_bytes)
+        self.assertEqual(Path(f"{first}.sha256").read_bytes(), sidecar_bytes)
+
+    def assert_rejected(self, edits, **kwargs):
+        archive = self.make()
+        returns.verify_return_series(self.root / "returns")
+        rewrite_return(archive, edits, **kwargs)
+        with self.assertRaises(returns.ReturnSeriesError):
+            returns.verify_return_series(self.root / "returns")
+
+    def fresh(self):
+        self.tmp.cleanup()
+        self.setUp()
+
+    def test_internal_mutations_are_rejected_after_outer_digest_rebuild(self):
+        def checksum_edit(transform):
+            def apply(data):
+                return transform(data.decode()).encode()
+            return apply
+        cases = {
+            "checksum digest wrong": ({"CHECKSUMS.sha256": checksum_edit(lambda t: ("0" * 64) + t[64:])}, {"regen_checksums": False}),
+            "checksum duplicate line": ({"CHECKSUMS.sha256": checksum_edit(lambda t: t + t.splitlines(True)[0])}, {"regen_checksums": False}),
+            "checksum foreign path": ({"CHECKSUMS.sha256": checksum_edit(lambda t: t + ("1" * 64) + "  foreign.json\n")}, {"regen_checksums": False}),
+            "checksum missing line": ({"CHECKSUMS.sha256": checksum_edit(lambda t: "".join(t.splitlines(True)[1:]))}, {"regen_checksums": False}),
+            "checksum non-canonical": ({"CHECKSUMS.sha256": checksum_edit(lambda t: t.replace("  ", " *", 1))}, {"regen_checksums": False}),
+            "status rewritten": ({"STATUS.json": json_edit(message="rewritten")}, {}),
+            "manifest index": ({"RETURN_MANIFEST.json": json_edit(return_index=1, status="SUCCESS")}, {}),
+            "manifest stop class": ({"RETURN_MANIFEST.json": json_edit(stop_class="SUCCESS")}, {}),
+            "manifest predecessor": ({"RETURN_MANIFEST.json": json_edit(predecessor={"name": "x", "sha256": "0" * 64})}, {}),
+        }
+        for name, (edits, kwargs) in cases.items():
+            with self.subTest(name):
+                self.fresh()
+                self.assert_rejected(edits, **kwargs)
+
+    def test_status_flags_must_agree_with_stop_class_even_with_a_consistent_manifest(self):
+        import hashlib
+        for change in ({"terminal": True}, {"resumable": False}, {"status": "SUCCESS"}):
+            with self.subTest(change=change):
+                self.fresh()
+                archive = self.make()
+                top = returns.archive_top(archive)
+                with zipfile.ZipFile(archive) as z:
+                    status = json.loads(z.read(f"{top}/STATUS.json"))
+                status.update(change)
+                new_status = (json.dumps(status, indent=2, sort_keys=True) + "\n").encode()
+                manifest_fix = json_edit(status_sha256=hashlib.sha256(new_status).hexdigest(), status=status["status"])
+                rewrite_return(archive, {"STATUS.json": new_status, "RETURN_MANIFEST.json": manifest_fix})
+                with self.assertRaises(returns.ReturnSeriesError):
+                    returns.verify_return_series(self.root / "returns")
+
+    def test_sidecar_filename_must_match(self):
+        archive = self.make()
+        rewrite_return(archive, {}, sidecar_name="other_name.zip")
+        with self.assertRaises(returns.ReturnSeriesError):
+            returns.verify_return_series(self.root / "returns")
+
+    def test_unmutated_rewrite_still_verifies(self):
+        archive = self.make()
+        rewrite_return(archive, {})
+        self.assertEqual(returns.verify_return_series(self.root / "returns")["count"], 1)
+
+
 class LauncherRuleTests(unittest.TestCase):
     def test_resume_decision_table_is_closed(self):
         for cls in StopClass:
@@ -318,12 +465,18 @@ class BuilderTests(unittest.TestCase):
                 self.build(sources, name)
             self.assertFalse((self.root / name).exists())
 
-    def test_production_builder_refuses_the_tracked_r2_manifest_until_reconciled(self):
+    def test_production_builder_accepts_tracked_manifests_and_refuses_absent_real_inputs(self):
+        """H1: the tracked R2 manifest no longer blocks; the absent (ignored) real inputs still do."""
+        tracked = {"dataset_audit", "proteins_tsv", "decode_manifest", "r2_return_manifest"}
+        for spec in PRODUCTION.inputs:
+            if spec.role in tracked:
+                bundle.check_source_input(spec, S.REPO / spec.path)
         with self.assertRaises(bundle.BundleError) as ctx:
-            bundle.build_bundle(S.REPO, self.root / "prod", {s.role: S.REPO / s.path for s in PRODUCTION.inputs},
+            bundle.build_bundle(S.REPO, self.root / "prod", {s.role: self.root / "absent" / s.path for s in PRODUCTION.inputs}
+                                | {r: S.REPO / PRODUCTION.input(r).path for r in tracked},
                                 contract=PRODUCTION, require_clean=False)
         self.assertFalse((self.root / "prod").exists())
-        self.assertRegex(str(ctx.exception), "requires|missing|not a file")
+        self.assertIn("dataset_csv", str(ctx.exception))
 
     def test_bundle_archive_extracts_and_verifies(self):
         result = self.build()

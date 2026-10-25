@@ -584,13 +584,15 @@ class Workflow:
                     edge_records: Mapping[int, dict], discovered: list[tuple[str, str]]) -> dict:
         key = "final"
         upstream = {r["stage"]: self.ws.record_digest(r["stage"]) for r in chain}
+        # H3: verify the complete reachable provenance graph (including every
+        # cycle-1 record behind a remediation) before the restart-skip
+        # decision and before any new E8 work.
+        closure = self.ws.verify_provenance_closure(upstream)
         fp = self.fingerprint(key, upstream, cycle=cycle)
         record = self.ws.current(key, fingerprint=fp)
         if record is not None:
             return record
         self.require_time(key)
-        for r in chain:  # independent rehash of every retained artifact
-            self.ws.verify_retained(r)
         inputs = self.relation_inputs(edge_records, discovered)
         relations = [list(inputs.direct[w].edges) for w in self.c.widths] + [list(v) for v in inputs.exact_rc.values()]
         v1_groups: dict[str, list[str]] = {}
@@ -631,8 +633,10 @@ class Workflow:
             "binary": self.rt.binary, "universe_size": len(self.universe),
             "partition_row_counts": recomputed["partition_row_counts"], "component_count": len(set(membership.values())),
             "bfs_verification": bfs, "final_membership_sha256": sha256_file(final_membership),
-            "selected_records": {r["stage"]: self.ws.record_digest(r["stage"]) for r in chain},
-            "retained_artifacts": {r["stage"]: r["retained"] for r in chain},
+            "direct_selected_records": dict(sorted(upstream.items())),
+            "selected_records": {stage: self.ws.record_digest(stage) for stage in closure},
+            "retained_artifacts": {stage: r["retained"] for stage, r in closure.items()},
+            "provenance_closure_size": len(closure),
             "frozen_inputs": {spec.role: {"path": spec.path, "sha256": spec.sha256, "byte_size": spec.byte_size} for spec in self.c.inputs},
             "finalized_at_utc": utc_now(),
         }

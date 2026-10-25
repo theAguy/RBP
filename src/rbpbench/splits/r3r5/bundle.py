@@ -150,6 +150,20 @@ def _git(repo: Path, *args: str) -> str:
     return done.stdout.strip()
 
 
+def check_source_input(spec, source: Path) -> str:
+    """Requires one builder input to match its reviewed size and SHA-256 exactly."""
+    source = Path(source)
+    if not source.is_file():
+        raise BundleError(f"input {spec.role} is not a file: {source}")
+    size = source.stat().st_size
+    if spec.byte_size is not None and size != spec.byte_size:
+        raise BundleError(f"input {spec.role} has {size} bytes; the reviewed contract requires {spec.byte_size}")
+    digest = sha256_file(source)
+    if digest != spec.sha256:
+        raise BundleError(f"input {spec.role} hashes to {digest}; the reviewed contract requires {spec.sha256}")
+    return digest
+
+
 def build_bundle(repo: Path, destination: Path, sources: Mapping[str, Path], *, contract: Contract = PRODUCTION,
                  require_clean: bool = True, config_source: Path | None = None) -> dict:
     """Builds the immutable bundle; refuses missing, extra, drifted, or unreviewed inputs."""
@@ -172,15 +186,7 @@ def build_bundle(repo: Path, destination: Path, sources: Mapping[str, Path], *, 
     if contract.mode == "production" and {spec.role for spec in contract.inputs} != REQUIRED_INPUT_ROLES:
         raise BundleError("production contract input roles differ from the reviewed set")
     for spec in contract.inputs:
-        source = Path(sources[spec.role])
-        if not source.is_file():
-            raise BundleError(f"input {spec.role} is not a file: {source}")
-        size = source.stat().st_size
-        if spec.byte_size is not None and size != spec.byte_size:
-            raise BundleError(f"input {spec.role} has {size} bytes; the reviewed contract requires {spec.byte_size}")
-        digest = sha256_file(source)
-        if digest != spec.sha256:
-            raise BundleError(f"input {spec.role} hashes to {digest}; the reviewed contract requires {spec.sha256}")
+        check_source_input(spec, Path(sources[spec.role]))
     closure = source_closure(repo / "src")
     destination.mkdir(parents=True)
     try:
@@ -251,5 +257,5 @@ def archive_bundle(bundle: Path) -> dict:
     return {"archive": str(output), "sha256": digest, "byte_size": output.stat().st_size, "members": len(seen)}
 
 
-__all__ = ["MANIFEST_REL", "MANIFEST_HASH_REL", "BundleError", "source_closure", "inventory", "verify_bundle",
+__all__ = ["MANIFEST_REL", "MANIFEST_HASH_REL", "BundleError", "check_source_input", "source_closure", "inventory", "verify_bundle",
            "build_bundle", "archive_bundle", "FORBIDDEN_MODULE_FRAGMENTS", "HPC_REL"]

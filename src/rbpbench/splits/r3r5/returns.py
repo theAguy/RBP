@@ -182,6 +182,19 @@ def sanitize(return_dir: Path, contract: Contract) -> dict:
 
 
 # ----------------------------------------------------------- packaging
+def archive_paths(destination: Path) -> tuple[Path, Path]:
+    """``<dir>.zip`` and ``<dir>.zip.sha256`` built by string append (never ``with_suffix``)."""
+    destination = Path(destination)
+    archive = destination.parent / f"{destination.name}.zip"
+    return archive, destination.parent / f"{archive.name}.sha256"
+
+
+def archive_top(archive: Path) -> str:
+    name = Path(archive).name
+    if not name.endswith(".zip"):
+        raise ReturnSeriesError(f"{name}: a return archive must end in .zip")
+    return name[: -len(".zip")]
+
 def _gzip_copy(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(source, "rb") as src, open(target, "wb") as raw:
@@ -260,20 +273,24 @@ def existing_returns(returns_dir: Path) -> list[Path]:
 def _write_inventory(destination: Path) -> None:
     entries = []
     for path in sorted(p for p in destination.rglob("*") if p.is_file()):
-        rel = str(path.relative_to(destination))
+        rel = path.relative_to(destination).as_posix()
         if rel in {"RETURN_INVENTORY.json", "CHECKSUMS.sha256"}:
             continue
         entries.append({"path": rel, "byte_size": path.stat().st_size, "sha256": sha256_file(path)})
     atomic_write_json(destination / "RETURN_INVENTORY.json", {"entries": entries})
-    lines = [f"{sha256_file(p)}  {p.relative_to(destination)}\n" for p in sorted(destination.rglob("*"))
-             if p.is_file() and p.name != "CHECKSUMS.sha256"]
+    lines = [f"{sha256_file(p)}  {p.relative_to(destination).as_posix()}\n" for p in sorted(destination.rglob("*"))
+             if p.is_file() and p.relative_to(destination).as_posix() != "CHECKSUMS.sha256"]
     (destination / "CHECKSUMS.sha256").write_text("".join(lines))
 
 
 def package_return(*, bundle_root: Path, workspace: Workspace | None, contract: Contract, status: str,
                    stop_class: StopClass, message: str, attempt: dict | None, host: dict | None,
-                   extra_reports: dict | None = None) -> tuple[Path, StopClass]:
-    """Builds, sanitizes, zips and links one numbered return."""
+                   extra_reports: dict | None = None, host_name: str | None = None) -> tuple[Path, StopClass]:
+    """Builds, sanitizes, zips and links one numbered return.
+
+    The archive name is the complete staging-directory name plus ``.zip``;
+    a dotted hostname (``GuyA.local``) is never mistaken for an extension
+    (H2).  An existing archive or sidecar is never overwritten."""
     returns_dir = Path(bundle_root) / "returns"
     returns_dir.mkdir(exist_ok=True)
     prior = existing_returns(returns_dir)
@@ -282,7 +299,7 @@ def package_return(*, bundle_root: Path, workspace: Workspace | None, contract: 
         last = prior[-1]
         predecessor = {"name": last.name, "sha256": sha256_file(last)}
     index = len(prior) + 1
-    host_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", platform.node() or "unknown")
+    host_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", (platform.node() if host_name is None else host_name) or "unknown")
     stamp = utc_now().replace(":", "").replace("-", "")
 
     def build(final_status: str, final_class: StopClass, final_message: str, sanitation: dict | None) -> Path:
@@ -323,18 +340,95 @@ def package_return(*, bundle_root: Path, workspace: Workspace | None, contract: 
         stop_class = StopClass.INTEGRITY
         destination = build("STOPPED", stop_class, f"return sanitation failed: {exc.reason}", rejected)
         roles = sanitize(destination, contract)
-    archive = destination.with_suffix(".zip")
+    archive, sidecar = archive_paths(destination)
+    if archive.exists() or sidecar.exists():
+        raise ReturnSeriesError(f"refusing to overwrite an existing return {archive.name} or its sidecar")
     with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as handle:
         for path in sorted(destination.rglob("*")):
             if path.is_file():
-                handle.write(path, arcname=str(Path(destination.name) / path.relative_to(destination)))
-    Path(str(archive) + ".sha256").write_text(f"{sha256_file(archive)}  {archive.name}\n")
+                handle.write(path, arcname=f"{destination.name}/{path.relative_to(destination).as_posix()}")
+    with open(sidecar, "x") as handle:
+        handle.write(f"{sha256_file(archive)}  {archive.name}\n")
     shutil.rmtree(destination)
     del roles
     return archive, stop_class
 
 
 # ------------------------------------------------------- verification
+_CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^\s/][^\n]*)$")
+
+
+def _verify_archive(archive: Path, digest: str) -> tuple[dict, dict]:
+    """Internal consistency of one return (H4).  Returns ``(status, manifest)``."""
+    import hashlib
+
+    name = archive.name
+    top = archive_top(archive)
+    with zipfile.ZipFile(archive) as handle:
+        bad = handle.testzip()
+        if bad is not None:
+            raise ReturnSeriesError(f"{name}: corrupt member {bad}")
+        names = handle.namelist()
+        if len(names) != len(set(names)):
+            raise ReturnSeriesError(f"{name}: duplicate archive members")
+        if any(not n.startswith(top + "/") or n.endswith("/") for n in names):
+            raise ReturnSeriesError(f"{name}: member outside its top-level directory {top}/")
+        rel_names = {n[len(top) + 1:] for n in names}
+        if any(r.startswith("/") or ".." in Path(r).parts or r != Path(r).as_posix() for r in rel_names):
+            raise ReturnSeriesError(f"{name}: non-canonical member path")
+        for required in ("STATUS.json", "RETURN_MANIFEST.json", "RETURN_INVENTORY.json", "CHECKSUMS.sha256"):
+            if required not in rel_names:
+                raise ReturnSeriesError(f"{name}: {required} is missing")
+        data = {r: handle.read(f"{top}/{r}") for r in rel_names}
+    status = json.loads(data["STATUS.json"])
+    manifest = json.loads(data["RETURN_MANIFEST.json"])
+    inventory = json.loads(data["RETURN_INVENTORY.json"])
+    seen_inventory = set()
+    for entry in inventory["entries"]:
+        rel = entry["path"]
+        if rel in seen_inventory or rel not in data:
+            raise ReturnSeriesError(f"{name}: inventory entry {rel} is duplicated or absent")
+        seen_inventory.add(rel)
+        if len(data[rel]) != entry["byte_size"] or hashlib.sha256(data[rel]).hexdigest() != entry["sha256"]:
+            raise ReturnSeriesError(f"{name}: {rel} does not match the inventory")
+    if seen_inventory | {"RETURN_INVENTORY.json", "CHECKSUMS.sha256"} != rel_names:
+        raise ReturnSeriesError(f"{name}: archive members differ from its inventory")
+    checksums: dict[str, str] = {}
+    text = data["CHECKSUMS.sha256"].decode("utf-8")
+    if not text.endswith("\n"):
+        raise ReturnSeriesError(f"{name}: CHECKSUMS.sha256 is not newline-terminated")
+    for line in text[:-1].split("\n"):
+        match = _CHECKSUM_LINE.match(line)
+        if not match:
+            raise ReturnSeriesError(f"{name}: non-canonical CHECKSUMS.sha256 line {line[:80]!r}")
+        value, rel = match.groups()
+        if rel in checksums:
+            raise ReturnSeriesError(f"{name}: duplicate CHECKSUMS.sha256 entry {rel}")
+        checksums[rel] = value
+    if set(checksums) != rel_names - {"CHECKSUMS.sha256"}:
+        raise ReturnSeriesError(f"{name}: CHECKSUMS.sha256 does not list exactly every member except itself")
+    for rel, value in checksums.items():
+        if hashlib.sha256(data[rel]).hexdigest() != value:
+            raise ReturnSeriesError(f"{name}: CHECKSUMS.sha256 digest for {rel} is wrong")
+    if manifest.get("status_sha256") != hashlib.sha256(data["STATUS.json"]).hexdigest():
+        raise ReturnSeriesError(f"{name}: RETURN_MANIFEST status_sha256 does not match STATUS.json")
+    if manifest.get("name") != top:
+        raise ReturnSeriesError(f"{name}: manifest name mismatch")
+    for key_manifest, key_status in (("return_index", "return_index"), ("status", "status"),
+                                     ("stop_class", "stop_class"), ("predecessor", "predecessor")):
+        if manifest.get(key_manifest) != status.get(key_status):
+            raise ReturnSeriesError(f"{name}: manifest and status disagree on {key_manifest}")
+    try:
+        stop_class = StopClass(status["stop_class"])
+    except (KeyError, ValueError):
+        raise ReturnSeriesError(f"{name}: unknown stop class {status.get('stop_class')!r}") from None
+    if status.get("terminal") is not (stop_class not in RESUMABLE) or status.get("resumable") is not (stop_class in RESUMABLE):
+        raise ReturnSeriesError(f"{name}: terminal/resumable flags contradict stop class {stop_class.value}")
+    if (status["status"] == "SUCCESS") != (stop_class == StopClass.SUCCESS):
+        raise ReturnSeriesError(f"{name}: status {status['status']} contradicts stop class {stop_class.value}")
+    return status, manifest
+
+
 def verify_return_series(returns_dir: Path) -> dict:
     archives = existing_returns(returns_dir)
     if not archives:
@@ -343,37 +437,15 @@ def verify_return_series(returns_dir: Path) -> dict:
     terminal_seen = None
     summary = []
     for expected_index, archive in enumerate(archives, start=1):
-        sidecar = Path(str(archive) + ".sha256")
+        sidecar = Path(f"{archive}.sha256")
         if not sidecar.is_file():
             raise ReturnSeriesError(f"{archive.name}: missing .sha256 sidecar")
-        token = sidecar.read_text().split()
         digest = sha256_file(archive)
-        if not token or token[0] != digest:
-            raise ReturnSeriesError(f"{archive.name}: SHA-256 does not match its sidecar")
-        with zipfile.ZipFile(archive) as handle:
-            bad = handle.testzip()
-            if bad is not None:
-                raise ReturnSeriesError(f"{archive.name}: corrupt member {bad}")
-            top = archive.name[:-4]
-            names = handle.namelist()
-            if any(not n.startswith(top + "/") for n in names):
-                raise ReturnSeriesError(f"{archive.name}: member outside its top-level directory")
-            status = json.loads(handle.read(f"{top}/STATUS.json"))
-            manifest = json.loads(handle.read(f"{top}/RETURN_MANIFEST.json"))
-            inventory = json.loads(handle.read(f"{top}/RETURN_INVENTORY.json"))
-            for entry in inventory["entries"]:
-                data = handle.read(f"{top}/{entry['path']}")
-                import hashlib
-
-                if len(data) != entry["byte_size"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
-                    raise ReturnSeriesError(f"{archive.name}: {entry['path']} does not match the inventory")
-            listed = {f"{top}/{e['path']}" for e in inventory["entries"]} | {f"{top}/RETURN_INVENTORY.json", f"{top}/CHECKSUMS.sha256"}
-            if set(names) != listed:
-                raise ReturnSeriesError(f"{archive.name}: archive members differ from its inventory")
-        if manifest["return_index"] != expected_index or status["return_index"] != expected_index:
+        if sidecar.read_text() != f"{digest}  {archive.name}\n":
+            raise ReturnSeriesError(f"{archive.name}: sidecar digest or filename does not match the archive")
+        status, manifest = _verify_archive(archive, digest)
+        if manifest["return_index"] != expected_index:
             raise ReturnSeriesError(f"{archive.name}: return index {manifest['return_index']} is not {expected_index}")
-        if manifest["name"] != top:
-            raise ReturnSeriesError(f"{archive.name}: manifest name mismatch")
         if previous is None:
             if manifest["predecessor"] is not None:
                 raise ReturnSeriesError(f"{archive.name}: the first return names a predecessor")
@@ -393,8 +465,7 @@ def verify_return_series(returns_dir: Path) -> dict:
 
 def read_return_member(archive: Path, member: str) -> bytes:
     with zipfile.ZipFile(archive) as handle:
-        top = Path(archive).name[:-4]
-        return handle.read(f"{top}/{member}")
+        return handle.read(f"{archive_top(archive)}/{member}")
 
 
 def gunzip_bytes(data: bytes) -> str:
@@ -403,5 +474,6 @@ def gunzip_bytes(data: bytes) -> str:
 
 __all__ = [
     "RETURN_PREFIX", "SanitationError", "ReturnSeriesError", "role_table", "sanitize", "collect_workspace",
+    "archive_paths", "archive_top",
     "package_return", "verify_return_series", "existing_returns", "read_return_member", "gunzip_bytes",
 ]

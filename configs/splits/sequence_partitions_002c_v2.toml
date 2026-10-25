@@ -125,13 +125,11 @@ byte_size = 59
 sha256 = "9e3e12c9ba46196b3bfc6f01034922438481b529880190fc29189823f3d64282"
 
 [inputs.r2_return_manifest]
-# Plan value as written (5,002 bytes).  The Git-tracked file is 5,001 bytes
-# and hashes to 3a275d53...; the plan value equals that content plus one
-# trailing newline.  The builder therefore refuses the current file until
-# the planner reconciles the two (reported as an open item).
+# The accepted, Git-tracked artifact (5,001 bytes, one normal final newline;
+# docs/reviews/002c_r3_r5_implementation_package_correction_review.md, H1).
 path = "manifests/sequence_r2_darwin_convergence_return.json"
-byte_size = 5002
-sha256 = "0f0edca2487955866194f0f7e63e2bff4a1b3b47025aed09065666c3dd163e53"
+byte_size = 5001
+sha256 = "3a275d538f2167ed6a1a01b80bfb34295890ac1f5d30611fb5e34bf2e5d02123"
 
 [inputs.v1_component_membership]
 path = "inputs/v1/component_membership.tsv.gz"

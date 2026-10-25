@@ -79,12 +79,11 @@ second-cycle hit is a terminal scientific stop.
 
 ## Items for this review
 
-1. **R2 return-manifest hash (blocks the real build).** The plan pins
-   `manifests/sequence_r2_darwin_convergence_return.json` at 5,002 bytes /
-   `0f0edca2…`; the tracked file is 5,001 bytes / `3a275d53…` (the plan value
-   is the same content plus a final newline).  The contract binds the plan
-   value as written, so the production builder refuses until the planner
-   either adds the newline to the tracked manifest or corrects the plan.
+1. **R2 return-manifest hash — resolved by correction H1.** The contract,
+   TOML, plan and tests now bind the accepted tracked artifact
+   `manifests/sequence_r2_darwin_convergence_return.json` (5,001 bytes,
+   `3a275d53…`, one normal final newline).  The earlier 5,002-byte plan value
+   described the same content with an extra blank line.
 2. **Real-binary smoke suite (resource-blocked here).** The implementation
    host had 7 GiB RAM (container) and 3 GiB (VM); the frozen `-k 15`
    nucleotide prefilter needs ~9.3 GiB even for tiny inputs.  Run once on

@@ -137,7 +137,7 @@ PRODUCTION_INPUTS: tuple[InputSpec, ...] = (
     InputSpec("exact_rc_101", "inputs/decode/duplicate_edges_101.json",
               "9e3e12c9ba46196b3bfc6f01034922438481b529880190fc29189823f3d64282", 59),
     InputSpec("r2_return_manifest", "manifests/sequence_r2_darwin_convergence_return.json",
-              "0f0edca2487955866194f0f7e63e2bff4a1b3b47025aed09065666c3dd163e53", 5_002),
+              "3a275d538f2167ed6a1a01b80bfb34295890ac1f5d30611fb5e34bf2e5d02123", 5_001),
     InputSpec("v1_component_membership", "inputs/v1/component_membership.tsv.gz",
               "6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692", 14_578_797),
     InputSpec("v1_component_report", "inputs/v1/component_report.json",

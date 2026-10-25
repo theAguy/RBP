@@ -66,14 +66,33 @@ class ContractTests(unittest.TestCase):
         for role in ("dataset_audit", "proteins_tsv", "decode_manifest"):
             self.assertEqual(sha256_file(REPO / specs[role].path), specs[role].sha256)
 
-    def test_r2_return_manifest_plan_value_differs_from_tracked_file(self):
-        """Open item: the plan pins 5,002 bytes/0f0edca2…; the tracked file is the same JSON without its final newline."""
+    def test_tracked_r2_return_manifest_matches_the_production_contract_exactly(self):
+        """H1: the accepted tracked 5,001-byte artifact is bound byte for byte."""
         import hashlib
         spec = c.PRODUCTION.input("r2_return_manifest")
         data = (REPO / spec.path).read_bytes()
-        self.assertNotEqual(hashlib.sha256(data).hexdigest(), spec.sha256)
-        self.assertEqual(hashlib.sha256(data + b"\n").hexdigest(), spec.sha256)
-        self.assertEqual(len(data) + 1, spec.byte_size)
+        self.assertEqual(spec.path, "manifests/sequence_r2_darwin_convergence_return.json")
+        self.assertEqual((len(data), spec.byte_size), (5_001, 5_001))
+        self.assertEqual(hashlib.sha256(data).hexdigest(), spec.sha256)
+        self.assertEqual(spec.sha256, "3a275d538f2167ed6a1a01b80bfb34295890ac1f5d30611fb5e34bf2e5d02123")
+        self.assertTrue(data.endswith(b"}\n") and not data.endswith(b"\n\n"))
+        self.assertEqual(c.load_production_contract(REPO / c.CONFIG_REL).input("r2_return_manifest"), spec)
+
+    def test_tracked_manifests_bind_and_later_byte_drift_fails_closed(self):
+        from rbpbench.splits.r3r5 import bundle
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources = {}
+            for role in ("dataset_audit", "proteins_tsv", "decode_manifest", "r2_return_manifest"):
+                sources[role] = REPO / c.PRODUCTION.input(role).path
+                bundle.check_source_input(c.PRODUCTION.input(role), sources[role])  # accepted as tracked
+            drift = root / "r2.json"
+            drift.write_bytes(sources["r2_return_manifest"].read_bytes() + b"\n")
+            with self.assertRaises(bundle.BundleError):
+                bundle.check_source_input(c.PRODUCTION.input("r2_return_manifest"), drift)
+            drift.write_bytes(sources["r2_return_manifest"].read_bytes().replace(b"accepted", b"Accepted", 1))
+            with self.assertRaises(bundle.BundleError):
+                bundle.check_source_input(c.PRODUCTION.input("r2_return_manifest"), drift)
 
 
 class FrozenCommandTests(unittest.TestCase):

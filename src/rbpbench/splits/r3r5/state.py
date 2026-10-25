@@ -191,6 +191,53 @@ class Workspace:
         self.verify_retained(record)
         return record
 
+    def verify_provenance_closure(self, direct: Mapping[str, str]) -> dict[str, dict]:
+        """Verifies the complete provenance graph reachable from ``direct``
+        (``{stage: required selected-record digest}``) by recursively
+        following every record's ``upstream`` mapping (H3).
+
+        For every reachable record: the selected-record file must exist, its
+        SHA-256 must equal the digest its child recorded, its schema and stage
+        identity must match, and every retained artifact is rehashed.
+        Missing records, digest mismatches (substitution), cycles, and
+        contradictory duplicate references are integrity stops.  Returns the
+        verified records keyed by stage."""
+        required: dict[str, str] = {}
+        state: dict[str, str] = {}
+        verified: dict[str, dict] = {}
+
+        def visit(stage: str, wanted: str, trail: tuple[str, ...]) -> None:
+            if state.get(stage) == "visiting":
+                raise IntegrityStop(f"provenance cycle: {' -> '.join(trail + (stage,))}")
+            if stage in required and required[stage] != wanted:
+                raise IntegrityStop(f"contradictory provenance references to {stage}: {required[stage][:12]}… vs {wanted[:12]}…")
+            required[stage] = wanted
+            if state.get(stage) == "done":
+                return
+            state[stage] = "visiting"
+            path = self.record_path(stage)
+            if not path.is_file():
+                raise IntegrityStop(f"provenance: selected record {stage} referenced by {trail[-1] if trail else 'final'} is missing")
+            actual = sha256_file(path)
+            if actual != wanted:
+                raise IntegrityStop(f"provenance: selected record {stage} digest {actual[:12]}… differs from the "
+                                    f"{wanted[:12]}… recorded by {trail[-1] if trail else 'final'}")
+            record = json.loads(path.read_text())
+            if record.get("schema") != RECORD_SCHEMA or record.get("stage") != stage:
+                raise IntegrityStop(f"provenance: selected record file {stage}.json declares stage {record.get('stage')!r}")
+            upstream = record.get("upstream")
+            if not isinstance(upstream, dict):
+                raise IntegrityStop(f"provenance: record {stage} has no upstream mapping")
+            self.verify_retained(record)
+            for parent, parent_digest in sorted(upstream.items()):
+                visit(parent, parent_digest, trail + (stage,))
+            state[stage] = "done"
+            verified[stage] = record
+
+        for stage, wanted in sorted(direct.items()):
+            visit(stage, wanted, ())
+        return dict(sorted(verified.items()))
+
     def retained_path(self, record: Mapping, name: str) -> Path:
         for entry in record["retained"]:
             if Path(entry["path"]).name == name:

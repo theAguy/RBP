@@ -1,0 +1,36 @@
+{
+  "checkpoint": "002C-R3R5-PRODUCTION-BUNDLE",
+  "status": "built_and_verified_not_executed",
+  "source_commit": "185afbc38a5116632761239e5730974c1bb13836",
+  "bundle": {
+    "directory_name": "RBP_Task002C_R3R5_Darwin_185afbc",
+    "local_directory_kib": 1049032,
+    "input_manifest_sha256": "f1801691c7ec1aae9b30d254024470268f11932de2437a8fe41eeb616578322f",
+    "immutable_entry_count": 63,
+    "source_closure_count": 39,
+    "frozen_input_role_count": 14
+  },
+  "archive": {
+    "filename": "RBP_Task002C_R3R5_Darwin_185afbc.tar.gz",
+    "byte_size": 256839119,
+    "sha256": "868177e48a1f47e9ec1da311e51c5e58136c02ac8ab08b7072d768d39643c877",
+    "sidecar_sha256": "01f0dcbfe7672c8b325ae5446cc47c77d8937afbb88947b64b8fe7ec70d470dd",
+    "archive_file_members": 65,
+    "archive_total_members_including_directories": 82
+  },
+  "verification": {
+    "all_frozen_input_sizes_and_hashes_matched_before_build": true,
+    "builder_reverified_all_inputs": true,
+    "archive_members_rehashed_against_bundle_inventory": true,
+    "fresh_extraction_verified_against_production_contract": true,
+    "archive_sidecar_verified": true
+  },
+  "execution_boundary": {
+    "mmseqs_run": false,
+    "scheduler_submission": false,
+    "model_or_baseline_run": false,
+    "network_action": false,
+    "production_execution_authorized_by_this_manifest": false,
+    "next_step": "Transfer archive and sidecar to Darwin, verify and extract, run the environment/package preflight, then submit through the reviewed Slurm wrapper."
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "checkpoint": "002C-R2 Darwin projection-convergence immutable-package build",
+  "created_at_utc": "2026-10-25T08:44:22Z",
+  "source_branch": "issue-002c-partition-assignment",
+  "source_commit": "b35f304be6952efd495c2a2e92ab98c9fdf85184",
+  "bundle": {
+    "path": "artifacts/darwin_handoff/RBP_Task002C_R2_Darwin_b35f304",
+    "input_entry_count": 34,
+    "input_manifest_byte_size": 6797,
+    "input_manifest_sha256": "085ba5025b8277bb5a6ce1d57f58e819cb7a1d3f6fcb32d7dd33417ba7373a4e",
+    "bundle_summary_sha256": "5eea7502d865bdb885ed7440e4a443e32f921f83a65635b94177c5e3f3dd575f",
+    "config_sha256": "e3a3acd97d55ee0376894dfdd0caeb88608ca4722d0b76bd3f3824ac8649107b",
+    "source_commit_file_sha256": "bbceeff71fe1f92a6595ccdb160e288778410384f3a3414be1159c4e1d9c46ff"
+  },
+  "archive": {
+    "path": "artifacts/darwin_handoff/RBP_Task002C_R2_Darwin_b35f304.tar.gz",
+    "byte_size": 91150452,
+    "sha256": "25852a9f5a8915bb1c4806a35fcd97e31be000d3a901b1b689f4c02cb6d180b4"
+  },
+  "archive_verification": {
+    "method": "scripts/build_002c_r2_newton_bundle.py:archive plus independent tar-member/source-commit and sidecar checks",
+    "verified_non_directory_entry_count": 36,
+    "single_top_level_directory": true,
+    "sidecar_check": "passed"
+  },
+  "frozen_inputs": {
+    "decode_manifest_sha256": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3",
+    "probe_seed": 20260925,
+    "sample_size": 10000,
+    "expected_row_count": 361180,
+    "stages": ["probe_500", "probe_251", "probe_101"],
+    "expected_mmseqs_version": "18.8cc5c",
+    "expected_mmseqs_conda_build": "hd6d6fdc_0"
+  },
+  "correction": {
+    "prior_stop_manifest": "manifests/sequence_r2_darwin_projection_stop.json",
+    "hard_failures_stop_immediately": true,
+    "projection_findings_accumulate_across_safe_widths": true,
+    "transient_projection_uses_job_owned_generation": true,
+    "shared_filesystem_delta_is_not_job_attributed": true,
+    "scientific_flags_changed": false,
+    "hard_live_resource_gates_changed": false
+  },
+  "verification": {
+    "focused_and_integration_tests": 165,
+    "focused_and_integration_failures": 0,
+    "manifest_json_valid": true,
+    "git_diff_check_clean": true
+  },
+  "execution_boundary": {
+    "environment_installed": false,
+    "slurm_job_submitted": false,
+    "resource_probe_run": false,
+    "real_mmseqs2_launched": false,
+    "r3_started": false
+  },
+  "gpu_required": false,
+  "r3_authorization": "none"
+}

@@ -1,0 +1,52 @@
+{
+  "checkpoint": "002C-R3R5-DARWIN-SMOKE",
+  "status": "accepted",
+  "source_commit": "8eef8dca310adcabae750cd78cd548d128f175dd",
+  "execution": {
+    "host": "newton8",
+    "slurm_job_id": "452915",
+    "allocated_cpus": 4,
+    "allocated_memory_mib": 24576,
+    "gpu_used": false,
+    "real_dataset_accessed": false,
+    "production_r3r5_started": false
+  },
+  "environment": {
+    "runtime_receipt_sha256": "ec64969ca0d3936fc5b2d5cdbc301e9613ae644e1a7b59be41118fe73d008dd9",
+    "mmseqs_version": "18.8cc5c",
+    "mmseqs_conda_build": "hd6d6fdc_0",
+    "mmseqs_binary_sha256": "d6d1bf1b50c095eb0cb66f685a7fb1d9b8b69497e1e88416fd48f28e313cc773"
+  },
+  "tests": {
+    "module": "tests.test_splits_r3r5_real_binary",
+    "run_count": 2,
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0,
+    "elapsed_seconds_reported_by_unittest": 324.949,
+    "test_names": [
+      "test_e0_smoke_reproduces_rc_identity_and_width_specific_coverage",
+      "test_tiny_end_to_end_pipeline_with_the_real_binary"
+    ]
+  },
+  "resources": {
+    "wall_seconds": 325.97,
+    "maximum_resident_set_kib": 8397352,
+    "swaps": 0,
+    "exit_status": 0
+  },
+  "return": {
+    "path": "artifacts/teammate_run_results/002c_r3r5_darwin_smoke/RBP_002C_R3R5_SMOKE_RETURN_20261025T140540Z_newton8.zip",
+    "byte_size": 4258,
+    "sha256": "874f5f7cfb14429b59afd88adda045192c56ef464fdc81aabd253ef1632e55d3",
+    "sidecar_sha256": "600201446ea46a14c319eed6df85b605500df2f0f936df0b5a5cb79471826337",
+    "inventory_verified": true,
+    "checksums_verified": true
+  },
+  "acceptance": {
+    "implementation_gate_passed": true,
+    "permits_production_bundle_build": true,
+    "authorizes_production_execution": false,
+    "note": "Production execution still requires its separately reviewed immutable bundle and operator handoff."
+  }
+}

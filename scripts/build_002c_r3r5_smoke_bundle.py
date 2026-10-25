@@ -21,7 +21,6 @@ SIDECAR = MANIFEST + ".sha256"
 RUNTIME_DIRS = {"runtime", "return"}
 COPY_DIRS = ("src/rbpbench", "hpc/darwin/002c_r3r5", "hpc/darwin/002c_r3r5_smoke")
 COPY_FILES = (
-    "tests/__init__.py",
     "tests/r3r5_support.py",
     "tests/test_splits_r3r5_real_binary.py",
     "configs/splits/sequence_partitions_002c_v2.toml",

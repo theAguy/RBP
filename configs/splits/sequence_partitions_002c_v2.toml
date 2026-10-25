@@ -1,0 +1,144 @@
+# Task 002C-R3–R5 versioned configuration (components-v2 end-to-end split).
+#
+# docs/tasks/002c_r3_r5_end_to_end_v2_execution.md and its plan acceptance
+# (docs/reviews/002c_r3_r5_end_to_end_v2_execution_plan_acceptance.md).
+#
+# Every value here is ALSO a reviewed code constant in
+# src/rbpbench/splits/r3r5/contract.py.  The production loader refuses this
+# file unless every field equals that constant, so editing this file can
+# never change the executed contract silently.  The MMseqs2 scientific flags
+# (identity, coverage, cov-mode, --max-seqs, search type, strand, alignment
+# mode, E-value, masking, sensitivity) are deliberately NOT configurable
+# here: they remain hard-coded in rbpbench.splits.commands.
+
+schema_version = 1
+checkpoint = "002C-R3R5"
+mode = "production"
+seed = 20260925
+row_count = 361180
+protected_widths = [500, 251, 101]
+mmseqs_threads = 4
+max_audit_cycles = 2
+
+[assignment]
+target_fractions = { train = 0.70, validation = 0.15, test = 0.15 }
+evaluation_floor = 30
+balance_deviation_flag_pct = 3.0
+row_dimension_weight = 244
+protein_class_dimension_weight = 1
+max_repair_passes = 5000
+max_repair_proposals = 2000000
+row_fraction_repair_limit_pct = 3.0
+row_fraction_acceptance_pct = 3.0
+protein_id_min = 1
+protein_id_max = 122
+
+[v1_protected_relation]
+# Accepted Task 002B/002C-v1 final component membership: every v1 component
+# stays together in v2 (protected co-membership, never a direct edge).
+expected_component_count = 173465
+
+[giant_gate]
+single_component_fraction = 0.05
+top20_fraction = 0.20
+
+[positive_control]
+self_hits = 100
+max_construction_edges = 100
+
+[resources]
+min_installed_or_allocated_ram_gib = 64.0
+min_slurm_memory_gib = 64.0
+min_available_ram_gib = 24.0
+live_free_floor_gib = 80.0
+min_quota_headroom_gib = 80.0
+max_swap_increase_gib = 2.0
+job_owned_ceiling_gib = { "500" = 60.0, "251" = 25.0, "101" = 15.0 }
+construction_timeout_hours = { "500" = 18.0, "251" = 4.0, "101" = 2.0 }
+audit_search_budget_hours = { "500" = 10.0, "251" = 3.0, "101" = 1.0 }
+auxiliary_child_timeout_hours = 2.0
+min_allocation_hours = 48.0
+min_chain_job_hours = 20.0
+packaging_reserve_hours = 2.0
+poll_interval_seconds = 5.0
+
+[return_limits]
+membership_decompressed_mib = 128
+report_or_log_mib = 64
+aggregate_log_gib = 2
+
+[environment]
+mmseqs_version = "18.8cc5c"
+mmseqs_conda_build = "hd6d6fdc_0"
+mmseqs_sha256 = "d6d1bf1b50c095eb0cb66f685a7fb1d9b8b69497e1e88416fd48f28e313cc773"
+explicit_lock_sha256 = "d9f9e7549a6bff75e55bf7f0693789c572817b9208a7127ee7714fcb0b0bce21"
+package_list_sha256 = "14ecdd533f6390c5a1616c640a356df145eb0198bf75fc7558979f58ee349d6f"
+runtime_receipt_sha256 = "ec64969ca0d3936fc5b2d5cdbc301e9613ae644e1a7b59be41118fe73d008dd9"
+
+# Frozen inputs: fixed bundle-relative path, exact byte size, exact SHA-256.
+# No collaborator absolute path appears anywhere in the contract.
+[inputs.dataset_csv]
+path = "inputs/dataset/dataset_K562_multilabel_with_NEGs.csv"
+byte_size = 724425277
+sha256 = "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945"
+
+[inputs.dataset_audit]
+path = "manifests/dataset_audit.json"
+sha256 = "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"
+
+[inputs.proteins_tsv]
+path = "configs/proteins.tsv"
+sha256 = "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+
+[inputs.decode_manifest]
+path = "manifests/sequence_decode_002b2.json"
+sha256 = "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3"
+
+[inputs.fasta_500]
+path = "inputs/decode/sequence_partitions_width_500.fasta"
+byte_size = 185174230
+sha256 = "0849d4f8aceaed37c3dc7fec69056f38ae344338aa4adf321a3e11c4a72df0b0"
+
+[inputs.fasta_251]
+path = "inputs/decode/sequence_partitions_width_251.fasta"
+byte_size = 95240410
+sha256 = "f4f436ef2eb0f17409c5145507991b688e49965a09c346ddd380942a5b1d5b5c"
+
+[inputs.fasta_101]
+path = "inputs/decode/sequence_partitions_width_101.fasta"
+byte_size = 41063410
+sha256 = "60be2b211923d303570974fced0f85e546ceb4b5b5182d2cd0a9f72f483b08b1"
+
+[inputs.exact_rc_500]
+path = "inputs/decode/duplicate_edges_500.json"
+byte_size = 2
+sha256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+
+[inputs.exact_rc_251]
+path = "inputs/decode/duplicate_edges_251.json"
+byte_size = 2
+sha256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+
+[inputs.exact_rc_101]
+path = "inputs/decode/duplicate_edges_101.json"
+byte_size = 59
+sha256 = "9e3e12c9ba46196b3bfc6f01034922438481b529880190fc29189823f3d64282"
+
+[inputs.r2_return_manifest]
+# Plan value as written (5,002 bytes).  The Git-tracked file is 5,001 bytes
+# and hashes to 3a275d53...; the plan value equals that content plus one
+# trailing newline.  The builder therefore refuses the current file until
+# the planner reconciles the two (reported as an open item).
+path = "manifests/sequence_r2_darwin_convergence_return.json"
+byte_size = 5002
+sha256 = "0f0edca2487955866194f0f7e63e2bff4a1b3b47025aed09065666c3dd163e53"
+
+[inputs.v1_component_membership]
+path = "inputs/v1/component_membership.tsv.gz"
+byte_size = 14578797
+sha256 = "6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692"
+
+[inputs.v1_component_report]
+path = "inputs/v1/component_report.json"
+byte_size = 13036977
+sha256 = "b8b5872a4cc5061c562de871ec4500876fcdb72afcab069b21ab2bb44cb3e186"

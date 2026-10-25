@@ -4,10 +4,11 @@
 investigation and comparison of the former teammate's 122-protein RBP model.
 
 **Last updated:** 2026-10-25
-**Current stage:** Task 002C-R2 is complete and the single restart-safe R3-R5
-components-v2 execution plan is accepted after bounded second-review
-corrections. Comprehensive implementation and synthetic/tiny-binary testing
-are next; real execution is not yet authorized.
+**Current stage:** Task 002C-R2 is complete. The single restart-safe R3-R5
+components-v2 workflow is implemented and synthetic/fake-tool tested
+(committed locally). The combined implementation/package review, including one
+run of the real-binary smoke suite on Darwin, is next; real execution is not yet
+authorized.
 
 **Model comparison status:** not started; the benchmark split must be frozen
 first
@@ -490,14 +491,14 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Implement and test the accepted restart-safe end-to-end Darwin workflow as
-   one unit; do not create separate operator handoffs for its internal stages.
-2. Review the implementation and immutable package once as a combined unit.
-3. Run full direct-edge discovery, protected-v1 components v2, deterministic assignment,
+1. Review the implementation and immutable package once as a combined unit,
+   running the real-binary smoke suite once on a Darwin compute allocation and
+   reconciling the R2 return-manifest hash recorded in the review request.
+2. Run full direct-edge discovery, protected-v1 components v2, deterministic assignment,
    exact/RC audits, and all 18 fresh directed audits in that package.
-4. Freeze the final partition only when every giant-component, balance,
+3. Freeze the final partition only when every giant-component, balance,
    floor, reproducibility, and cross-partition zero-hit gate passes.
-5. Begin simple baselines immediately after that split is locked.
+4. Begin simple baselines immediately after that split is locked.
 
 ## 19. Claims we can and cannot make today
 

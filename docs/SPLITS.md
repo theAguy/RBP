@@ -368,7 +368,7 @@ widths completed. The 251- and 101-nt projections passed; 500 nt requires
 reviewed time and transient-storage exceptions without changing any scientific
 setting. R2 is complete and must not be rerun.
 
-### Task 002C-R3–R5 end-to-end components-v2 execution (planned)
+### Task 002C-R3–R5 end-to-end components-v2 execution (implemented; awaiting combined review)
 
 `docs/tasks/002c_r3_r5_end_to_end_v2_execution.md` combines full direct-edge
 discovery, components-v2 closure, deterministic whole-component assignment,
@@ -387,3 +387,33 @@ sanitation, and a closed resume contract. The package now requires one
 implementation/package review. Its internal stages advance automatically only
 after their frozen prerequisites pass; no separate human handoff is required
 between them.
+
+#### Implementation (`src/rbpbench/splits/r3r5/`)
+
+| Module | Role |
+|---|---|
+| `contract.py` + `configs/splits/sequence_partitions_002c_v2.toml` | frozen contract; production loader refuses any drift |
+| `supervise.py` | one supervised MMseqs2 child per process group; typed stops |
+| `fullsearch.py` | E1–E3 same-database reconciliation and normalized edges |
+| `components.py` | E4 closure with direct, exact/RC, protected-v1 and audit-discovered relations kept separate; BFS verifier |
+| `assign.py` | E5 fixed-protein-order wrapper around the accepted assignment |
+| `exact_rc_audit.py` | E6 independent exact/RC implementation |
+| `audit.py` | E7 partition FASTA/`.lookup`/`convert2fasta` reconciliation, positive controls, directed violations |
+| `engine.py` | E0–E8 stages, single remediation cycle, final verification |
+| `state.py`, `stops.py` | generations, atomic records, fingerprints, cleanup receipts, attempts, resume table |
+| `returns.py` | role-aware sanitation, numbered linked returns, series verifier |
+| `bundle.py`, `scripts/build_002c_r3r5_darwin_bundle.py` | computed source closure, immutable bundle, archive |
+| `darwin.py`, `hpc/darwin/002c_r3r5/` | launcher (execute/resume/verify), Slurm scripts incl. dependency chain |
+
+Tests (no real data):
+
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_splits_r3r5_contract tests.test_splits_r3r5_units \
+  tests.test_splits_r3r5_state_supervise tests.test_splits_r3r5_returns_bundle \
+  tests.test_splits_r3r5_scripts tests.test_splits_r3r5_e2e
+```
+
+`tests.test_splits_r3r5_real_binary` runs only with `RBP_R3R5_MMSEQS_BIN`
+pointing at the pinned binary on a host with at least ~10 GiB RAM (the frozen
+`-k 15` nucleotide prefilter needs ~9.3 GiB even for tiny inputs); it is to be
+run once on Darwin during the combined implementation/package review.

@@ -13,13 +13,18 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from rbpbench.splits.r3r5.bundle import source_closure  # noqa: E402
 
 MANIFEST = "SMOKE_PACKAGE_MANIFEST.json"
 SIDECAR = MANIFEST + ".sha256"
 RUNTIME_DIRS = {"runtime", "return"}
-COPY_DIRS = ("src/rbpbench", "hpc/darwin/002c_r3r5", "hpc/darwin/002c_r3r5_smoke")
+COPY_DIRS = ("hpc/darwin/002c_r3r5", "hpc/darwin/002c_r3r5_smoke")
 COPY_FILES = (
     "tests/r3r5_support.py",
     "tests/test_splits_r3r5_real_binary.py",
@@ -101,6 +106,11 @@ def build(repo: Path, destination: Path) -> dict:
     try:
         for rel in COPY_DIRS:
             copy_tree(repo / rel, destination / rel)
+        closure = source_closure(repo / "src")
+        for rel in closure:
+            target = destination / "src" / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(repo / "src" / rel, target)
         for rel in COPY_FILES:
             target = destination / rel
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +122,7 @@ def build(repo: Path, destination: Path) -> dict:
             "source_commit": commit,
             "purpose": "two synthetic real-MMseqs2 tests only; no real dataset and no R3-R5 production execution",
             "environment_policy": "verify the accepted Darwin R2 environment; never install or modify it",
+            "source_closure": closure,
             "entries": inventory(destination),
         }
         manifest_path = destination / MANIFEST

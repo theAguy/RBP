@@ -1,7 +1,10 @@
 # Task 002 — Sequence-grouped train/validation/test partitions
 
-**Status:** checkpoints 002A and 002B accepted; Task 002C partition assignment
-and independent cross-partition audits are next
+**Status:** complete. Checkpoints 002A and 002B are retained as construction
+history; Task 002C's historical v1 assignment was rejected, and the corrective
+components-v2 split is accepted after zero violations in all prespecified
+independent audits. See
+`docs/reviews/002c_final_sequence_partition_acceptance.md`.
 **Phase:** 2
 **Branch after Task 001 merge:** `issue-002-sequence-partitions`
 

@@ -1,8 +1,11 @@
 # Task 002C — Component-level partition assignment and leakage audit
 
-**Status:** checkpoints 002C-1, 002C-2A, 002C-2B, and 002C-2C accepted; the
-deterministic component assignment passes independent exact/RC audits and is
-frozen pending Task 002C-3 fresh MMseqs2 cross-partition audits
+**Status:** complete and accepted. The historical v1 assignment was rejected
+after a direct audit found cross-partition hits. The corrective components-v2
+R3-R5 workflow rebuilt the relation, reassigned whole components, passed the
+independent exact/RC checks and all 18 fresh directed MMseqs2 audits, and froze
+the final membership. See
+`docs/reviews/002c_final_sequence_partition_acceptance.md`.
 **Parent:** `docs/tasks/002_sequence_clustered_partitions.md`
 **Branch:** `issue-002-sequence-partitions`
 

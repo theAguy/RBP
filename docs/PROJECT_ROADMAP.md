@@ -3,15 +3,13 @@
 **Purpose:** provide one plain-language, end-to-end source of truth for the
 investigation and comparison of the former teammate's 122-protein RBP model.
 
-**Last updated:** 2026-10-25
-**Current stage:** Task 002C-R2 is complete. The single restart-safe R3-R5
-components-v2 workflow is implemented and synthetic/fake-tool tested
-(committed locally). The combined implementation/package review, including one
-run of the real-binary smoke suite on Darwin, is next; real execution is not yet
-authorized.
+**Last updated:** 2026-10-26
+**Current stage:** Task 002C is complete. The components-v2 split was executed
+on Darwin, passed exact/reverse-complement checks and all 18 fresh directed
+MMseqs2 audits, and is locked for later baselines and models.
 
-**Model comparison status:** not started; the benchmark split must be frozen
-first
+**Model comparison status:** not started; the benchmark split is now frozen
+and Phase 3 descriptive analyses and simple baselines may begin
 
 Detailed task specifications, reviews, handoffs, and manifests remain in their
 existing directories for reproducibility. This document explains how those
@@ -65,8 +63,8 @@ negatives.
 | 0. Repository and data audit | Freeze inputs, hashes, schemas, and label meanings | Complete |
 | 1. Coordinate feasibility | Test whether genomic coordinates can be recovered safely | Deferred; not required for the core comparison |
 | 2A. Sequence decoding | Convert bit-encoded sequences to validated nucleotide strings | Complete |
-| 2B. Similarity grouping | Identify related sequences at 500, 251, and 101 nt | v1 preserved; insufficient for the direct audit |
-| 2C. Partition construction | Assign intact groups to train/validation/test and audit leakage | v1 rejected; R2 complete; end-to-end components-v2 execution planned |
+| 2B. Similarity grouping | Identify related sequences at 500, 251, and 101 nt | Complete; v1 retained as historical evidence and v2 direct edges accepted |
+| 2C. Partition construction | Assign intact groups to train/validation/test and audit leakage | Complete; components-v2 split frozen after all acceptance audits passed |
 | 3. Simple baselines | Establish how far trivial sequence properties can predict binding | Not started |
 | 4. Development pilot | Verify model implementations and compute requirements on eight proteins | Not started |
 | 5. Controlled comparison | Compare architectures under common data, windows, and loss | Not started |
@@ -331,9 +329,9 @@ This split issue is distinct from the submitted loss's unknown-label penalty.
 The loss also pushes unknown entries toward zero during training; that is a
 separate modeling choice that will be isolated later with controlled ablations.
 
-## 12. Remaining Phase 2C leakage audits
+## 12. Phase 2C leakage audits and final result
 
-After assignment is accepted:
+The audit sequence below was completed before the final split was accepted:
 
 ### 12.1 Former-split diagnostic
 
@@ -393,12 +391,16 @@ explicit exceptions, documented in
 `docs/reviews/002c_r2_darwin_convergence_acceptance.md`; no scientific setting
 changed. The GPU is not used for this MMseqs2 workload.
 
-### 12.4 Freeze the final split
+### 12.4 Final components-v2 split — accepted
 
-Only after every gate passes, publish the deterministic membership containing
-`sample_id`, `component_id`, and `partition`, plus a sanitized manifest of all
-inputs, counts, diagnostics, hashes, commands, and resources. No model result
-may influence this split.
+Every gate passed in the terminal Darwin production return. The final split
+contains 169,699 components and 361,180 rows: 246,017 train, 57,565 validation,
+and 57,598 test. All 18 fresh directed MMseqs2 audits and all independent
+exact/reverse-complement checks found zero cross-partition violations. The
+membership hash is
+`ca527da4f0c0615bcb9d31c6fc705523238e8fb8f4751473ccc2af3ee0aecddb`.
+See `docs/reviews/002c_final_sequence_partition_acceptance.md` for the formal
+closure and `docs/SEQUENCE_SPLIT_AUDIT_EXPLAINER.md` for the detailed account.
 
 ## 13. Phase 3 — simple baselines
 
@@ -491,14 +493,12 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Review the implementation and immutable package once as a combined unit,
-   running the real-binary smoke suite once on a Darwin compute allocation and
-   reconciling the R2 return-manifest hash recorded in the review request.
-2. Run full direct-edge discovery, protected-v1 components v2, deterministic assignment,
-   exact/RC audits, and all 18 fresh directed audits in that package.
-3. Freeze the final partition only when every giant-component, balance,
-   floor, reproducibility, and cross-partition zero-hit gate passes.
-4. Begin simple baselines immediately after that split is locked.
+1. Produce the descriptive split/component figures and per-protein balance
+   tables from the locked evidence.
+2. Implement and run simple training-only baselines on the locked split.
+3. Validate the former model and three core competitor implementations on the
+   eight-protein development panel without opening the locked test results.
+4. Freeze development choices, then run the full controlled comparison.
 
 ## 19. Claims we can and cannot make today
 
@@ -508,17 +508,18 @@ We can say:
 - the former notebook interpreted unsigned positives correctly;
 - many rows have sequence-similar partners, so leakage-safe grouping is
   justified;
-- no giant component appears under the historical v1 relation, while the
-  stronger components-v2 giant-component gate remains to be run; and
-- the accepted similarity evidence is reproducible and hash-bound.
+- no giant component appears under the final components-v2 relation;
+- the final assignment is deterministic and hash-bound; and
+- all 18 fresh directed searches found zero qualifying cross-partition hits
+  under the protected 500/251/101-nt rules.
 
 We can now also say:
 
 - the former row-level fold is not leakage-safe under the frozen sequence
   relation; and
 - the rejected v1 assignment nevertheless contains no exact/reverse-complement
-  leakage at the protected widths; its near-similarity leakage is why v2 is
-  required.
+  leakage at the protected widths; its near-similarity leakage is why v2 was
+  required and is now the accepted split.
 
 We still cannot say:
 

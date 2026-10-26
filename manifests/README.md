@@ -27,6 +27,12 @@ measurements. The large decoded artifacts remain under the Git-ignored
 run. It contains the native MMseqs2 `18.8cc5c` build already accepted during
 Task 002B after the Intel build failed on Apple Silicon.
 
+`sequence_partitions_002c_v2.json` is the small tracked closure record for the
+final leakage-audited benchmark split. It binds the successful Darwin return,
+final membership hash, component/partition counts, label-floor and balance
+disclosures, and the zero-violation audit summary. The large membership and
+edge artifacts remain under the Git-ignored `artifacts/` tree.
+
 Future files include coordinate mappings, eligibility summaries, and frozen fold
 assignments.
 

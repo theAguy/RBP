@@ -1,5 +1,10 @@
 # Task 002C-R3–R5 — End-to-end components-v2 split execution
 
+**Status:** complete and accepted from the terminal SUCCESS return finalized
+2026-10-26. See
+`docs/reviews/002c_final_sequence_partition_acceptance.md` and
+`manifests/sequence_partitions_002c_v2.json`.
+
 ## Objective
 
 Create and freeze the final leakage-safe 70/15/15 benchmark split in one

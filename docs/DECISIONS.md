@@ -331,3 +331,30 @@
   the current Mac fails the unchanged live-memory gate.
 - Only synthetic-only checkpoint 002C-1 is authorized next. No real partition
   may be created until its implementation is independently reviewed.
+
+## 2026-10-26 — Close Task 002C and freeze components-v2 membership
+
+- The historical v1 assignment is permanently diagnostic-only. Its first
+  fresh 500-nt train-to-validation audit found 4,792 qualifying pairs, proving
+  that v1 cluster co-membership was not a complete closure of the frozen
+  direct-search relation.
+- Components v2 are accepted from the terminal Darwin SUCCESS return. They
+  union full direct-search edges at 500/251/101 nt, independent exact/reverse-
+  complement edges, and protected v1 co-membership. The result contains
+  169,699 components over all 361,180 rows; it splits zero v1 components.
+- The final assignment contains 246,017 train, 57,565 validation, and 57,598
+  test rows. Every component is intact, every validation/test protein class
+  exceeds the 30-count floor, and a reordered repeat is byte-identical.
+- Independent exact/reverse-complement checks and all 18 fresh directed
+  MMseqs2 audits report zero cross-partition violations. The final membership
+  SHA-256 is
+  `ca527da4f0c0615bcb9d31c6fc705523238e8fb8f4751473ccc2af3ee0aecddb`.
+- Per-protein imbalance above three percentage points remains an explicit
+  disclosure: 86/122 proteins have at least one flagged class/partition cell.
+  The split is not reopened or components divided to optimize this after
+  acceptance. All later analyses must report actual per-protein counts and
+  uncertainty.
+- Task 002C trained no model. The locked split now authorizes Phase 3
+  descriptive analyses and simple baselines. The detailed explanation is
+  `docs/SEQUENCE_SPLIT_AUDIT_EXPLAINER.md`; the closure record is
+  `manifests/sequence_partitions_002c_v2.json`.

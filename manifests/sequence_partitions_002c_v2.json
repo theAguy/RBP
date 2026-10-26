@@ -1,0 +1,89 @@
+{
+  "schema_version": "sequence_partitions_002c_v2_closure_v1",
+  "status": "accepted",
+  "accepted_at_utc": "2026-10-26T03:13:23Z",
+  "checkpoint": "002C-R3R5",
+  "source_commit": "185afbc38a5116632761239e5730974c1bb13836",
+  "production_return": {
+    "path": "artifacts/teammate_run_results/002c_r3r5_darwin_production_20261026/RBP_002C_R3R5_RETURN_001_SUCCESS_20261026T031324Z_newton8.zip",
+    "byte_size": 65438907,
+    "sha256": "ee781d1266b0b589dea7b05857eadd2a60fc311bc0a60d4d6c5b69854f210091",
+    "status": "SUCCESS",
+    "terminal": true,
+    "return_count": 1
+  },
+  "tool": {
+    "name": "MMseqs2",
+    "version": "18.8cc5c",
+    "conda_build": "hd6d6fdc_0",
+    "binary_sha256": "d6d1bf1b50c095eb0cb66f685a7fb1d9b8b69497e1e88416fd48f28e313cc773"
+  },
+  "universe": {
+    "row_count": 361180,
+    "component_count": 169699,
+    "singleton_count": 118943,
+    "largest_component_size": 708,
+    "largest_component_fraction": 0.001960241430865496,
+    "top20_component_fraction": 0.018085165291544383
+  },
+  "direct_edges": {
+    "500": 943435,
+    "251": 217571,
+    "101": 102759
+  },
+  "v1_comparison": {
+    "v1_component_count": 173465,
+    "v1_components_merged_by_v2": 6406,
+    "v2_components_formed_by_merging_v1": 2640,
+    "rows_in_merged_v1_components": 54610,
+    "v1_components_split_by_v2": 0,
+    "v1_split_component_ids": []
+  },
+  "partition_row_counts": {
+    "train": 246017,
+    "validation": 57565,
+    "test": 57598
+  },
+  "partition_fractions": {
+    "train": 0.6811479040921424,
+    "validation": 0.15938036436126032,
+    "test": 0.15947173154659727
+  },
+  "label_floor": {
+    "required_known_positive_and_negative_per_evaluation_partition": 30,
+    "passed": true,
+    "minimum_known_positive": {
+      "count": 97,
+      "protein_id": 93,
+      "partition": "test"
+    },
+    "minimum_known_negative": {
+      "count": 80,
+      "protein_id": 53,
+      "partition": "test"
+    }
+  },
+  "balance_disclosure": {
+    "threshold_percentage_points": 3.0,
+    "proteins_flagged_any_partition": 86,
+    "cells_flagged_any_partition": 218,
+    "proteins_flagged_validation_or_test": 54,
+    "cells_flagged_validation_or_test": 117
+  },
+  "audit": {
+    "independent_exact_rc_cross_partition_violations": 0,
+    "directed_mmseqs_searches_completed": 18,
+    "directed_mmseqs_cross_partition_violations": 0,
+    "audit_discovered_edge_count": 0,
+    "remediation_cycle_used": false,
+    "independent_bfs_component_count": 169699,
+    "independent_bfs_matches_production": true
+  },
+  "reproducibility": {
+    "reordered_component_construction_identical": true,
+    "reordered_assignment_identical": true,
+    "final_membership_sha256": "ca527da4f0c0615bcb9d31c6fc705523238e8fb8f4751473ccc2af3ee0aecddb"
+  },
+  "review": "docs/reviews/002c_final_sequence_partition_acceptance.md",
+  "explainer": "docs/SEQUENCE_SPLIT_AUDIT_EXPLAINER.md"
+}

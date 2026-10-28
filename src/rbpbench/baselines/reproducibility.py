@@ -36,9 +36,12 @@ def compare_pilot_generations(primary: Path, repeat: Path) -> dict:
     exact_summary_fields = (
         "schema_version", "status", "test_accessed", "test_labels_parsed",
         "test_features_built", "protein_ids", "widths", "selected_c",
-        "metric_row_count", "prediction_row_count",
+        "metric_row_count", "prediction_row_count", "development_sequence_count",
+        "feature_storage_bytes", "peak_width_feature_storage_bytes",
     )
     for field in exact_summary_fields:
+        if field not in primary_summary or field not in repeat_summary:
+            raise ReproducibilityError(f"required summary field is missing: {field}")
         _require_equal(primary_summary.get(field), repeat_summary.get(field), context=f"summary.{field}")
 
     primary_selections = primary_summary["selection_evidence"]

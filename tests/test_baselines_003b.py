@@ -284,6 +284,9 @@ class PilotPipelineTests(unittest.TestCase):
             self.assertFalse(summary["test_accessed"])
             self.assertEqual(summary["test_labels_parsed"], 0)
             self.assertEqual(len(summary["selected_c"]), 9)
+            self.assertEqual(summary["development_sequence_count"], 8)
+            self.assertGreater(summary["peak_width_feature_storage_bytes"], 0)
+            self.assertEqual(set(summary["feature_storage_bytes"]), {"500", "251", "101"})
             metrics = json.loads((second / "metrics.json").read_text())
             self.assertEqual(len(metrics), 8 * 4 * 3)
             prevalence = [row for row in metrics if row["baseline"] == "prevalence"]
@@ -328,6 +331,9 @@ class ReproducibilityTests(unittest.TestCase):
             "protein_ids": [33], "widths": [500], "selected_c": {"3mer_500": selected_c},
             "selection_evidence": {"3mer_500": {"selected_c": selected_c, "evidence": evidence}},
             "metric_row_count": 1, "prediction_row_count": 1,
+            "development_sequence_count": 2,
+            "feature_storage_bytes": {"500": {"gc": 16, "3mer": 32, "6mer": 64, "total": 112}},
+            "peak_width_feature_storage_bytes": 112,
         }
         metric = [{
             "protein_id": 33, "width": 500, "baseline": "3mer", "c": selected_c,

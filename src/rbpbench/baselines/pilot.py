@@ -97,12 +97,21 @@ def run_pilot(
     metrics_rows: list[dict] = []
     prediction_rows: list[dict] = []
     selections: dict[str, dict] = {}
+    feature_storage_bytes: dict[str, dict[str, int]] = {}
     for width in config.windows:
         with fasta_by_width[width].open() as handle:
             sequence_by_id = read_fasta_subset(handle, wanted_ids=wanted, width=width)
         sequences = [sequence_by_id[sample_id] for sample_id in ordered_ids]
         gc_all = gc_matrix(sequences)
         matrices = {"gc": gc_all, "3mer": kmer_matrix(sequences, 3), "6mer": kmer_matrix(sequences, 6)}
+        feature_storage_bytes[str(width)] = {}
+        for name, matrix in matrices.items():
+            if hasattr(matrix, "indptr"):
+                byte_size = int(matrix.data.nbytes + matrix.indices.nbytes + matrix.indptr.nbytes)
+            else:
+                byte_size = int(matrix.nbytes)
+            feature_storage_bytes[str(width)][name] = byte_size
+        feature_storage_bytes[str(width)]["total"] = sum(feature_storage_bytes[str(width)].values())
 
         for protein_id in config.development_protein_ids:
             train_ids = labels.sample_ids.get((protein_id, "train"), [])
@@ -206,6 +215,9 @@ def run_pilot(
         "selected_c": {key: value["selected_c"] for key, value in serializable_selections.items()},
         "selection_evidence": serializable_selections,
         "metric_row_count": len(metrics_rows), "prediction_row_count": len(prediction_rows),
+        "development_sequence_count": len(ordered_ids),
+        "feature_storage_bytes": feature_storage_bytes,
+        "peak_width_feature_storage_bytes": max(row["total"] for row in feature_storage_bytes.values()),
     }
     with Generation(output_root, "pilot") as generation:
         (generation.candidate / "summary.json").write_bytes(canonical_json(summary))

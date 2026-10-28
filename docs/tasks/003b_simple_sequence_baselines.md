@@ -1,6 +1,7 @@
 # Task 003B — Simple sequence baselines on the locked split
 
-**Status:** planning approved with bounded corrections; implementation may begin
+**Status:** checkpoint 003B-1 synthetic implementation complete; 003B-2 real
+validation pilot not started
 
 **Phase:** 3B, first predictive experiment after Task 003A
 

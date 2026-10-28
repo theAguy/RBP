@@ -41,6 +41,11 @@ tables, PDFs and high-resolution figures remain under the Git-ignored
 `artifacts/` tree; the short Markdown report and four supervisor-facing SVG
 figures are versioned under `docs/reports/`.
 
+`task003b_environment_003b1.{json,lock.txt}` records the isolated Python 3.12
+environment for the simple prevalence, GC, 3-mer and sparse 6-mer baselines.
+The environment is created locally under `.venv-003b-baselines/`, which remains
+Git-ignored.
+
 Future files include coordinate mappings, eligibility summaries, and frozen fold
 assignments.
 

@@ -1,0 +1,19 @@
+{
+  "environment_name": ".venv-003b-baselines",
+  "execution_scope": "Task 003B simple baselines",
+  "packages": {
+    "cloudpickle": "3.1.2",
+    "joblib": "1.6.0",
+    "numpy": "2.0.2",
+    "scikit-learn": "1.6.1",
+    "scipy": "1.16.1",
+    "threadpoolctl": "3.7.0"
+  },
+  "platform": "macOS-14.4.1-x86_64-i386-64bit",
+  "python": "3.12.13",
+  "recreate": [
+    "uv venv .venv-003b-baselines --python /Users/guyassa/.local/bin/python3.12",
+    "uv pip install --python .venv-003b-baselines/bin/python -r manifests/task003b_environment_003b1.lock.txt"
+  ],
+  "schema_version": "task003b_environment_v1"
+}

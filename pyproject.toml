@@ -16,6 +16,7 @@ rbp-audit = "rbpbench.data.audit:main"
 rbp-coordinates = "rbpbench.coordinates.runner:main"
 rbp-splits = "rbpbench.splits.runner:main"
 rbp-splits-002c = "rbpbench.splits.runner_002c:main"
+rbp-split-validation-report = "rbpbench.analysis.task003a:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

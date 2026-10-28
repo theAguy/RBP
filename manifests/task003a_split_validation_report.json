@@ -1,0 +1,182 @@
+{
+  "boundary": {
+    "mmseqs2_run": false,
+    "model_accessed": false,
+    "network_accessed": false,
+    "predictions_accessed": false,
+    "split_modified": false
+  },
+  "inputs": {
+    "closure_manifest": {
+      "byte_size": 2868,
+      "sha256": "b6f6f16fab4e6afc23c16a8dc5b3476130719d579f637cd3cf18002cc7fb7419"
+    },
+    "csv": {
+      "byte_size": 724425277,
+      "sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945"
+    },
+    "dataset_audit": {
+      "byte_size": 27550,
+      "sha256": "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"
+    },
+    "decode_manifest": {
+      "byte_size": 8957,
+      "sha256": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3"
+    },
+    "fasta_101": {
+      "byte_size": 41063410,
+      "sha256": "60be2b211923d303570974fced0f85e546ceb4b5b5182d2cd0a9f72f483b08b1"
+    },
+    "fasta_251": {
+      "byte_size": 95240410,
+      "sha256": "f4f436ef2eb0f17409c5145507991b688e49965a09c346ddd380942a5b1d5b5c"
+    },
+    "fasta_500": {
+      "byte_size": 185174230,
+      "sha256": "0849d4f8aceaed37c3dc7fec69056f38ae344338aa4adf321a3e11c4a72df0b0"
+    },
+    "non_mmseqs_manifest": {
+      "byte_size": 18109,
+      "sha256": "991a43a61fcdcbfa0aa5734fd8bf7801b029cc34a02ad1d3b400b1c5773d31e8"
+    },
+    "proteins": {
+      "byte_size": 1143,
+      "sha256": "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+    },
+    "v1_assignment_manifest": {
+      "byte_size": 10576,
+      "sha256": "28aa6687fc335ffcba36eb441ebf2d55ae25565349fc8dfcb48a29be566267f6"
+    },
+    "v1_audit_return": {
+      "byte_size": 433289,
+      "sha256": "d84b7b1125e9bf8ad8e60aba717dbdf119d53c1c5ada7465c3f42a99adb610cf"
+    },
+    "v1_membership": {
+      "byte_size": 14578797,
+      "sha256": "6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692"
+    },
+    "v1_report": {
+      "byte_size": 13036977,
+      "sha256": "b8b5872a4cc5061c562de871ec4500876fcdb72afcab069b21ab2bb44cb3e186"
+    }
+  },
+  "outputs": {
+    "provenance_json": {
+      "byte_size": 11215,
+      "sha256": "ddabc6ccdb067e671c9e23a6f3608e8d4bc738623777df316a0991250ad16a23"
+    },
+    "results_json": {
+      "byte_size": 5430,
+      "sha256": "45f240c3d7c3113005e3eba42838d1e1088598d267c07d83ab5d0b1e7922d1a0"
+    },
+    "supervisor_report_pdf": {
+      "byte_size": 445126,
+      "sha256": "046350dc0ddfa317e7a9dcf741f99dc8fee2c76a85e278773b95151203d1a76c"
+    },
+    "tracked_report_md": {
+      "byte_size": 5407,
+      "sha256": "8d30969be5d6a3dd14f02d5809bed82b569788107b05e38b41e350977f60b170"
+    },
+    "tracked_svg_figures": [
+      {
+        "byte_size": 6157,
+        "path": "docs/reports/figures/003a/figure_01_split_transition.svg",
+        "sha256": "58a2f0e76679426037e389cde65d79e5b731b30d1ac84a7d07cd86fcd8c19af4"
+      },
+      {
+        "byte_size": 16830,
+        "path": "docs/reports/figures/003a/figure_02_leakage_evidence.svg",
+        "sha256": "91e62834ba4508582581bccf328f3abc9d3665753be3351640e7d7ee0511f9ea"
+      },
+      {
+        "byte_size": 12803,
+        "path": "docs/reports/figures/003a/figure_03_component_structure.svg",
+        "sha256": "ee6bf9da896c940991d929414bbab3ac415c9084a1e4f9f11932659f204daf22"
+      },
+      {
+        "byte_size": 7707,
+        "path": "docs/reports/figures/003a/figure_04_width_edges.svg",
+        "sha256": "bf3ee91565fe1dd357623a1e50f48b407497612d5090b3636330fc9846ee34c1"
+      },
+      {
+        "byte_size": 4629,
+        "path": "docs/reports/figures/003a/figure_05_partition_integrity.svg",
+        "sha256": "0af6af5e095bb74647697d47ea4fdb4e5a3c936e6cbaf2c0ef71fb683908dadc"
+      },
+      {
+        "byte_size": 387088,
+        "path": "docs/reports/figures/003a/figure_06_protein_balance.svg",
+        "sha256": "b8c02e4c1073f70691fdd01dd957c01a4db332f2d5c7c038519863513ecf1a64"
+      },
+      {
+        "byte_size": 87998,
+        "path": "docs/reports/figures/003a/figure_07_evaluation_support.svg",
+        "sha256": "674e2c4ea639542c5b529b13f1c0426463c25ab1065a5c538ac5a56c84db50c6"
+      },
+      {
+        "byte_size": 24559,
+        "path": "docs/reports/figures/003a/figure_08_sequence_composition.svg",
+        "sha256": "d124a632507b2c6065c2fe1d76341c8b5b42b656c7335daac2f84e8bf11f4a0f"
+      }
+    ]
+  },
+  "results": {
+    "audit_cross_partition_hits": 0,
+    "audit_searches_completed": 18,
+    "balance": {
+      "cells_flagged_any_partition": 218,
+      "cells_flagged_validation_or_test": 117,
+      "minimum_known_negative": {
+        "count": 80,
+        "partition": "test",
+        "protein_id": 53
+      },
+      "minimum_known_positive": {
+        "count": 97,
+        "partition": "test",
+        "protein_id": 93
+      },
+      "proteins_flagged_any_partition": 86,
+      "proteins_flagged_validation_or_test": 54,
+      "threshold_percentage_points": 3.0
+    },
+    "component_integrity": {
+      "component_count": 169699,
+      "partition_rows": {
+        "test": 57598,
+        "train": 246017,
+        "validation": 57565
+      },
+      "split_component_count": 0
+    },
+    "composition_max_abs_smd": 0.10122539783339045,
+    "former_fold_v1": {
+      "components_represented_in_holdout": 51853,
+      "crossing_component_count": 26765,
+      "crossing_component_rate_over_holdout_components": 0.5161707133627755,
+      "crossing_holdout_row_count": 45937,
+      "crossing_holdout_row_rate": 0.6359294534581096,
+      "crossing_train_row_count": 120760,
+      "crossing_train_row_rate": 0.4179356553519021,
+      "holdout_count": 72236,
+      "total_components": 173465,
+      "train_count": 288944
+    },
+    "former_fold_v2": {
+      "components_represented_in_holdout": 50156,
+      "crossing_component_count": 25307,
+      "crossing_component_rate_over_holdout_components": 0.504565754844884,
+      "crossing_holdout_row_count": 46209,
+      "crossing_holdout_row_rate": 0.6396948889750264,
+      "crossing_train_row_count": 125772,
+      "crossing_train_row_rate": 0.435281577052993,
+      "holdout_count": 72236,
+      "total_components": 169699,
+      "train_count": 288944
+    }
+  },
+  "schema_version": "task003a_split_validation_report_v1",
+  "source_generation": "artifacts/task003a_split_validation/generations/task003a_0c89d75feec7",
+  "status": "accepted_candidate_for_final_review",
+  "task": "003A"
+}

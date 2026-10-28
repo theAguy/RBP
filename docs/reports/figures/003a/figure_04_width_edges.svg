@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<svg width="1000" height="610" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 610" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="1000" height="610"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-610)" style="clip-path: url(#clip)">
+		<g transform="">
+			<text x="28" y="576" style="font-family: Helvetica-Bold; font-size: 17px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,1152) scale(1,-1)">Figure 4. Protected sequence relationships by input width</text>
+			<text x="28" y="558" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,1116) scale(1,-1)">Direct-edge counts and exact edge-set intersections; no order-dependent union count is shown</text>
+			<rect x="85" y="250" width="150" height="230.0" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;"/>
+			<text x="145.55" y="227" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,454) scale(1,-1)">500 nt</text>
+			<text x="141.93" y="490.0" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,980) scale(1,-1)">943,435</text>
+			<rect x="275" y="250" width="150" height="53.0416297890157" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,62%,0%); fill-rule: evenodd;"/>
+			<text x="335.55" y="227" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,454) scale(1,-1)">251 nt</text>
+			<text x="331.93" y="313.0416297890157" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,626) scale(1,-1)">217,571</text>
+			<rect x="465" y="250" width="150" height="25.051614578640795" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,61%,45%); fill-rule: evenodd;"/>
+			<text x="525.55" y="227" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,454) scale(1,-1)">101 nt</text>
+			<text x="521.93" y="285.0516145786408" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,570) scale(1,-1)">102,759</text>
+			<text x="264.145" y="210" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,420) scale(1,-1)">Qualifying direct edges</text>
+			<text x="665" y="485" style="font-family: Helvetica-Bold; font-size: 11px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,970) scale(1,-1)">Exact intersection categories</text>
+			<text x="599.76" y="449" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,898) scale(1,-1)">500 only</text>
+			<rect x="645" y="445" width="265.0" height="13" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(33%,70%,91%); fill-rule: evenodd;"/>
+			<text x="920" y="447" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,894) scale(1,-1)">726,860</text>
+			<text x="593.528" y="412" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,824) scale(1,-1)">500 &amp; 251</text>
+			<rect x="645" y="408" width="42.6622802190243" height="13" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(33%,70%,91%); fill-rule: evenodd;"/>
+			<text x="920" y="410" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,820) scale(1,-1)">117,017</text>
+			<text x="601.544" y="375" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,750) scale(1,-1)">all three</text>
+			<rect x="645" y="371" width="36.216107641086296" height="13" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(33%,70%,91%); fill-rule: evenodd;"/>
+			<text x="920" y="373" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,746) scale(1,-1)">99,336</text>
+			<text x="599.76" y="338" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,676) scale(1,-1)">101 only</text>
+			<rect x="645" y="334" width="0.9920273505214254" height="13" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(33%,70%,91%); fill-rule: evenodd;"/>
+			<text x="920" y="336" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,672) scale(1,-1)">2,721</text>
+			<text x="599.76" y="301" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,602) scale(1,-1)">251 only</text>
+			<rect x="645" y="297" width="0.2690614423685247" height="13" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(33%,70%,91%); fill-rule: evenodd;"/>
+			<text x="920" y="299" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,598) scale(1,-1)">738</text>
+			<text x="593.528" y="264" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,528) scale(1,-1)">251 &amp; 101</text>
+			<rect x="645" y="260" width="0.17499931210966224" height="13" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(33%,70%,91%); fill-rule: evenodd;"/>
+			<text x="920" y="262" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,524) scale(1,-1)">480</text>
+			<text x="593.528" y="227" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,454) scale(1,-1)">500 &amp; 101</text>
+			<rect x="645" y="223" width="0.0809371818506861" height="13" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(33%,70%,91%); fill-rule: evenodd;"/>
+			<text x="920" y="225" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,450) scale(1,-1)">222</text>
+			<text x="75" y="140" style="font-family: Helvetica-Bold; font-size: 9px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,280) scale(1,-1)">Independent exact/reverse-complement relations: 2 pair(s)</text>
+			<text x="75" y="116" style="font-family: Helvetica-Bold; font-size: 9px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,232) scale(1,-1)">v1 protection: 6,406 v1 components merged into 2,640 v2 components</text>
+			<text x="75" y="96" style="font-family: Helvetica; font-size: 9px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,192) scale(1,-1)">Rows covered by those v1→v2 merges: 54,610</text>
+			<text x="75" y="64" style="font-family: Helvetica; font-size: 8px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,128) scale(1,-1)">The stored protected-v1 star-join count is intentionally omitted: it is an implementation artifact (members−1), not a count of biological or</text>
+			<text x="75" y="54.0" style="font-family: Helvetica; font-size: 8px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,108) scale(1,-1)">direct-similarity pairs.</text>
+		</g>
+	</g>
+</svg>

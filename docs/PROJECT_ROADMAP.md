@@ -407,6 +407,23 @@ closure and `docs/SEQUENCE_SPLIT_AUDIT_EXPLAINER.md` for the detailed account.
 
 ## 13. Phase 3 — simple baselines
 
+### 13.1 Supervisor split-validation evidence — complete, final review pending
+
+Task 003A converted the accepted Task 002C evidence into eight versioned
+figures, machine-readable tables, and a ten-page supervisor report without
+opening predictions or training any model. It independently reproduced the
+former notebook's fold, reconciled the historical v1 leakage result, and
+recomputed the same fold against final components v2. The final package also
+revalidated zero split components, all 18 directed audits, exact/reverse-
+complement containment, per-protein label support, and simple sequence-
+composition balance. See `docs/reports/003a_supervisor_split_validation.md`
+and `manifests/task003a_split_validation_report.json`.
+
+The largest composition effect was a borderline normalized-entropy difference
+at 500 nt (absolute SMD 0.101, only 0.001 above the prespecified reporting
+boundary); the largest KS D was 0.057. These descriptive checks do not alter
+the accepted split.
+
 Before complex neural networks, establish inexpensive reference points:
 
 1. random or prevalence-only prediction;
@@ -496,8 +513,7 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Produce the descriptive split/component figures and per-protein balance
-   tables from the locked evidence.
+1. Complete the independent final review of the Task 003A supervisor report.
 2. Implement and run simple training-only baselines on the locked split.
 3. Validate the former model and three core competitor implementations on the
    eight-protein development panel without opening the locked test results.
@@ -520,9 +536,15 @@ We can now also say:
 
 - the former row-level fold is not leakage-safe under the frozen sequence
   relation; and
+- when evaluated against final components v2, 46,209/72,236 former holdout
+  rows (63.969%) and 125,772/288,944 former training rows (43.528%) belong to
+  components crossing that old boundary;
 - the rejected v1 assignment nevertheless contains no exact/reverse-complement
   leakage at the protected widths; its near-similarity leakage is why v2 was
-  required and is now the accepted split.
+  required and is now the accepted split; and
+- the accepted partitions have broadly similar GC, normalized-entropy, and
+  homopolymer distributions, with one borderline prespecified SMD flag that is
+  disclosed rather than used to modify the split.
 
 We still cannot say:
 

@@ -1,0 +1,6 @@
+# Task 003A report environment (Python 3.11+)
+numpy==2.3.5
+pypdf==6.10.0
+reportlab==4.4.9
+
+# System executable: Poppler pdftoppm (300-dpi PNG rendering)

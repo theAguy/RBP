@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<svg width="900" height="540" preserveAspectRatio="xMinYMin meet" viewBox="0 0 900 540" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="900" height="540"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-540)" style="clip-path: url(#clip)">
+		<g transform="">
+			<text x="28" y="506" style="font-family: Helvetica-Bold; font-size: 17px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,1012) scale(1,-1)">Figure 5. Final partition sizes and component integrity</text>
+			<text x="28" y="488" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,976) scale(1,-1)">Targets guide assignment; whole components are never split to force exact percentages</text>
+			<rect x="120" y="385" width="580" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,92%,94%); fill-rule: evenodd;"/>
+			<rect x="120" y="385" width="395.0657843734426" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;"/>
+			<path d="M 526,377 L 526,421 Z" style="stroke: rgb(13%,13%,13%); stroke-linecap: butt; stroke-width: 2;"/>
+			<text x="80.55" y="393" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,786) scale(1,-1)">Train</text>
+			<text x="712" y="393" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,786) scale(1,-1)">246,017 rows  (68.11%)</text>
+			<text x="509.074" y="427" style="font-family: Helvetica; font-size: 7px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,854) scale(1,-1)">target 70%</text>
+			<rect x="120" y="290" width="580" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,92%,94%); fill-rule: evenodd;"/>
+			<rect x="120" y="290" width="92.44061132953098" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,62%,0%); fill-rule: evenodd;"/>
+			<path d="M 207,282 L 207,326 Z" style="stroke: rgb(13%,13%,13%); stroke-linecap: butt; stroke-width: 2;"/>
+			<text x="57.21" y="298" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,596) scale(1,-1)">Validation</text>
+			<text x="712" y="298" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,596) scale(1,-1)">57,565 rows  (15.94%)</text>
+			<text x="190.074" y="332" style="font-family: Helvetica; font-size: 7px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,664) scale(1,-1)">target 15%</text>
+			<rect x="120" y="195" width="580" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,92%,94%); fill-rule: evenodd;"/>
+			<rect x="120" y="195" width="92.49360429702642" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,61%,45%); fill-rule: evenodd;"/>
+			<path d="M 207,187 L 207,231 Z" style="stroke: rgb(13%,13%,13%); stroke-linecap: butt; stroke-width: 2;"/>
+			<text x="84.44" y="203" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,406) scale(1,-1)">Test</text>
+			<text x="712" y="203" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,406) scale(1,-1)">57,598 rows  (15.95%)</text>
+			<text x="190.074" y="237" style="font-family: Helvetica; font-size: 7px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,474) scale(1,-1)">target 15%</text>
+			<text x="120" y="95" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,190) scale(1,-1)">0 / 169,699 components split across partitions</text>
+			<text x="120" y="65" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,130) scale(1,-1)">The 68.11/15.94/15.95% outcome is close to 70/15/15 while preserving the scientifically required unit: every</text>
+			<text x="120" y="53.75" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,107) scale(1,-1)">connected sequence family stays entirely in one partition.</text>
+		</g>
+	</g>
+</svg>

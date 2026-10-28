@@ -33,6 +33,13 @@ final membership hash, component/partition counts, label-floor and balance
 disclosures, and the zero-violation audit summary. The large membership and
 edge artifacts remain under the Git-ignored `artifacts/` tree.
 
+`task003a_split_validation_report.json` is the sanitized closure candidate for
+the supervisor-facing split-validation package. It binds the frozen Task 002C
+inputs, the generated report and provenance hashes, headline reconciliations,
+and the model-blind/no-split-mutation execution boundary. Full tables, PDF and
+high-resolution figures remain under the Git-ignored `artifacts/` tree; the
+small Markdown report and SVG figures are versioned under `docs/reports/`.
+
 Future files include coordinate mappings, eligibility summaries, and frozen fold
 assignments.
 

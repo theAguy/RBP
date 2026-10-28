@@ -1,7 +1,7 @@
 # Task 003A — Supervisor-facing split validation report
 
-**Status:** planning review approved with bounded corrections; corrections
-reconciled before implementation
+**Status:** implementation and real-data execution complete; final independent
+acceptance review pending
 
 **Phase:** 3A, descriptive validation before any baseline or model training
 

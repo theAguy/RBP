@@ -1,6 +1,6 @@
 # Task 003B — Simple sequence baselines on the locked split
 
-**Status:** planning review requested; implementation not started
+**Status:** planning approved with bounded corrections; implementation may begin
 
 **Phase:** 3B, first predictive experiment after Task 003A
 
@@ -109,9 +109,23 @@ partitions.
   viewing validation results.
 - No class weighting, oversampling, threshold selection or probability
   calibration is used.
+- `liblinear` penalizes its synthetic intercept feature. This differs slightly
+  from textbook unpenalized-intercept logistic regression but is accepted and
+  held identical across proteins, widths and runs.
 - Feature formulas and estimator settings are identical across proteins.
   Each protein's scaler and coefficients are fitted only from that protein's
   known fitting labels.
+
+“Fitting rows” always means that protein's known-positive and known-negative
+rows in the fitting partition: train during the pilot, and train plus validation
+during the final refit. Only those rows determine the prevalence score, scaler
+parameters and GC-decile cut points.
+
+Convergence is accepted only when `n_iter_ < max_iter` and no
+`ConvergenceWarning` was emitted. During validation, a candidate C is eligible
+only if every fit for all eight development proteins converges. Ineligible
+candidates remain in the report with their failure evidence. Selection stops
+only if no candidate C is fully converged for that baseline/width.
 
 The eight development proteins and IDs are frozen:
 
@@ -133,9 +147,12 @@ the pilot must not parse test labels, construct or retain test feature vectors,
 count test classes, fit on test rows, or emit test scores.
 
 After the nine C values are frozen (three fitted baselines times three widths),
-the final command may be explicitly authorized once. It refits each model on
-train plus validation and scores the locked test partition. The final command
-may not revise any implementation or parameter.
+the final command may be explicitly authorized once. It is internally divided
+into two transactions. Phase A fits every train-plus-validation model for all
+122 proteins and verifies convergence without parsing a test label or building
+a test feature. Phase B may open and score test only when every Phase-A model
+has been accepted. A Phase-A failure stops the run before test exposure. The
+final command may not revise any implementation or parameter.
 
 ## 6. Windows
 
@@ -163,6 +180,11 @@ Macro summaries are unweighted means over the eligible proteins. The primary
 comparison is raw per-protein AUROC; baseline-subtracted AUROC is diagnostic
 only. Do not choose a method or width from test results.
 
+All baseline-to-baseline and width-to-width differences in Task 003B are
+descriptive point estimates. Task 003B must not claim that one baseline or
+window is significantly better. Inferential paired comparisons are deferred to
+the later component-aware analysis where every method is resampled identically.
+
 Task 003B reports point estimates and sample counts. Component-aware confidence
 intervals and paired model differences belong to the later controlled model
 comparison, where all methods can be resampled identically.
@@ -173,16 +195,22 @@ This is secondary and cannot alter model selection.
 
 For each protein, width and evaluation partition:
 
-1. derive GC-decile cut points from the fitting rows only;
+1. derive GC-decile cut points from that protein's known-labelled fitting rows
+   only, using `numpy.quantile(..., method="linear")` at probabilities
+   0, 0.1, ..., 1;
 2. place evaluation positives and negatives into those frozen bins;
 3. within each bin retain the same number from each class, using SHA-256 order
    of `(seed, sample_id, protein_id, width)` as the deterministic tie-break;
 4. evaluate the already-fitted scores on the union of retained rows;
 5. report retained counts and the full-set versus matched-set metric change.
 
-Bins lacking one class contribute no rows. No replacement is used. The matched
-analysis is invalid unless both classes remain and all retained IDs are a
-subset of the primary evaluation set.
+Duplicate quantile edges are collapsed. Bins are right-closed, except the first
+bin also includes its left endpoint; equivalently, internal edges are assigned
+with `numpy.searchsorted(edges, value, side="left")` after removing the outer
+endpoints. The exact resulting edges are recorded and bound into the
+configuration hash. Bins lacking one class contribute no rows. No replacement
+is used. The matched analysis is invalid unless both classes remain and all
+retained IDs are a subset of the primary evaluation set.
 
 ## 9. Prediction and artifact contract
 
@@ -266,7 +294,8 @@ Stop without silently changing scope if:
 - an unknown label is treated as negative;
 - the prevalence sanity checks fail;
 - the 6-mer representation becomes dense or exceeds the local resource gate;
-- a logistic fit fails to converge at the frozen limit;
+- no candidate C fully converges for a pilot baseline/width;
+- any final Phase-A fit fails to converge (Phase B must remain unstarted);
 - primary/repeat pilot results differ;
 - the final command differs from the frozen pilot code/config;
 - the full run would exceed measured local resources.

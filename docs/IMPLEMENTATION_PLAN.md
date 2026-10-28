@@ -102,7 +102,8 @@ eligible-protein counts are accepted.
 
 ### Phase 3 — trivial baselines
 
-- Random prediction.
+- Deterministic training-prevalence prediction (the no-sequence-information
+  baseline; AUROC 0.5 when both classes are present).
 - GC-content logistic regression.
 - 3-mer logistic regression.
 - 6-mer logistic regression.

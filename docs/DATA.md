@@ -28,7 +28,11 @@ does not replace the canonical row ID.
 Predictions must include:
 
 ```text
-sample_id, protein_id, fold, seed, window, config_id, config_hash, score
+sample_id, component_id, protein_id, fold, partition, seed, window,
+config_id, config_hash, label, score
 ```
 
 Never exchange anonymous arrays whose meaning depends only on row order.
+Row-level prediction files are large, ignored artifacts. Tracked manifests may
+contain only their hashes, counts and aggregate summaries—not row-level labels
+or scores.

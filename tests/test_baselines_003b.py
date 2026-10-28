@@ -52,13 +52,34 @@ class DataContractTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(BaselineDataError):
                 parse_labels(raw)
 
-    def test_membership_requires_whole_components_and_canonical_order(self):
+    def test_membership_requires_whole_components_and_canonical_ids(self):
         lines = io.StringIO("sample_id\tcomponent_id\tpartition\nrow_0\ta\ttrain\nrow_1\ta\tvalidation\n")
         with self.assertRaisesRegex(BaselineDataError, "split"):
             read_membership(lines, expected_rows=2)
         lines = io.StringIO("sample_id\tcomponent_id\tpartition\nrow_1\ta\ttrain\n")
-        with self.assertRaisesRegex(BaselineDataError, "row_0"):
+        with self.assertRaisesRegex(BaselineDataError, "foreign"):
             read_membership(lines, expected_rows=1)
+
+    def test_lexicographic_membership_is_reconciled_to_numeric_order(self):
+        lines = io.StringIO(
+            "sample_id\tcomponent_id\tpartition\n"
+            "row_0\ta\ttrain\nrow_1\tb\tvalidation\nrow_10\tc\ttest\n"
+            "row_2\td\ttrain\nrow_3\te\ttrain\nrow_4\tf\ttrain\n"
+            "row_5\tg\ttrain\nrow_6\th\ttrain\nrow_7\ti\ttrain\n"
+            "row_8\tj\ttrain\nrow_9\tk\ttrain\n"
+        )
+        rows = read_membership(lines, expected_rows=11)
+        self.assertEqual([row.sample_id for row in rows], [f"row_{i}" for i in range(11)])
+
+    def test_membership_rejects_duplicate_missing_and_foreign_ids(self):
+        cases = (
+            ("row_0\ta\ttrain\nrow_0\tb\ttrain\n", "duplicate"),
+            ("row_0\ta\ttrain\nrow_2\tb\ttrain\n", "foreign"),
+            ("row_1\ta\ttrain\n", "missing"),
+        )
+        for body, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(BaselineDataError, message):
+                read_membership(io.StringIO("sample_id\tcomponent_id\tpartition\n" + body), expected_rows=2)
 
     def test_pilot_skips_test_label_before_parsing(self):
         membership = read_membership(io.StringIO(

@@ -14,6 +14,7 @@ class BaselineDataError(ValueError):
 
 PARTITIONS = ("train", "validation", "test")
 TOKEN = re.compile(r"^([+-]?)([1-9][0-9]*)$")
+SAMPLE_ID = re.compile(r"^row_(0|[1-9][0-9]*)$")
 
 
 def parse_labels(raw: str, *, protein_count: int = 122) -> dict[int, int]:
@@ -45,12 +46,17 @@ def read_membership(lines: Iterable[str], *, expected_rows: int | None = None) -
     reader = csv.DictReader(lines, delimiter="\t")
     if reader.fieldnames != ["sample_id", "component_id", "partition"]:
         raise BaselineDataError(f"unexpected membership header: {reader.fieldnames}")
-    result = []
+    rows_by_index: dict[int, MembershipRow] = {}
     components: dict[str, str] = {}
-    for index, row in enumerate(reader):
-        expected_id = f"row_{index}"
-        if row["sample_id"] != expected_id:
-            raise BaselineDataError(f"membership ID {row['sample_id']!r} != {expected_id!r}")
+    for row in reader:
+        match = SAMPLE_ID.fullmatch(row["sample_id"])
+        if not match:
+            raise BaselineDataError(f"invalid membership sample ID: {row['sample_id']!r}")
+        index = int(match.group(1))
+        if index in rows_by_index:
+            raise BaselineDataError(f"duplicate membership sample ID: row_{index}")
+        if expected_rows is not None and index >= expected_rows:
+            raise BaselineDataError(f"foreign membership sample ID: row_{index}")
         component_id = row["component_id"]
         partition = row["partition"]
         if not component_id or partition not in PARTITIONS:
@@ -58,10 +64,12 @@ def read_membership(lines: Iterable[str], *, expected_rows: int | None = None) -
         prior = components.setdefault(component_id, partition)
         if prior != partition:
             raise BaselineDataError(f"component {component_id} is split")
-        result.append(MembershipRow(expected_id, component_id, partition))
-    if expected_rows is not None and len(result) != expected_rows:
-        raise BaselineDataError(f"membership has {len(result)} rows, expected {expected_rows}")
-    return result
+        rows_by_index[index] = MembershipRow(f"row_{index}", component_id, partition)
+    row_count = expected_rows if expected_rows is not None else len(rows_by_index)
+    if len(rows_by_index) != row_count or set(rows_by_index) != set(range(row_count)):
+        missing = sorted(set(range(row_count)) - rows_by_index.keys())[:5]
+        raise BaselineDataError(f"membership universe mismatch: {len(rows_by_index)} rows; missing {missing}")
+    return [rows_by_index[index] for index in range(row_count)]
 
 
 @dataclass

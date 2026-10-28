@@ -1,0 +1,23 @@
+Please act as the second scientific reviewer for Task 003A. This task will
+create the supervisor-facing evidence report for the already accepted,
+leakage-audited train/validation/test split.
+
+Repository root: the current RBP project checkout.
+
+Read these files in order:
+
+1. docs/tasks/003a_supervisor_split_validation_report.md
+2. docs/reviews/003a_supervisor_split_validation_planning_review_request.md
+3. docs/SEQUENCE_SPLIT_AUDIT_EXPLAINER.md
+4. docs/reviews/002c_final_sequence_partition_acceptance.md
+5. manifests/sequence_partitions_002c_v2.json
+6. docs/reviews/002c2c_non_mmseqs_diagnostics_acceptance.md
+7. docs/reviews/002c3_cross_partition_failure_and_component_rebuild_plan.md
+
+Then answer the review request exactly as scoped. Focus on scientific
+validity, denominators, reproducibility, leakage-claim wording, and whether the
+figures would let a supervisor judge the work fairly. Return Approve, Approve
+with bounded corrections, or Reject. If corrections are needed, state the
+exact failure prevented and the smallest correction. Do not implement
+anything, inspect model results, open large inputs, run MMseqs2, or request
+optional styling/generalization work.

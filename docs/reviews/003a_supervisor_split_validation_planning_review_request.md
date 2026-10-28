@@ -1,5 +1,8 @@
 # Task 003A supervisor split-validation report — planning review request
 
+**Status:** reviewed; verdict "Approve with bounded corrections"; C1-C5
+reconciled in the task plan before implementation
+
 ## Requested verdict
 
 Return one of:
@@ -50,3 +53,26 @@ This is a plan review only. Do not implement code, open the 724-MB CSV, extract
 large artifacts, launch MMseqs2, train a model, create figures, or modify the
 split. The desired output is a concise scientific review with exact bounded
 corrections if needed.
+
+## Reconciliation of the review verdict
+
+The five blocking corrections were accepted without expanding Task 003A:
+
+1. Former-fold crossing values are now labelled as v1-grouping results and as
+   lower bounds under v2; Task 003A will separately recompute them against v2
+   only after reproducing the recorded legacy-fold index digests.
+2. The 4,792 result is labelled as the first 500-nt train-to-validation search
+   only, involving 3,576 distinct rows; the audit stopped and 17/18 searches
+   did not run, so it is a lower bound.
+3. The v1 membership and report are pinned by exact path, size, and SHA-256,
+   and 173,465 components must be reconstructed before use.
+4. The protected-v1 star-join count is excluded from pair-count and overlap
+   displays; v1 protection is summarized only with component and row counts.
+5. Composition effect wording, component-dependence handling, homopolymer
+   summaries, heatmap denominators, achieved-fraction references, and the
+   original 70/15/15 flag basis are prespecified.
+
+The non-blocking clarification was also adopted: positive-control status is
+shown per width, not repeated as if a separate control ran for every directed
+search. Per the plan's review boundary, no second planning-review loop is
+required.

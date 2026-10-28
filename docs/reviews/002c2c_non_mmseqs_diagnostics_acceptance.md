@@ -39,7 +39,12 @@ stratification input = positive-only targets * masks
 
 The reproduced split contains 288,944 training rows and 72,236 holdout rows.
 
-### Final union-component crossing
+### Rejected v1 union-component crossing
+
+These values use the rejected v1 grouping of 173,465 components. They were
+not computed against the later accepted v2 grouping. Because v2 only merges
+v1 components and never splits one, these crossing values are lower bounds
+for the same fold under the final relation.
 
 | Measure | Result |
 |---|---:|
@@ -67,7 +72,7 @@ boundary, affecting one holdout row. No 500- or 251-nt exact/RC pair crossed.
 ### Scientific interpretation
 
 The former fold is compromised for leakage-sensitive model comparison: most
-legacy holdout rows belong to a frozen final component that also contains at
+legacy holdout rows belong to a rejected v1 component that also contains at
 least one legacy training row. Consequently, it cannot serve as the final
 unbiased test boundary in this project.
 

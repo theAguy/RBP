@@ -108,9 +108,14 @@ been excluded.
 ## Historical result
 
 The former notebook's exact fold 0 is not leakage-safe. Of 72,236 holdout
-rows, 45,937 (63.593%) belong to a component also represented in training.
-The intermediate v1 assignment is also rejected: its first fresh 500-nt
-train-to-validation audit found 4,792 qualifying pairs. Components v2 were
+rows, 45,937 (63.593%) belong to a **v1 component** also represented in
+training. This recorded v1-grouping result is a lower bound under the final v2
+relation because v2 only merges v1 components and never splits them. The
+intermediate v1 assignment is also rejected: its first fresh directed search
+(500 nt, train to validation) found 4,792 qualifying pairs among 3,576
+distinct rows (1,400 train queries and 2,176 validation targets). The audit
+stopped there by design, so the other 17 directed searches were not run and
+4,792 is a lower bound rather than a complete v1 total. Components v2 were
 built specifically to close that construction/audit mismatch.
 
 ## Boundary after closure

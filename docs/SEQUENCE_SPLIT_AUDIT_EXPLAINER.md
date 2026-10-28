@@ -69,8 +69,8 @@ The notebook contains no explicit reverse-complement canonicalization,
 reverse-complement augmentation, or strand-aware split logic. The CNN trained
 on each sequence in the orientation stored in the dataset.
 
-Reproducing that fold exactly and comparing it with the accepted similarity
-groups showed:
+Reproducing that fold exactly and comparing it with the then-current **v1
+component grouping (173,465 components)** showed:
 
 | Former-fold diagnostic | Result |
 |---|---:|
@@ -81,7 +81,11 @@ groups showed:
 
 Therefore, the former fold is not leakage-safe under the frozen sequence
 definition. This does not invalidate the sequences or labels, and it does not
-by itself quantify AUROC inflation.
+by itself quantify AUROC inflation. These recorded values are v1-grouping
+results, not final-v2-grouping results. Because v2 only merges v1 components
+and never splits them, the corresponding crossing counts under v2 can only be
+equal or higher; the recorded values are therefore lower bounds under the
+final relation.
 
 ## 4. The frozen similarity rule
 
@@ -209,7 +213,10 @@ identity/coverage rule yet be assigned to different tool-generated clusters.
 
 The first fresh audit of the v1 assignment found 4,792 qualifying 500-nt
 train→validation pairs. Those pairs involved 3,576 distinct rows and connected
-v1 components that had been placed in different partitions.
+v1 components that had been placed in different partitions. This was only the
+first of 18 planned directed searches; the audit stopped on that failure by
+design, so the other 17 searches were not run and 4,792 is a lower bound on
+the rejected v1 split's direct-search leakage rather than a complete total.
 
 Therefore, v1 was not accepted for modeling. We did not argue that the audit
 was too strict, weaken a threshold, or merely patch those 4,792 pairs.
@@ -379,8 +386,9 @@ No single zero count was trusted. The audit used several independent layers.
 The notebook's first fold was recreated with the pinned library, seed, and
 positive-only stratification matrix. This established exactly which rows the
 former experiment treated as training and holdout. The old boundary was then
-compared with component membership, producing the 63.593% affected-holdout
-result above.
+compared with the rejected v1 component membership, producing the recorded
+63.593% affected-holdout result above. Task 003A separately recomputes this
+diagnostic against final v2 membership; it must not relabel the v1 result.
 
 ### Layer 2 — construct v2 from full direct searches
 

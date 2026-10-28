@@ -187,7 +187,7 @@ stricter-coverage rule.
 They justify concern about the former row-level split, but they do not make the
 dataset unusable:
 
-- The union contains 173,465 final components.
+- The v1 union contains 173,465 provisional components.
 - 119,999 components are singletons.
 - 53,466 components contain multiple rows.
 - 241,181 rows, or 66.8% of the dataset, belong to a multi-row component.
@@ -223,8 +223,9 @@ For example:
 This connected-component rule prevents indirect leakage chains. Every final
 component receives a deterministic ID derived from its sorted row IDs. During
 partitioning, the component—not the individual row—is the smallest movable
-unit. The v1 construction produced 173,465 final components from the 361,180
-rows. It passed the giant-component checks but was later shown not to be a
+unit. The v1 construction produced 173,465 provisional components from the
+361,180 rows. It passed the giant-component checks but was later shown not to
+be a
 complete closure of the fresh direct-search audit relation; it is retained as
 diagnostic evidence, not as the final benchmark grouping.
 
@@ -336,18 +337,20 @@ The audit sequence below was completed before the final split was accepted:
 ### 12.1 Former-split diagnostic
 
 - Reproduce the former notebook's first 80/20 fold exactly.
-- Measure how many final components and per-width clusters cross that old
+- Measure how many v1 components and per-width clusters cross that old
   boundary.
 - Report train and holdout rows affected by crossing components.
 - Use the result only as a diagnostic; never reuse the old split for the new
   comparison.
 
-**Accepted result:** the former fold contains 26,765 final components spanning
-both train and holdout, 51.6% of all components represented in holdout. A total
-of 45,937 of 72,236 holdout rows (63.6%) and 120,760 of 288,944 training rows
-(41.8%) belong to crossing components. The former fold is therefore not
-leakage-safe under the frozen grouping definition, although this diagnostic
-does not quantify the resulting effect on model performance.
+**Accepted result:** against the rejected v1 grouping of 173,465 components,
+the former fold contains 26,765 components spanning both train and holdout,
+51.6% of all v1 components represented in holdout. A total of 45,937 of 72,236
+holdout rows (63.6%) and 120,760 of 288,944 training rows (41.8%) belong to
+crossing v1 components. These are lower bounds under v2 because v2 only merges
+v1 components. The former fold is therefore not leakage-safe under the frozen
+grouping definition, although this diagnostic does not quantify the resulting
+effect on model performance.
 
 ### 12.2 Independent exact/reverse-complement audit
 

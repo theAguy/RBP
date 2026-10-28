@@ -1,6 +1,7 @@
 # Task 003A — Supervisor-facing split validation report
 
-**Status:** planning review pending
+**Status:** planning review approved with bounded corrections; corrections
+reconciled before implementation
 
 **Phase:** 3A, descriptive validation before any baseline or model training
 
@@ -54,6 +55,8 @@ Before analysis, the runner must verify:
 | Former-split/non-MMseqs diagnostics | `manifests/sequence_non_mmseqs_audits_002c2c.json`, SHA-256 `991a43a61fcdcbfa0aa5734fd8bf7801b029cc34a02ad1d3b400b1c5773d31e8` |
 | Rejected v1 assignment manifest | `manifests/sequence_assignment_002c2b.json`, SHA-256 `28aa6687fc335ffcba36eb441ebf2d55ae25565349fc8dfcb48a29be566267f6` |
 | Rejected v1 audit return | 433,289 bytes, SHA-256 `d84b7b1125e9bf8ad8e60aba717dbdf119d53c1c5ada7465c3f42a99adb610cf` |
+| Rejected v1 component membership | `artifacts/teammate_run_results/20260928T091014Z_87391_arm64/final_component_result/component_membership.tsv.gz`, 14,578,797 bytes, SHA-256 `6000c340056ba8204432e7f4c417fb811f8a3d1a5b1c091dea98461862c7b692` |
+| Rejected v1 component report | `artifacts/teammate_run_results/20260928T091014Z_87391_arm64/final_component_result/component_report.json`, 13,036,977 bytes, SHA-256 `b8b5872a4cc5061c562de871ec4500876fcdb72afcab069b21ab2bb44cb3e186` |
 | Frozen dataset audit | `manifests/dataset_audit.json`, SHA-256 `e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c` |
 | Protein registry | `configs/proteins.tsv`, SHA-256 `374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9` |
 | Frozen CSV | 724,425,277 bytes, SHA-256 `982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945` |
@@ -63,6 +66,25 @@ The final return must additionally pass its sidecar, internal inventory, and
 return-series verification before any figure is promoted. The final membership
 inside the return must hash to
 `ca527da4f0c0615bcb9d31c6fc705523238e8fb8f4751473ccc2af3ee0aecddb`.
+The rejected v1 membership must independently reconstruct exactly 173,465
+components before it contributes to a table, figure, or former-fold result.
+
+### Former-fold evidence contract
+
+The accepted former-fold headline values—26,765 crossing components,
+45,937/72,236 affected holdout rows (63.593%), and 120,760/288,944 affected
+training rows (41.794%)—were computed against the **rejected v1 component
+grouping of 173,465 components**, not against the final v2 grouping. The
+per-width values are connected-cluster co-membership results and may be direct
+or transitive; they are not direct-edge counts.
+
+Because components v2 only merges v1 components and never splits one, the
+v1-based former-fold crossing values are lower bounds for the same fold under
+the final relation. Task 003A will also recompute the former fold against the
+accepted v2 membership after first reproducing the recorded fold-0 train and
+holdout index digests. The v1 reproduction and the new v2 recomputation must be
+shown as distinct results. Failure to reproduce either recorded fold digest is
+a hard stop; the accepted split itself is never changed.
 
 ## Implementation design
 
@@ -93,7 +115,8 @@ headline value in captions must be drawn from the generated summary tables.
 At minimum:
 
 1. `split_summary.tsv` — row/component counts, fractions, giant-component
-   gates, audit counts, and legacy headline values.
+   gates, audit counts, v1-based legacy headline values with their grouping
+   basis, and the separately labelled Task-003A v2 recomputation.
 2. `component_size_distribution.tsv` — component size and number of components
    for v1 and v2.
 3. `edge_width_overlap.tsv` — exact overlap categories of normalized row-pair
@@ -110,7 +133,8 @@ At minimum:
    differences plus a distributional distance statistic; p-values may be
    recorded only as secondary information and must not drive interpretation.
 8. `audit_matrix.tsv` — all 18 width/direction combinations with query/target
-   counts, positive-control status, and violation count.
+   counts and violation count; positive-control status is recorded once per
+   width because controls were run per width, not per direction.
 
 ### B. Main supervisor figures
 
@@ -125,20 +149,29 @@ A process schematic with three clearly labelled states:
 Former row split -> v1 component split -> accepted components-v2 split
 ```
 
-Show the failure and decision at each transition. Do not imply that the former
-63.593% affected-holdout rate and the v1 4,792 direct-pair count share a common
-denominator.
+Show the failure and decision at each transition. Label the recorded 63.593%
+affected-holdout result as computed against v1 components, and show the new v2
+recomputation separately if it passes its reproduction gates. Do not imply
+that either former-fold rate and the rejected-v1 4,792 pair count share a
+common denominator.
 
 #### Figure 2 — Leakage evidence before and after correction
 
 Use separate panels:
 
-- former-fold component/row crossing rates with explicit denominators;
-- rejected v1 first-audit direct-pair/row counts; and
-- final 3-by-6 audit matrix with zero violations and positive controls noted.
+- former-fold component/row crossing rates with explicit denominators and an
+  explicit v1-versus-v2 grouping label;
+- rejected v1 first-audit result, labelled as only the first directed search
+  (500 nt, train to validation), with 4,792 qualifying pairs among 3,576
+  distinct rows (1,400 train queries and 2,176 validation targets); and
+- final 3-by-6 audit matrix with zero violations and positive controls noted
+  once per width.
 
 Do not use a single bar axis that makes unlike rates/counts appear directly
-comparable. Never claim the former AUROC was inflated by a measured amount.
+comparable. The rejected-v1 audit stopped after that first failure by design;
+17 of 18 directed searches were not run, so 4,792 is a lower bound rather than
+the total v1 leakage. Any displayed rate must use row counts from the rejected
+v1 assignment. Never claim the former AUROC was inflated by a measured amount.
 
 #### Figure 3 — Component structure and giant-component gates
 
@@ -153,10 +186,15 @@ comparable. Never claim the former AUROC was inflated by a measured amount.
 - direct edge counts at 500, 251, and 101 nt;
 - an UpSet-style or equivalent exact intersection view showing edge-set
   overlap across widths; and
-- separate exact/RC and protected-v1 relation annotations.
+- a separate exact/RC annotation; and
+- a textual v1-protection summary: 6,406 v1 components merged into 2,640 v2
+  components, covering 54,610 rows.
 
 The figure must distinguish pair counts from the number of union operations
-that happened to merge components in one application order.
+that happened to merge components in one application order. The stored
+`v1_protected_co_membership.pair_count` is a star-join implementation artifact
+(summed members minus one), not a biological or direct-similarity pair count;
+it must not appear on the edge-count axis or in the edge-overlap view.
 
 #### Figure 5 — Final partition sizes and component integrity
 
@@ -171,13 +209,19 @@ that happened to merge components in one application order.
   the relevant 70/15/15 target;
 - protein ordering fixed by maximum absolute evaluation deviation, with names
   and IDs available in the accompanying table;
+- each protein row annotated with that protein's total known-positive or total
+  known-negative count, which is the denominator for its cells;
 - a visible ±3-pp reporting boundary; and
 - a compact panel or table for the most imbalanced proteins, including protein
   25 as an explanatory example.
 
 The caption must explain that the denominator is all known positives or all
 known negatives for that protein across the dataset—not within-partition
-prevalence.
+prevalence. Mark the achieved global row fractions
+68.11%/15.94%/15.95% as a visual reference, but retain the prespecified
+70%/15%/15% targets for >3-percentage-point flags so the report reproduces the
+accepted 86-protein/218-cell all-partition result and the 54-protein/117-cell
+evaluation-only result.
 
 #### Figure 7 — Evaluation support counts
 
@@ -197,6 +241,18 @@ For 500, 251, and 101 nt, compare train/validation/test distributions of:
 Use fixed deterministic bins or quantile summaries rather than bandwidth-
 sensitive decorative density curves. Report effect sizes; with 361,180 rows,
 small p-values alone are not evidence of a meaningful shift.
+
+The interpretation is prespecified before computation:
+
+- absolute standardized mean difference (SMD) at least 0.10 is called
+  "notable"; a smaller absolute SMD is called "negligible";
+- Kolmogorov-Smirnov `D` and robust quantiles are reported alongside SMD as
+  descriptive distribution summaries, not as inferential tests;
+- rows within one component are not independent, so no row-level p-value is
+  reported in the main text and any uncertainty interval must use a
+  component-level bootstrap; and
+- maximum homopolymer length is discrete and heavy-tailed, so its quantiles
+  and KS `D` are primary and SMD is secondary.
 
 ### C. Supplementary figures/tables
 
@@ -238,8 +294,9 @@ features in this task. The exact formulas must be tested on tiny fixtures.
 
 For pairwise partition comparisons, standardized mean difference must use a
 documented pooled-standard-deviation formula. Also report robust quantiles and
-a bounded distributional distance such as Kolmogorov-Smirnov `D`. Interpret
-effect size, not significance alone.
+Kolmogorov-Smirnov `D`. Apply the prespecified `|SMD| >= 0.10` descriptive
+threshold above; do not infer independence or scientific significance from
+the number of rows.
 
 ## Required tests
 
@@ -265,6 +322,9 @@ Use synthetic fixtures to cover:
 - Final return verification succeeds before analysis.
 - Every generated headline value reproduces its accepted source where an
   accepted source already exists.
+- The v1 membership reconstructs exactly 173,465 components, and the legacy
+  fold train/holdout index digests reproduce before the v2-grouping
+  recomputation is accepted.
 - Every row ID and component ID reconciles exactly.
 - Protein/class totals reproduce the accepted assignment summary.
 - Figures regenerate identically from unchanged tables, apart from documented

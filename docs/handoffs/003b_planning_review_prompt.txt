@@ -1,0 +1,18 @@
+Please act as the independent planning reviewer for Task 003B.
+
+Read, in order:
+
+1. docs/tasks/003b_simple_sequence_baselines.md
+2. docs/reviews/003b_simple_sequence_baselines_planning_review_request.md
+3. docs/reviews/002c_final_sequence_partition_acceptance.md
+4. docs/DATA.md
+5. docs/IMPLEMENTATION_PLAN.md
+
+Do not implement anything. Do not open the real CSV, accepted FASTAs, final
+membership, prediction files or test artifacts. Review only the tracked text
+and small manifests already named in the task.
+
+Return one evidence-backed verdict: Approve, Approve with bounded corrections,
+or Stop. Focus on scientific validity, test blindness, deterministic
+reproducibility and realistic sparse execution. Do not expand the scope into
+neural models, competitors, coordinates, new splits or additional windows.

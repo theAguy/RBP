@@ -441,6 +441,12 @@ Before complex neural networks, establish inexpensive reference points:
 All fitted transformations use training data only and are evaluated on the
 same locked samples and window widths as the models.
 
+Task 003B specifies this phase in
+`docs/tasks/003b_simple_sequence_baselines.md`. Its implementation is staged as
+a synthetic proof, an eight-protein train-to-validation pilot, and a separately
+authorized one-time test run. The former ResCNN and published competitors are
+explicitly deferred until these baselines close.
+
 ## 14. Phase 4 — development pilot
 
 Use eight development proteins—TARDBP, ELAVL1, U2AF2, PTBP1, HNRNPC, PUM2,

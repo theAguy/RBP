@@ -46,6 +46,12 @@ environment for the simple prevalence, GC, 3-mer and sparse 6-mer baselines.
 The environment is created locally under `.venv-003b-baselines/`, which remains
 Git-ignored.
 
+`task003b_pilot_003b2.json` is the sanitized acceptance record for the
+eight-protein train-to-validation pilot. It freezes the nine selected C values,
+input/output hashes, aggregate development metrics, local resource profile,
+numerical repeat evidence, and the proof that no test label or feature was
+accessed. Row-level predictions remain under the Git-ignored `artifacts/` tree.
+
 Future files include coordinate mappings, eligibility summaries, and frozen fold
 assignments.
 

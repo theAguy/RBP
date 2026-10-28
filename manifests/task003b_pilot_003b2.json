@@ -1,0 +1,115 @@
+{
+  "schema_version": "task003b_pilot_acceptance_v1",
+  "status": "accepted",
+  "stage": "train_to_validation_development_pilot",
+  "accepted_code_commit": "8fd45814bf835346e19f144b21bd795dcb8b99e1",
+  "model_execution_commit": "76fe3b25268eba334e72a66e570e2e122d1606e3",
+  "config": {
+    "path": "configs/baselines/task003b_v1.toml",
+    "byte_size": 1606,
+    "sha256": "88f23ebfe44e0870287197c85377f7fab7adf540e4f4b84a5acdf8acfce17b9f"
+  },
+  "environment": {
+    "manifest_path": "manifests/task003b_environment_003b1.json",
+    "manifest_byte_size": 607,
+    "manifest_sha256": "278ef623512ded3aba6696cc4a2c3fb341cd008353266db656248a11c7c57b3e",
+    "requirements_path": "requirements-003b.txt",
+    "requirements_byte_size": 47,
+    "requirements_sha256": "e06f0f9deb3784a3d5b4dd1f206a3b8aba88768d1a70836e364a1f8436d26966",
+    "numerical_threads": 1
+  },
+  "inputs": {
+    "csv": {"byte_size": 724425277, "sha256": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945"},
+    "dataset_audit": {"byte_size": 27550, "sha256": "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"},
+    "proteins": {"byte_size": 1143, "sha256": "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"},
+    "decode_manifest": {"byte_size": 8957, "sha256": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3"},
+    "partition_manifest": {"byte_size": 2868, "sha256": "b6f6f16fab4e6afc23c16a8dc5b3476130719d579f637cd3cf18002cc7fb7419"},
+    "membership": {"byte_size": 14697920, "sha256": "ca527da4f0c0615bcb9d31c6fc705523238e8fb8f4751473ccc2af3ee0aecddb"},
+    "fasta_500": {"byte_size": 185174230, "sha256": "0849d4f8aceaed37c3dc7fec69056f38ae344338aa4adf321a3e11c4a72df0b0"},
+    "fasta_251": {"byte_size": 95240410, "sha256": "f4f436ef2eb0f17409c5145507991b688e49965a09c346ddd380942a5b1d5b5c"},
+    "fasta_101": {"byte_size": 41063410, "sha256": "60be2b211923d303570974fced0f85e546ceb4b5b5182d2cd0a9f72f483b08b1"}
+  },
+  "development": {
+    "protein_ids": [33, 53, 82, 84, 85, 86, 107, 112],
+    "widths": [500, 251, 101],
+    "development_sequence_count": 22342,
+    "metric_row_count": 96,
+    "prediction_row_count": 50388,
+    "all_36_candidate_sets_fully_converged": true,
+    "selected_c": {
+      "gc_500": 0.01, "gc_251": 0.01, "gc_101": 0.01,
+      "3mer_500": 0.1, "3mer_251": 0.1, "3mer_101": 10.0,
+      "6mer_500": 0.01, "6mer_251": 0.01, "6mer_101": 0.01
+    }
+  },
+  "macro_validation_metrics": {
+    "500": {
+      "prevalence": {"auroc": 0.5, "average_precision": 0.5429076885298779, "gc_matched_auroc": 0.5},
+      "gc": {"auroc": 0.6364399355546322, "average_precision": 0.6685502879493255, "gc_matched_auroc": 0.498725453496128},
+      "3mer": {"auroc": 0.8235460926409937, "average_precision": 0.8609881633326555, "gc_matched_auroc": 0.7712764213834895},
+      "6mer": {"auroc": 0.8017710911077293, "average_precision": 0.8435014651734755, "gc_matched_auroc": 0.7589334031539947}
+    },
+    "251": {
+      "prevalence": {"auroc": 0.5, "average_precision": 0.5429076885298779, "gc_matched_auroc": 0.5},
+      "gc": {"auroc": 0.6399030909134695, "average_precision": 0.6690737003001803, "gc_matched_auroc": 0.5031650094350912},
+      "3mer": {"auroc": 0.827142394221331, "average_precision": 0.8613226101903528, "gc_matched_auroc": 0.7753788021160122},
+      "6mer": {"auroc": 0.7985772133446685, "average_precision": 0.8417022560104157, "gc_matched_auroc": 0.751855939557786}
+    },
+    "101": {
+      "prevalence": {"auroc": 0.5, "average_precision": 0.5429076885298779, "gc_matched_auroc": 0.5},
+      "gc": {"auroc": 0.6453204207345353, "average_precision": 0.676192775197731, "gc_matched_auroc": 0.5026141866915642},
+      "3mer": {"auroc": 0.8145915554517201, "average_precision": 0.8477710628527442, "gc_matched_auroc": 0.7703208226738607},
+      "6mer": {"auroc": 0.8038855723099071, "average_precision": 0.8447378330947225, "gc_matched_auroc": 0.7555208388543025}
+    }
+  },
+  "accepted_runs": {
+    "primary": {
+      "generation": "pilot_74c2cffde52f",
+      "wall_seconds": 100.08815087890252,
+      "peak_rss_bytes": 1154584576,
+      "summary": {"byte_size": 4158, "sha256": "5f196a8c44f7368f18fef6dcc539b10e30f38cded6220c47ed952cfb2a6544fb"},
+      "metrics": {"byte_size": 38100, "sha256": "fba612e3d0228a180c8bb6761b42f7bb368bc59778ff8a3ac270a4918d6b96d2"},
+      "predictions": {"byte_size": 1996033, "sha256": "746ae7f121066b48ac805dd857fa8899bc07ae583c399c33c37a4bdf6278e001"}
+    },
+    "repeat": {
+      "generation": "pilot_be7c19b23dd1",
+      "wall_seconds": 98.90963611705229,
+      "peak_rss_bytes": 1154940928,
+      "summary": {"byte_size": 4158, "sha256": "c5d8d10c30fff3547ad7f336b67ca4ba24c749fdca3cacd4f783f77dd1738168"},
+      "metrics": {"byte_size": 38100, "sha256": "b2aad94bf6901be7571b1181eb9479267abb5af567763e9764ea6658c6e6e1b4"},
+      "predictions": {"byte_size": 1996141, "sha256": "1695f141714e9d0f0783561ab84f1f2b5d80aba000c6d691d453acf5487f72cc"}
+    },
+    "selected_record": {"byte_size": 968, "sha256": "d3003684693b2096dbb406fc6a827ab359cc1438e3768ad2be736a0a93216704"}
+  },
+  "reproducibility": {
+    "passed": true,
+    "selected_c_exact": true,
+    "prediction_identity_fields_exact": true,
+    "test_boundary_exact": true,
+    "prediction_row_count": 50388,
+    "differing_score_count": 12515,
+    "max_score_difference": 0.000019543448407599584,
+    "score_atol": 0.0001,
+    "max_metric_difference": 0.0,
+    "max_selection_auroc_difference": 0.0000005397534610374066,
+    "metric_atol": 0.000005,
+    "max_iteration_difference": 1
+  },
+  "resources": {
+    "peak_width_feature_storage_bytes": 129662412,
+    "feature_storage_bytes": {
+      "500": {"gc": 178736, "3mer": 16339136, "6mer": 113144540, "total": 129662412},
+      "251": {"gc": 178736, "3mer": 15077312, "6mer": 59096972, "total": 74353020},
+      "101": {"gc": 178736, "3mer": 11405204, "6mer": 23920544, "total": 35504484}
+    },
+    "execution_decision": "full execution can remain local if implemented one width and one protein fit at a time"
+  },
+  "test_boundary": {
+    "test_accessed": false,
+    "test_labels_parsed": 0,
+    "test_features_built": 0,
+    "test_predictions_emitted": 0,
+    "final_stage_authorized": false
+  },
+  "interpretation": "Validation-only development evidence. Baseline-to-baseline differences are descriptive and no former-model comparison or final test claim is authorized."
+}

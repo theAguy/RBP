@@ -91,6 +91,7 @@ def build_label_index(
     protein_ids = tuple(protein_ids)
     if len(protein_ids) != len(set(protein_ids)) or any(not 1 <= value <= 122 for value in protein_ids):
         raise BaselineDataError("invalid protein IDs")
+    protein_set = set(protein_ids)
     reader = csv.DictReader(csv_lines)
     if reader.fieldnames is None or "labels" not in reader.fieldnames:
         raise BaselineDataError("CSV is missing labels column")
@@ -107,12 +108,12 @@ def build_label_index(
             skipped[member.partition] += 1
             continue
         parsed = parse_labels(row["labels"])
-        for protein_id in protein_ids:
-            if protein_id not in parsed:
+        for protein_id, label in parsed.items():
+            if protein_id not in protein_set:
                 continue
             key = (protein_id, member.partition)
             ids.setdefault(key, []).append(member.sample_id)
-            labels.setdefault(key, []).append(parsed[protein_id])
+            labels.setdefault(key, []).append(label)
     if row_count != len(membership):
         raise BaselineDataError(f"CSV/membership row mismatch: {row_count} != {len(membership)}")
     return LabelIndex(ids, labels, skipped)

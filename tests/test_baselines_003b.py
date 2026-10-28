@@ -19,6 +19,7 @@ from rbpbench.baselines.gc_matching import assign_bins, gc_bin_edges, matched_in
 from rbpbench.baselines.metrics import MetricError, auroc, average_precision, summarize
 from rbpbench.baselines.models import BaselineFitError, fit_logistic, prevalence_score, select_c
 from rbpbench.baselines.output import Generation, OutputError, atomic_write, verify_selected
+from rbpbench.baselines.phase_a import PhaseAError, run_phase_a
 from rbpbench.baselines.pilot import run_pilot
 from rbpbench.baselines.reproducibility import ReproducibilityError, compare_pilot_generations
 from rbpbench.baselines.runner import RunnerError, main as runner_main, verify_production_inputs
@@ -301,6 +302,12 @@ class PilotPipelineTests(unittest.TestCase):
             runner_main(["--stage", "final", "--config", config])
         with self.assertRaisesRegex(RunnerError, "unavailable until an accepted pilot"):
             runner_main(["--stage", "final", "--config", config, "--authorize-test"])
+        with self.assertRaisesRegex(RunnerError, "requires --authorize-test"):
+            runner_main(["--stage", "final-phase-b", "--config", config])
+        with self.assertRaisesRegex(RunnerError, "until Phase A is reviewed"):
+            runner_main(["--stage", "final-phase-b", "--config", config, "--authorize-test"])
+        with self.assertRaisesRegex(RunnerError, "must not receive"):
+            runner_main(["--stage", "final-phase-a", "--config", config, "--authorize-test"])
 
     def test_dry_run_never_requires_or_opens_inputs(self):
         config = str(ROOT / "configs/baselines/task003b_v1.toml")
@@ -376,6 +383,82 @@ class ReproducibilityTests(unittest.TestCase):
             changed_score = self._generation(root / "changed_score", score=0.5002)
             with self.assertRaisesRegex(ReproducibilityError, "score difference"):
                 compare_pilot_generations(primary, changed_score)
+
+
+class FinalPhaseATests(unittest.TestCase):
+    def _fixture(self, root: Path, *, all_positive: bool = False):
+        config = load_config(ROOT / "configs/baselines/task003b_v1.toml")
+        membership = root / "membership.tsv.gz"
+        membership.write_bytes(gzip.compress((
+            "sample_id\tcomponent_id\tpartition\n"
+            "row_0\tc0\ttrain\nrow_1\tc1\ttrain\n"
+            "row_2\tc2\tvalidation\nrow_3\tc3\tvalidation\nrow_4\tc4\ttest\n"
+        ).encode(), mtime=0))
+        positives = ";".join(str(value) for value in range(1, 123))
+        negatives = positives if all_positive else ";".join(f"-{value}" for value in range(1, 123))
+        csv_path = root / "tiny.csv"
+        csv_path.write_text(
+            "labels\n" + "".join(f'"{value}"\n' for value in (positives, negatives, positives, negatives, "FORBIDDEN"))
+        )
+        fastas = {}
+        for width in config.windows:
+            path = root / f"width_{width}.fasta"
+            path.write_text(
+                f">row_0\n{('AC' * width)[:width]}\n"
+                f">row_1\n{('GT' * width)[:width]}\n"
+                f">row_2\n{('CA' * width)[:width]}\n"
+                f">row_3\n{('TG' * width)[:width]}\n"
+                f">row_4\n{'N' * width}\n"
+            )
+            fastas[width] = path
+        selected_c = {
+            f"{baseline}_{width}": 0.01
+            for baseline in ("gc", "3mer", "6mer") for width in config.windows
+        }
+        pilot_manifest = root / "pilot.json"
+        pilot_manifest.write_text(json.dumps({
+            "schema_version": "task003b_pilot_acceptance_v1", "status": "accepted",
+            "test_boundary": {"test_accessed": False, "final_stage_authorized": False},
+            "development": {"selected_c": selected_c},
+        }))
+        return config, csv_path, membership, fastas, pilot_manifest
+
+    def test_phase_a_fits_all_models_and_never_builds_test_features(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config, csv_path, membership, fastas, pilot_manifest = self._fixture(root)
+            output = root / "output"
+            generation = run_phase_a(
+                config=config, csv_path=csv_path, membership_path=membership,
+                fasta_by_width=fastas, pilot_manifest_path=pilot_manifest,
+                output_root=output, expected_rows=5,
+            )
+            summary = json.loads((generation / "summary.json").read_text())
+            self.assertTrue(summary["all_fits_converged"])
+            self.assertEqual(summary["fit_record_count"], 122 * 3 * 3)
+            self.assertEqual(summary["protein_count"], 122)
+            self.assertEqual(summary["fitting_sequence_count"], 4)
+            self.assertFalse(summary["test_accessed"])
+            self.assertEqual(summary["test_labels_parsed"], 0)
+            self.assertEqual(summary["test_features_built"], 0)
+            self.assertEqual(summary["test_predictions_emitted"], 0)
+            self.assertTrue((generation / "model_500_6mer_coef.npy").is_file())
+            self.assertTrue((generation / "gc_bin_edges.json").is_file())
+            selected = json.loads((output / "selected/final_phase_a.json").read_text())
+            self.assertFalse(selected["payload"]["test_accessed"])
+
+    def test_phase_a_missing_fitting_class_fails_before_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config, csv_path, membership, fastas, pilot_manifest = self._fixture(root, all_positive=True)
+            output = root / "output"
+            with self.assertRaisesRegex(PhaseAError, "lacks both fitting classes"):
+                run_phase_a(
+                    config=config, csv_path=csv_path, membership_path=membership,
+                    fasta_by_width=fastas, pilot_manifest_path=pilot_manifest,
+                    output_root=output, expected_rows=5,
+                )
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

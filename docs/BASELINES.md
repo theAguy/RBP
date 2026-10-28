@@ -44,10 +44,21 @@ labels/features for scoring. Test rows may pass through whole-file hash or
 stream verification, but their labels are not parsed and their features are not
 constructed or retained.
 
-The final stage requires `--authorize-test` and remains unavailable until a
-completed pilot freezes all nine regularization choices. Final execution will
-fit and verify every train-plus-validation model before the test-scoring phase
-is permitted to start.
+The accepted pilot freezes all nine regularization choices. Final execution is
+split into two independently selected stages:
+
+- `final-phase-a` fits all 1,098 logistic models (122 proteins × three fitted
+  baselines × three widths) on train plus validation, records prevalence and
+  training-derived GC bins, and serializes coefficients/scalers. It rejects
+  `--authorize-test` and never parses a test label or builds a test feature.
+- `final-phase-b` will verify the accepted Phase-A generation and requires
+  `--authorize-test` before the one permitted test scoring pass. It remains
+  deliberately unavailable until Phase A is executed and reviewed.
+
+Phase A is run with the same immutable CSV, membership and three FASTAs as the
+pilot, plus the accepted `manifests/task003b_pilot_003b2.json`. A successful
+selection record is written to
+`artifacts/task003b_simple_baselines/selected/final_phase_a.json`.
 
 Generated row-level predictions remain under the Git-ignored
 `artifacts/task003b_simple_baselines/` tree. Tracked manifests contain only

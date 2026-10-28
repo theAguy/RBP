@@ -52,6 +52,11 @@ input/output hashes, aggregate development metrics, local resource profile,
 numerical repeat evidence, and the proof that no test label or feature was
 accessed. Row-level predictions remain under the Git-ignored `artifacts/` tree.
 
+`task003b_phase_a_003b3.json` records the accepted final Phase-A refit. It binds
+the complete hash-inventoried coefficient/scaler generation for all 122
+proteins, 1,098 converged logistic fits, fitting-label and resource summaries,
+and the proof that Phase B and all test interpretation remained unstarted.
+
 Future files include coordinate mappings, eligibility summaries, and frozen fold
 assignments.
 

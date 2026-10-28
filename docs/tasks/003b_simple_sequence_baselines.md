@@ -1,7 +1,7 @@
 # Task 003B — Simple sequence baselines on the locked split
 
-**Status:** checkpoints 003B-1 and 003B-2 accepted; 003B-3 remains blocked
-until explicit authorization to access the test partition
+**Status:** checkpoints 003B-1, 003B-2 and final Phase A accepted; Phase B test
+scoring remains unstarted pending the required post-Phase-A report boundary
 
 **Phase:** 3B, first predictive experiment after Task 003A
 

@@ -1,0 +1,82 @@
+{
+  "schema_version": "task003b_final_phase_a_acceptance_v1",
+  "status": "accepted",
+  "execution_commit": "d4332b265b12d707ddff9bd0ac98ff951bde6f48",
+  "stage": "final_phase_a_train_plus_validation_fit",
+  "inputs": {
+    "pilot_manifest": {
+      "path": "manifests/task003b_pilot_003b2.json",
+      "sha256": "de7ae98749ba4338d334ef1ba15db575b1dcaae8c425ad24cfa7153a782d4529"
+    },
+    "frozen_inputs_revalidated": true,
+    "membership_row_count": 361180,
+    "membership_sha256": "ca527da4f0c0615bcb9d31c6fc705523238e8fb8f4751473ccc2af3ee0aecddb"
+  },
+  "execution": {
+    "host": "local_mac",
+    "numerical_threads": 1,
+    "wall_seconds": 585.8396596671082,
+    "peak_rss_bytes": 6652665856,
+    "free_disk_before_gib": 135,
+    "generation": "generations/final_phase_a_53863d04e77e"
+  },
+  "fitting": {
+    "partitions": ["train", "validation"],
+    "protein_count": 122,
+    "fitting_sequence_count": 303582,
+    "logistic_fit_count": 1098,
+    "all_fits_converged": true,
+    "maximum_iterations_observed": 13,
+    "known_labels_per_protein_min": 806,
+    "known_labels_per_protein_max": 3159,
+    "positive_labels_per_protein_min": 388,
+    "negative_labels_per_protein_min": 408,
+    "selected_c": {
+      "gc_500": 0.01,
+      "gc_251": 0.01,
+      "gc_101": 0.01,
+      "3mer_500": 0.1,
+      "3mer_251": 0.1,
+      "3mer_101": 10.0,
+      "6mer_500": 0.01,
+      "6mer_251": 0.01,
+      "6mer_101": 0.01
+    }
+  },
+  "resources": {
+    "peak_width_feature_storage_bytes": 1768236236,
+    "feature_storage_bytes": {
+      "500": {"gc": 2428656, "3mer": 222445624, "6mer": 1543361956, "total": 1768236236},
+      "251": {"gc": 2428656, "3mer": 205406692, "6mer": 812922256, "total": 1020757604},
+      "101": {"gc": 2428656, "3mer": 157472032, "6mer": 331578304, "total": 491478992}
+    },
+    "retained_generation_bytes": 24560234,
+    "retained_generation_file_count": 33
+  },
+  "accepted_evidence": {
+    "selection_record": {
+      "path": "artifacts/task003b_simple_baselines/selected/final_phase_a.json",
+      "byte_size": 5960,
+      "sha256": "6e997c6fe9e3acc48baa4df8a36a82a2b5aa270ac4eea7f7f7ba5aefd82bf567"
+    },
+    "summary": {
+      "byte_size": 113836,
+      "sha256": "30046a1df70bcaef440c643ae0e8af8e8170972720005e55fc068be6e54649ed"
+    },
+    "gc_bin_edges": {
+      "byte_size": 62926,
+      "sha256": "33c804f45b40a250a979a9d7a467268cc8c3b873c85d687bd798c1751e412a7f"
+    },
+    "all_33_generation_files_bound_by_selection_inventory": true,
+    "model_array_shapes_and_finite_values_independently_verified": true
+  },
+  "test_boundary": {
+    "test_accessed": false,
+    "test_labels_parsed": 0,
+    "test_features_built": 0,
+    "test_predictions_emitted": 0,
+    "phase_b_record_exists": false,
+    "phase_b_status": "not_started"
+  },
+  "next_gate": "Report Phase A convergence and resources to the owner before implementing or executing Phase B."
+}

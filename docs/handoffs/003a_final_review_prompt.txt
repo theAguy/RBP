@@ -1,0 +1,19 @@
+Please act as the independent final reviewer for Task 003A. Do not implement
+changes in your first response.
+
+Repository: the current RBP repository
+Branch: issue-002c-partition-assignment
+Implementation commit: ea2611a
+
+Read and follow the complete review request:
+docs/reviews/003a_supervisor_split_validation_implementation_review_request.md
+
+Read every required file listed there, inspect the generated supervisor PDF,
+and answer all ten required review questions. You may run small read-only hash
+checks and the focused synthetic test file, but do not run a full real-data
+regeneration, MMseqs2, model training, or network access.
+
+Return exactly one evidence-backed verdict: `Accept Task 003A` or `Approve
+with bounded corrections`. Treat cosmetic preferences as non-blocking. If you
+request a correction, state the concrete scientific or reproducibility failure
+it prevents and the smallest bounded fix.

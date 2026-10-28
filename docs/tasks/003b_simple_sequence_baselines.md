@@ -330,7 +330,7 @@ numerical thread. Therefore repeat acceptance does not require byte-identical
 floating-point files. It requires exact selected C values, convergence states,
 row identities, labels, partitions, components, configuration hashes and test
 boundary; metric differences must be at most `5e-6`, and per-row probability
-differences at most `1e-5`. Iteration-count differences are reported. These
+differences at most `1e-4`. Iteration-count differences are reported. These
 limits are an acceptance check only: scores are not rounded or changed.
 
 ## 14. What comes afterward

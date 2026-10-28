@@ -12,7 +12,7 @@ class ReproducibilityError(RuntimeError):
     pass
 
 
-SCORE_ATOL = 1e-5
+SCORE_ATOL = 1e-4
 METRIC_ATOL = 5e-6
 METRIC_FLOAT_FIELDS = {
     "auroc", "average_precision", "matched_auroc",

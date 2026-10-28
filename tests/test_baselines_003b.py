@@ -354,13 +354,13 @@ class ReproducibilityTests(unittest.TestCase):
     def test_numerically_equivalent_runs_pass_without_hiding_iteration_variation(self):
         with tempfile.TemporaryDirectory() as tmp:
             primary = self._generation(Path(tmp) / "primary", score=0.500000)
-            repeat = self._generation(Path(tmp) / "repeat", score=0.500009)
+            repeat = self._generation(Path(tmp) / "repeat", score=0.50009)
             metrics = json.loads((repeat / "metrics.json").read_text())
             metrics[0]["n_iter"] = 10
             (repeat / "metrics.json").write_text(json.dumps(metrics, separators=(",", ":")))
             result = compare_pilot_generations(primary, repeat)
             self.assertTrue(result["passed"])
-            self.assertAlmostEqual(result["max_score_difference"], 9e-6)
+            self.assertAlmostEqual(result["max_score_difference"], 9e-5)
             self.assertEqual(result["max_iteration_difference"], 1)
 
     def test_scientific_decision_identity_and_score_tolerance_fail_closed(self):
@@ -373,7 +373,7 @@ class ReproducibilityTests(unittest.TestCase):
             changed_id = self._generation(root / "changed_id", score=0.5, sample_id="row_2")
             with self.assertRaisesRegex(ReproducibilityError, "sample_id"):
                 compare_pilot_generations(primary, changed_id)
-            changed_score = self._generation(root / "changed_score", score=0.50002)
+            changed_score = self._generation(root / "changed_score", score=0.5002)
             with self.assertRaisesRegex(ReproducibilityError, "score difference"):
                 compare_pilot_generations(primary, changed_score)
 

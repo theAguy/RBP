@@ -297,7 +297,8 @@ Stop without silently changing scope if:
 - the 6-mer representation becomes dense or exceeds the local resource gate;
 - no candidate C fully converges for a pilot baseline/width;
 - any final Phase-A fit fails to converge (Phase B must remain unstarted);
-- primary/repeat pilot results differ;
+- primary/repeat pilot scientific decisions or identities differ, or numerical
+  differences exceed the frozen reproducibility tolerances below;
 - the final command differs from the frozen pilot code/config;
 - the full run would exceed measured local resources.
 
@@ -320,6 +321,17 @@ Task 003B closes only when:
    evaluation set;
 10. the report distinguishes baseline performance from the still-unrun former
     model and competitors.
+
+### Numerical reproducibility clarification
+
+The pinned `liblinear` implementation may stop one iteration earlier or later
+and can differ in the final probability digits despite a fixed seed and one
+numerical thread. Therefore repeat acceptance does not require byte-identical
+floating-point files. It requires exact selected C values, convergence states,
+row identities, labels, partitions, components, configuration hashes and test
+boundary; metric differences must be at most `5e-6`, and per-row probability
+differences at most `1e-5`. Iteration-count differences are reported. These
+limits are an acceptance check only: scores are not rounded or changed.
 
 ## 14. What comes afterward
 

@@ -20,6 +20,7 @@ from rbpbench.baselines.metrics import MetricError, auroc, average_precision, su
 from rbpbench.baselines.models import BaselineFitError, fit_logistic, prevalence_score, select_c
 from rbpbench.baselines.output import Generation, OutputError, atomic_write, verify_selected
 from rbpbench.baselines.pilot import run_pilot
+from rbpbench.baselines.reproducibility import ReproducibilityError, compare_pilot_generations
 from rbpbench.baselines.runner import RunnerError, main as runner_main, verify_production_inputs
 
 
@@ -315,6 +316,60 @@ class PilotPipelineTests(unittest.TestCase):
                 path.write_text("fixture")
             with self.assertRaisesRegex(RunnerError, "hash mismatch"):
                 verify_production_inputs(args, config)
+
+
+class ReproducibilityTests(unittest.TestCase):
+    def _generation(self, root: Path, *, score: float, selected_c: float = 0.1, sample_id: str = "row_1") -> Path:
+        root.mkdir()
+        evidence = [{"c": 0.1, "eligible": True, "fit_count": 8, "macro_validation_auroc": 0.8}]
+        summary = {
+            "schema_version": "task003b_pilot_v1", "status": "complete",
+            "test_accessed": False, "test_labels_parsed": 0, "test_features_built": 0,
+            "protein_ids": [33], "widths": [500], "selected_c": {"3mer_500": selected_c},
+            "selection_evidence": {"3mer_500": {"selected_c": selected_c, "evidence": evidence}},
+            "metric_row_count": 1, "prediction_row_count": 1,
+        }
+        metric = [{
+            "protein_id": 33, "width": 500, "baseline": "3mer", "c": selected_c,
+            "converged": True, "n_iter": 9, "auroc": 0.8, "average_precision": 0.7,
+            "matched_auroc": 0.75, "matched_average_precision": 0.65,
+            "prevalence": 0.4, "positive_count": 10, "negative_count": 12,
+            "matched_count": 14, "config_hash": "a" * 64,
+        }]
+        (root / "summary.json").write_text(json.dumps(summary, separators=(",", ":")))
+        (root / "metrics.json").write_text(json.dumps(metric, separators=(",", ":")))
+        body = (
+            "sample_id\tcomponent_id\tprotein_id\tfold\tpartition\tseed\twindow\tconfig_id\tconfig_hash\tlabel\tscore\n"
+            f"{sample_id}\tc1\t33\tpilot\tvalidation\t1\t500\t3mer\t{'a' * 64}\t1\t{score}\n"
+        )
+        (root / "predictions.tsv.gz").write_bytes(gzip.compress(body.encode(), mtime=0))
+        return root
+
+    def test_numerically_equivalent_runs_pass_without_hiding_iteration_variation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = self._generation(Path(tmp) / "primary", score=0.500000)
+            repeat = self._generation(Path(tmp) / "repeat", score=0.500009)
+            metrics = json.loads((repeat / "metrics.json").read_text())
+            metrics[0]["n_iter"] = 10
+            (repeat / "metrics.json").write_text(json.dumps(metrics, separators=(",", ":")))
+            result = compare_pilot_generations(primary, repeat)
+            self.assertTrue(result["passed"])
+            self.assertAlmostEqual(result["max_score_difference"], 9e-6)
+            self.assertEqual(result["max_iteration_difference"], 1)
+
+    def test_scientific_decision_identity_and_score_tolerance_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            primary = self._generation(root / "primary", score=0.5)
+            changed_c = self._generation(root / "changed_c", score=0.5, selected_c=1.0)
+            with self.assertRaisesRegex(ReproducibilityError, "selected_c"):
+                compare_pilot_generations(primary, changed_c)
+            changed_id = self._generation(root / "changed_id", score=0.5, sample_id="row_2")
+            with self.assertRaisesRegex(ReproducibilityError, "sample_id"):
+                compare_pilot_generations(primary, changed_id)
+            changed_score = self._generation(root / "changed_score", score=0.50002)
+            with self.assertRaisesRegex(ReproducibilityError, "score difference"):
+                compare_pilot_generations(primary, changed_score)
 
 
 if __name__ == "__main__":

@@ -18,17 +18,19 @@ import time
 import uuid
 
 from rbpbench.analysis.figures import (
-    figure1_process,
     figure2_leakage,
     figure3_components,
     figure4_edges,
-    figure5_partitions,
     figure6_balance,
     figure7_support,
     figure8_composition,
+    figure_similarity_example,
+    figure_supervisor_final_quality,
+    figure_supervisor_former_vs_ours,
+    figure_supervisor_split_evidence,
     save_figure,
 )
-from rbpbench.analysis.reporting import build_markdown, build_supervisor_pdf
+from rbpbench.analysis.reporting import build_markdown, build_supervisor_pdf, build_technical_appendix_pdf
 from rbpbench.analysis.split_validation import (
     PARTITIONS,
     ROW_COUNT,
@@ -230,8 +232,11 @@ def build_artifact_readme(results: Mapping) -> str:
     return f"""# Task 003A split-validation artifact
 
 This package is the model-blind supervisor report for the accepted Task 002C
-sequence split. It contains eight figures in SVG/PDF/300-dpi PNG, all numerical
-source tables, the supervisor PDF, and provenance.
+sequence split. The main report contains four direct figures comparing the
+former teammate's row split with our component split. A separate technical
+appendix preserves the rejected-v1 history and detailed diagnostics. All
+figures are available in SVG/PDF/300-dpi PNG alongside numerical source tables
+and provenance.
 
 Key accepted result: {results['closure']['universe']['component_count']:,}
 components, zero split components, zero exact/RC cross-partition groups, and
@@ -359,24 +364,33 @@ def run(args) -> Path:
         (candidate / "results.json").write_bytes(json_bytes(results))
 
         figures = candidate / "figures"
+        technical_figures = figures / "technical"
         drawings = [
-            ("figure_01_split_transition", figure1_process()),
-            ("figure_02_leakage_evidence", figure2_leakage(v1_crossing, v2_crossing)),
-            ("figure_03_component_structure", figure3_components(component_rows, closure)),
-            ("figure_04_width_edges", figure4_edges({int(k): int(v) for k, v in closure["direct_edges"].items()}, overlap, results["exact_rc_edge_count"])),
-            ("figure_05_partition_integrity", figure5_partitions(closure)),
-            ("figure_06_protein_balance", figure6_balance(protein_rows, protein_summary)),
-            ("figure_07_evaluation_support", figure7_support(protein_rows)),
-            ("figure_08_sequence_composition", figure8_composition(composition_summaries, composition_effects)),
+            ("figure_01_former_vs_ours", figure_supervisor_former_vs_ours(v2_crossing, closure)),
+            ("figure_02_similarity_example", figure_similarity_example()),
+            ("figure_03_split_evidence", figure_supervisor_split_evidence(v2_crossing, closure)),
+            ("figure_04_final_split_quality", figure_supervisor_final_quality(closure, balance)),
+        ]
+        technical_drawings = [
+            ("technical_01_rejected_v1_audit", figure2_leakage(v1_crossing, v2_crossing)),
+            ("technical_02_component_structure", figure3_components(component_rows, closure)),
+            ("technical_03_width_edges", figure4_edges({int(k): int(v) for k, v in closure["direct_edges"].items()}, overlap, results["exact_rc_edge_count"])),
+            ("technical_04_protein_balance", figure6_balance(protein_rows, protein_summary)),
+            ("technical_05_evaluation_support", figure7_support(protein_rows)),
+            ("technical_06_sequence_composition", figure8_composition(composition_summaries, composition_effects)),
         ]
         figure_paths = {}
         for stem, drawing in drawings:
             figure_paths[stem] = save_figure(drawing, figures, stem)
+        technical_paths = {}
+        for stem, drawing in technical_drawings:
+            technical_paths[stem] = save_figure(drawing, technical_figures, stem)
 
         artifact_links = {f"figure{index}": f"figures/{stem}.svg" for index, (stem, _) in enumerate(drawings, 1)}
         artifact_report = build_markdown(results, composition_effects, artifact_links)
         (candidate / "supervisor_report.md").write_text(artifact_report)
         build_supervisor_pdf(candidate / "supervisor_report.pdf", [figure_paths[stem]["pdf"] for stem, _ in drawings], results, composition_effects)
+        build_technical_appendix_pdf(candidate / "technical_appendix.pdf", [technical_paths[stem]["pdf"] for stem, _ in technical_drawings])
         (candidate / "README.md").write_text(build_artifact_readme(results))
 
         # The reproduced row-level legacy fold is scratch evidence only.  Its
@@ -408,8 +422,10 @@ def run(args) -> Path:
         final_inventory = output_inventory(candidate)
         if not all(item["byte_size"] > 0 for item in final_inventory):
             raise ValidationError("generated package contains an empty file")
-        if len(list(figures.glob("*.svg"))) != 8 or len(list(figures.glob("*.pdf"))) != 8 or len(list(figures.glob("*.png"))) != 8:
-            raise ValidationError("figure format inventory is incomplete")
+        if any(len(list(figures.glob(f"*.{suffix}"))) != 4 for suffix in ("svg", "pdf", "png")):
+            raise ValidationError("main figure format inventory is incomplete")
+        if any(len(list(technical_figures.glob(f"*.{suffix}"))) != 6 for suffix in ("svg", "pdf", "png")):
+            raise ValidationError("technical figure format inventory is incomplete")
 
         final_generation.parent.mkdir(parents=True, exist_ok=True)
         os.replace(candidate, final_generation)
@@ -419,12 +435,17 @@ def run(args) -> Path:
             "results_sha256": sha256_file(final_generation / "results.json"),
             "provenance_sha256": sha256_file(final_generation / "provenance.json"),
             "supervisor_pdf_sha256": sha256_file(final_generation / "supervisor_report.pdf"),
+            "technical_appendix_pdf_sha256": sha256_file(final_generation / "technical_appendix.pdf"),
         }
         atomic_write(output_root / "selected.json", json_bytes(selected))
 
         # Publish only small, reviewable sources into tracked documentation.
         docs_figures = root / "docs/reports/figures/003a"
         docs_figures.mkdir(parents=True, exist_ok=True)
+        expected_docs_svgs = {f"{stem}.svg" for stem, _ in drawings}
+        for stale in docs_figures.glob("*.svg"):
+            if stale.name not in expected_docs_svgs:
+                stale.unlink()
         for stem, _ in drawings:
             atomic_write(docs_figures / f"{stem}.svg", (final_generation / "figures" / f"{stem}.svg").read_bytes())
         docs_links = {f"figure{index}": f"figures/003a/{stem}.svg" for index, (stem, _) in enumerate(drawings, 1)}
@@ -433,7 +454,7 @@ def run(args) -> Path:
 
         sanitized = {
             "schema_version": "task003a_split_validation_report_v1",
-            "status": "accepted_candidate_for_final_review",
+            "status": "complete",
             "task": "003A",
             "source_generation": final_generation.relative_to(root).as_posix(),
             "results": {
@@ -448,6 +469,7 @@ def run(args) -> Path:
             "inputs": {name: {key: value for key, value in item.items() if key in ("byte_size", "sha256")} for name, item in inputs.items()},
             "outputs": {
                 "supervisor_report_pdf": {"byte_size": (final_generation / "supervisor_report.pdf").stat().st_size, "sha256": sha256_file(final_generation / "supervisor_report.pdf")},
+                "technical_appendix_pdf": {"byte_size": (final_generation / "technical_appendix.pdf").stat().st_size, "sha256": sha256_file(final_generation / "technical_appendix.pdf")},
                 "results_json": {"byte_size": (final_generation / "results.json").stat().st_size, "sha256": sha256_file(final_generation / "results.json")},
                 "provenance_json": {"byte_size": (final_generation / "provenance.json").stat().st_size, "sha256": sha256_file(final_generation / "provenance.json")},
                 "tracked_report_md": {"byte_size": (root / "docs/reports/003a_supervisor_split_validation.md").stat().st_size, "sha256": sha256_file(root / "docs/reports/003a_supervisor_split_validation.md")},

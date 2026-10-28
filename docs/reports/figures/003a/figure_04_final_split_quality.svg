@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<svg width="1000" height="600" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="1000" height="600"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-600)" style="clip-path: url(#clip)">
+		<g transform="">
+			<text x="28" y="566" style="font-family: Helvetica-Bold; font-size: 17px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,1132) scale(1,-1)">Figure 4. The accepted split remains practical for model comparison</text>
+			<text x="28" y="548" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,1096) scale(1,-1)">Whole components are preserved while evaluation support stays above the frozen floor</text>
+			<rect x="95" y="445" width="520" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,92%,94%); fill-rule: evenodd;"/>
+			<rect x="95" y="445" width="354.19691012791407" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;"/>
+			<path d="M 459,438 L 459,480 Z" style="stroke: rgb(13%,13%,13%); stroke-linecap: butt; stroke-width: 2;"/>
+			<text x="55.55" y="453" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,906) scale(1,-1)">Train</text>
+			<text x="627" y="453" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,906) scale(1,-1)">246,017 (68.11%)</text>
+			<rect x="95" y="360" width="520" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,92%,94%); fill-rule: evenodd;"/>
+			<rect x="95" y="360" width="82.87778946785537" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,62%,0%); fill-rule: evenodd;"/>
+			<path d="M 173,353 L 173,395 Z" style="stroke: rgb(13%,13%,13%); stroke-linecap: butt; stroke-width: 2;"/>
+			<text x="32.21" y="368" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,736) scale(1,-1)">Validation</text>
+			<text x="627" y="368" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,736) scale(1,-1)">57,565 (15.94%)</text>
+			<rect x="95" y="275" width="520" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,92%,94%); fill-rule: evenodd;"/>
+			<rect x="95" y="275" width="82.9253004042306" height="28" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,61%,45%); fill-rule: evenodd;"/>
+			<path d="M 173,268 L 173,310 Z" style="stroke: rgb(13%,13%,13%); stroke-linecap: butt; stroke-width: 2;"/>
+			<text x="59.44" y="283" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,566) scale(1,-1)">Test</text>
+			<text x="627" y="283" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,566) scale(1,-1)">57,598 (15.95%)</text>
+			<text x="95" y="185" style="font-family: Helvetica-Bold; font-size: 13px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,370) scale(1,-1)">0 / 169,699 components split</text>
+			<text x="735" y="465" style="font-family: Helvetica-Bold; font-size: 13px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,930) scale(1,-1)">Evaluation support</text>
+			<text x="735" y="405" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,810) scale(1,-1)">minimum known positives</text>
+			<text x="909.984" y="401" style="font-family: Helvetica-Bold; font-size: 18px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,802) scale(1,-1)">97</text>
+			<text x="735" y="340" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,680) scale(1,-1)">minimum known negatives</text>
+			<text x="909.984" y="336" style="font-family: Helvetica-Bold; font-size: 18px;fill: rgb(0%,44%,69%); stroke:none;" transform="translate(0,672) scale(1,-1)">80</text>
+			<text x="735" y="275" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,550) scale(1,-1)">required floor</text>
+			<text x="909.984" y="271" style="font-family: Helvetica-Bold; font-size: 18px;fill: rgb(83%,36%,0%); stroke:none;" transform="translate(0,542) scale(1,-1)">30</text>
+			<text x="735" y="205" style="font-family: Helvetica-Bold; font-size: 13px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,410) scale(1,-1)">Balance limitation</text>
+			<text x="735" y="165" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(90%,62%,0%); stroke:none;" transform="translate(0,330) scale(1,-1)">54 / 122 proteins</text>
+			<text x="735" y="142" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,284) scale(1,-1)">have at least one validation/test fraction more</text>
+			<text x="735" y="131.375" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,262) scale(1,-1)">than 3 percentage points from target. We</text>
+			<text x="735" y="120.75" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,241) scale(1,-1)">disclose this; we do not split related families</text>
+			<text x="735" y="110.125" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,220) scale(1,-1)">to hide it.</text>
+			<text x="95" y="100" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,200) scale(1,-1)">The achieved 68.11/15.94/15.95% proportions are close to 70/15/15. The slight deviation is the</text>
+			<text x="95" y="88.75" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,177) scale(1,-1)">cost of keeping connected sequence families intact.</text>
+		</g>
+	</g>
+</svg>

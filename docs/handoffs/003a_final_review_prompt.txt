@@ -1,3 +1,6 @@
+SUPERSEDED: the presentation was simplified after this request was written.
+No further Claude review is required for the presentation-only revision.
+
 Please act as the independent final reviewer for Task 003A. Do not implement
 changes in your first response.
 

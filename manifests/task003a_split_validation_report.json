@@ -62,61 +62,45 @@
   },
   "outputs": {
     "provenance_json": {
-      "byte_size": 11215,
-      "sha256": "ddabc6ccdb067e671c9e23a6f3608e8d4bc738623777df316a0991250ad16a23"
+      "byte_size": 12673,
+      "sha256": "f5c0c24971048b0d96641d1ef1a672390d291bf3a3f5aeaf250f9b8d6aedbb9e"
     },
     "results_json": {
       "byte_size": 5430,
       "sha256": "45f240c3d7c3113005e3eba42838d1e1088598d267c07d83ab5d0b1e7922d1a0"
     },
     "supervisor_report_pdf": {
-      "byte_size": 445126,
-      "sha256": "046350dc0ddfa317e7a9dcf741f99dc8fee2c76a85e278773b95151203d1a76c"
+      "byte_size": 29979,
+      "sha256": "9f670d112093a93e67b27fb66573a495b8c0418316e39fb183c0b45b1591cef4"
+    },
+    "technical_appendix_pdf": {
+      "byte_size": 428203,
+      "sha256": "05b180f4cd293efbedb22b20e1571314539e62016527f42b6dbbb0cf01ad2e6b"
     },
     "tracked_report_md": {
-      "byte_size": 5407,
-      "sha256": "8d30969be5d6a3dd14f02d5809bed82b569788107b05e38b41e350977f60b170"
+      "byte_size": 4053,
+      "sha256": "089e0219868d9bca3a4fa2c8560f026f8600ebdf742b97e18e5f2fa067ca1de8"
     },
     "tracked_svg_figures": [
       {
-        "byte_size": 6157,
-        "path": "docs/reports/figures/003a/figure_01_split_transition.svg",
-        "sha256": "58a2f0e76679426037e389cde65d79e5b731b30d1ac84a7d07cd86fcd8c19af4"
+        "byte_size": 6960,
+        "path": "docs/reports/figures/003a/figure_01_former_vs_ours.svg",
+        "sha256": "e3b27cd3eac17461a8ba32029e48a3b4d464d68a195821f0eae9941b2b4f169e"
       },
       {
-        "byte_size": 16830,
-        "path": "docs/reports/figures/003a/figure_02_leakage_evidence.svg",
-        "sha256": "91e62834ba4508582581bccf328f3abc9d3665753be3351640e7d7ee0511f9ea"
+        "byte_size": 8910,
+        "path": "docs/reports/figures/003a/figure_02_similarity_example.svg",
+        "sha256": "781d7d90cdafd5b7e5126649b07eb02ef85284fb5ddfcbe8923cf72fce8ec6e6"
       },
       {
-        "byte_size": 12803,
-        "path": "docs/reports/figures/003a/figure_03_component_structure.svg",
-        "sha256": "ee6bf9da896c940991d929414bbab3ac415c9084a1e4f9f11932659f204daf22"
+        "byte_size": 5413,
+        "path": "docs/reports/figures/003a/figure_03_split_evidence.svg",
+        "sha256": "201ef745965c71a3cddd0b8163fc1b7d2bc65a725260f92e83e3266b91c15d51"
       },
       {
-        "byte_size": 7707,
-        "path": "docs/reports/figures/003a/figure_04_width_edges.svg",
-        "sha256": "bf3ee91565fe1dd357623a1e50f48b407497612d5090b3636330fc9846ee34c1"
-      },
-      {
-        "byte_size": 4629,
-        "path": "docs/reports/figures/003a/figure_05_partition_integrity.svg",
-        "sha256": "0af6af5e095bb74647697d47ea4fdb4e5a3c936e6cbaf2c0ef71fb683908dadc"
-      },
-      {
-        "byte_size": 387088,
-        "path": "docs/reports/figures/003a/figure_06_protein_balance.svg",
-        "sha256": "b8c02e4c1073f70691fdd01dd957c01a4db332f2d5c7c038519863513ecf1a64"
-      },
-      {
-        "byte_size": 87998,
-        "path": "docs/reports/figures/003a/figure_07_evaluation_support.svg",
-        "sha256": "674e2c4ea639542c5b529b13f1c0426463c25ab1065a5c538ac5a56c84db50c6"
-      },
-      {
-        "byte_size": 24559,
-        "path": "docs/reports/figures/003a/figure_08_sequence_composition.svg",
-        "sha256": "d124a632507b2c6065c2fe1d76341c8b5b42b656c7335daac2f84e8bf11f4a0f"
+        "byte_size": 6460,
+        "path": "docs/reports/figures/003a/figure_04_final_split_quality.svg",
+        "sha256": "c13c4a200c274238d0d6f3a759615277538fc06cf519d1c15aab3d9611310777"
       }
     ]
   },
@@ -176,7 +160,7 @@
     }
   },
   "schema_version": "task003a_split_validation_report_v1",
-  "source_generation": "artifacts/task003a_split_validation/generations/task003a_0c89d75feec7",
-  "status": "accepted_candidate_for_final_review",
+  "source_generation": "artifacts/task003a_split_validation/generations/task003a_936553350b66",
+  "status": "complete",
   "task": "003A"
 }

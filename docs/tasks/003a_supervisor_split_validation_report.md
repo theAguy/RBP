@@ -1,7 +1,6 @@
 # Task 003A — Supervisor-facing split validation report
 
-**Status:** implementation and real-data execution complete; final independent
-acceptance review pending
+**Status:** complete; supervisor presentation simplified after implementation
 
 **Phase:** 3A, descriptive validation before any baseline or model training
 
@@ -14,14 +13,19 @@ Create a reproducible, scientifically careful set of figures, tables, and a
 short supervisor-facing report demonstrating:
 
 1. why the former teammate's row-level split is not leakage-safe;
-2. why the intermediate v1 component assignment was rejected;
-3. how components v2 corrected the construction/audit mismatch;
-4. that the final split passes all frozen component, assignment, and leakage
+2. how a concrete qualifying or failing 90%-identity example is evaluated;
+3. that the final split assigns complete sequence components and passes all
+   frozen component, assignment, and leakage
    gates;
-5. which per-protein label imbalances remain and how they constrain later
+4. which per-protein label imbalances remain and how they constrain later
    interpretation; and
-6. whether simple sequence-composition properties differ materially among
+5. whether simple sequence-composition properties differ materially among
    train, validation, and test.
+
+The main supervisor report intentionally compares only the former split with
+the accepted split. The rejected intermediate v1 construction remains in a
+separate technical appendix for reproducibility; understanding v1 is not
+required to follow the main conclusion.
 
 Task 003A is descriptive only. It does not train a baseline or neural model,
 inspect predictions, tune a similarity threshold, modify membership, choose a

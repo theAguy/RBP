@@ -1,4 +1,8 @@
-# Task 003A supervisor split validation — final implementation review request
+# Task 003A supervisor split validation — superseded review request
+
+> Superseded by the direct former-versus-accepted supervisor presentation.
+> The underlying scientific evidence is unchanged; no further Claude review
+> is required for this presentation-only revision.
 
 ## Review purpose
 

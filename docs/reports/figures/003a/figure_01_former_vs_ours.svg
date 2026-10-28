@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<svg width="1000" height="560" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="1000" height="560"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-560)" style="clip-path: url(#clip)">
+		<g transform="">
+			<text x="28" y="526" style="font-family: Helvetica-Bold; font-size: 17px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,1052) scale(1,-1)">Figure 1. Former row split versus our sequence-family split</text>
+			<text x="28" y="508" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,1016) scale(1,-1)">The difference is the unit assigned to train, validation, or test</text>
+			<rect x="55" y="205" width="415" height="245" rx="10" ry="10" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 2.2; fill: rgb(83%,36%,0%); fill-rule: evenodd; fill-opacity: 0.07;"/>
+			<text x="191.1765" y="410" style="font-family: Helvetica-Bold; font-size: 17px;fill: rgb(83%,36%,0%); stroke:none;" transform="translate(0,820) scale(1,-1)">Former teammate</text>
+			<text x="199.2875" y="375" style="font-family: Helvetica-Bold; font-size: 13px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,750) scale(1,-1)">Split individual rows</text>
+			<text x="168.845" y="345" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,690) scale(1,-1)">Related rows could land on opposite sides</text>
+			<rect x="530" y="205" width="415" height="245" rx="10" ry="10" style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 2.2; fill: rgb(0%,61%,45%); fill-rule: evenodd; fill-opacity: 0.07;"/>
+			<text x="674.6765" y="410" style="font-family: Helvetica-Bold; font-size: 17px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,820) scale(1,-1)">Our benchmark</text>
+			<text x="652.623" y="375" style="font-family: Helvetica-Bold; font-size: 13px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,750) scale(1,-1)">Split complete components</text>
+			<text x="632.175" y="345" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,690) scale(1,-1)">Every protected sequence family stays together</text>
+			<rect x="105" y="295" width="110" height="30" rx="4" ry="4" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;"/>
+			<text x="147.499" y="304" style="font-family: Helvetica-Bold; font-size: 9px;fill: rgb(100%,100%,100%); stroke:none;" transform="translate(0,608) scale(1,-1)">row A</text>
+			<rect x="105" y="250" width="110" height="30" rx="4" ry="4" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,62%,0%); fill-rule: evenodd;"/>
+			<text x="128.4955" y="259" style="font-family: Helvetica-Bold; font-size: 9px;fill: rgb(100%,100%,100%); stroke:none;" transform="translate(0,518) scale(1,-1)">row B (related)</text>
+			<path d="M 220,310 L 315,310 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 3;"/>
+			<path d="M 220,265 L 315,265 Z" style="stroke: rgb(90%,62%,0%); stroke-linecap: butt; stroke-width: 3;"/>
+			<text x="330" y="306" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(0%,44%,69%); stroke:none;" transform="translate(0,612) scale(1,-1)">train</text>
+			<text x="330" y="261" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(90%,62%,0%); stroke:none;" transform="translate(0,522) scale(1,-1)">holdout</text>
+			<path d="M 155,289 L 155,282 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 2;"/>
+			<path d="M 148,285 L 155,278 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 2;"/>
+			<path d="M 162,285 L 155,278 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 2;"/>
+			<text x="170.314" y="222" style="font-family: Helvetica-Bold; font-size: 12px;fill: rgb(83%,36%,0%); stroke:none;" transform="translate(0,444) scale(1,-1)">63.97% of holdout rows affected</text>
+			<rect x="590" y="245" width="210" height="92" rx="9" ry="9" style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 2; fill: rgb(0%,61%,45%); fill-rule: evenodd; fill-opacity: 0.1;"/>
+			<text x="625.018" y="315" style="font-family: Helvetica-Bold; font-size: 11px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,630) scale(1,-1)">one connected component</text>
+			<rect x="615" y="265" width="70" height="27" rx="3" ry="3" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;"/>
+			<rect x="705" y="265" width="70" height="27" rx="3" ry="3" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,62%,0%); fill-rule: evenodd;"/>
+			<text x="638.888" y="273" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(100%,100%,100%); stroke:none;" transform="translate(0,546) scale(1,-1)">row A</text>
+			<text x="728.888" y="273" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(100%,100%,100%); stroke:none;" transform="translate(0,546) scale(1,-1)">row B</text>
+			<path d="M 805,291 L 875,291 Z" style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 3;"/>
+			<text x="890" y="287" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,574) scale(1,-1)">one partition</text>
+			<text x="655.634" y="222" style="font-family: Helvetica-Bold; font-size: 12px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,444) scale(1,-1)">0 / 169,699 components split</text>
+			<text x="55" y="145" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,290) scale(1,-1)">The former split optimized label proportions at the row level. Our split accepts slightly imperfect proportions so that related sequences cannot be</text>
+			<text x="55" y="132.5" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,265) scale(1,-1)">divided between model development and evaluation.</text>
+			<text x="55" y="85" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,170) scale(1,-1)">This is a comparison of data boundaries, not model performance. Both models must later be trained and evaluated on the same accepted split before</text>
+			<text x="55" y="73.75" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,147) scale(1,-1)">their AUROC values can be compared.</text>
+		</g>
+	</g>
+</svg>

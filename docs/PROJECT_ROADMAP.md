@@ -407,17 +407,19 @@ closure and `docs/SEQUENCE_SPLIT_AUDIT_EXPLAINER.md` for the detailed account.
 
 ## 13. Phase 3 — simple baselines
 
-### 13.1 Supervisor split-validation evidence — complete, final review pending
+### 13.1 Supervisor split-validation evidence — complete
 
-Task 003A converted the accepted Task 002C evidence into eight versioned
-figures, machine-readable tables, and a ten-page supervisor report without
-opening predictions or training any model. It independently reproduced the
-former notebook's fold, reconciled the historical v1 leakage result, and
-recomputed the same fold against final components v2. The final package also
-revalidated zero split components, all 18 directed audits, exact/reverse-
-complement containment, per-protein label support, and simple sequence-
-composition balance. See `docs/reports/003a_supervisor_split_validation.md`
-and `manifests/task003a_split_validation_report.json`.
+Task 003A converted the accepted Task 002C evidence into four direct,
+supervisor-facing figures, machine-readable tables, and a short report without
+opening predictions or training any model. The main story compares the former
+row-level fold directly with our whole-component split and includes concrete
+qualifying and failing similarity examples. Rejected-v1 construction history
+and dense diagnostics are preserved in a separate technical appendix. The
+package revalidated zero split components, all 18 directed audits,
+exact/reverse-complement containment, per-protein label support, and simple
+sequence-composition balance. See
+`docs/reports/003a_supervisor_split_validation.md` and
+`manifests/task003a_split_validation_report.json`.
 
 The largest composition effect was a borderline normalized-entropy difference
 at 500 nt (absolute SMD 0.101, only 0.001 above the prespecified reporting
@@ -513,11 +515,10 @@ reproducibility study rather than forcing a positive model claim.
 
 ## 18. Immediate next actions
 
-1. Complete the independent final review of the Task 003A supervisor report.
-2. Implement and run simple training-only baselines on the locked split.
-3. Validate the former model and three core competitor implementations on the
+1. Implement and run simple training-only baselines on the locked split.
+2. Validate the former model and three core competitor implementations on the
    eight-protein development panel without opening the locked test results.
-4. Freeze development choices, then run the full controlled comparison.
+3. Freeze development choices, then run the full controlled comparison.
 
 ## 19. Claims we can and cannot make today
 

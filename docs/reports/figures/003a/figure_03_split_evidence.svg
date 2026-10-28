@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<svg width="1000" height="560" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="1000" height="560"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-560)" style="clip-path: url(#clip)">
+		<g transform="">
+			<text x="28" y="526" style="font-family: Helvetica-Bold; font-size: 17px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,1052) scale(1,-1)">Figure 3. The former boundary leaks related families; ours does not</text>
+			<text x="28" y="508" style="font-family: Helvetica; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,1016) scale(1,-1)">Direct comparison using final components and independent audits</text>
+			<text x="70" y="450" style="font-family: Helvetica-Bold; font-size: 15px;fill: rgb(83%,36%,0%); stroke:none;" transform="translate(0,900) scale(1,-1)">Former teammate's row split</text>
+			<rect x="70" y="365" width="360" height="34" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,92%,94%); fill-rule: evenodd;"/>
+			<rect x="70" y="365" width="230.29016003100946" height="34" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;"/>
+			<text x="70" y="406" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,812) scale(1,-1)">Holdout rows in a family also present in training</text>
+			<text x="438" y="368" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,736) scale(1,-1)">46,209/72,236  (63.97%)</text>
+			<rect x="70" y="270" width="360" height="34" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(90%,92%,94%); fill-rule: evenodd;"/>
+			<rect x="70" y="270" width="156.70136773907748" height="34" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;"/>
+			<text x="70" y="311" style="font-family: Helvetica; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,622) scale(1,-1)">Training rows in a family also present in holdout</text>
+			<text x="438" y="273" style="font-family: Helvetica-Bold; font-size: 8px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,546) scale(1,-1)">125,772/288,944  (43.53%)</text>
+			<text x="570" y="450" style="font-family: Helvetica-Bold; font-size: 15px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,900) scale(1,-1)">Our component split</text>
+			<rect x="570" y="365" width="365" height="58" rx="6" ry="6" style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,61%,45%); fill-rule: evenodd; fill-opacity: 0.09;"/>
+			<text x="590" y="398" style="font-family: Helvetica; font-size: 9px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,796) scale(1,-1)">Components divided across partitions</text>
+			<text x="844.944" y="387" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,774) scale(1,-1)">0 / 169,699</text>
+			<rect x="570" y="283" width="365" height="58" rx="6" ry="6" style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,61%,45%); fill-rule: evenodd; fill-opacity: 0.09;"/>
+			<text x="590" y="316" style="font-family: Helvetica; font-size: 9px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,632) scale(1,-1)">Exact / reverse-complement groups crossing</text>
+			<text x="907.216" y="305" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,610) scale(1,-1)">0</text>
+			<rect x="570" y="201" width="365" height="58" rx="6" ry="6" style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,61%,45%); fill-rule: evenodd; fill-opacity: 0.09;"/>
+			<text x="590" y="234" style="font-family: Helvetica; font-size: 9px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,468) scale(1,-1)">Qualifying hits in fresh directed audits</text>
+			<text x="844.174" y="223" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(0%,61%,45%); stroke:none;" transform="translate(0,446) scale(1,-1)">0 in 18 / 18</text>
+			<text x="70" y="125" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,250) scale(1,-1)">Interpretation: the former holdout was not independent of its training set under the frozen sequence-family definition. Our result is zero</text>
+			<text x="70" y="112.5" style="font-family: Helvetica; font-size: 10px;fill: rgb(13%,13%,13%); stroke:none;" transform="translate(0,225) scale(1,-1)">detected cross-partition relationships under those exact rules—not proof that no conceivable biological relationship exists.</text>
+			<text x="70" y="62" style="font-family: Helvetica-Bold; font-size: 9px;fill: rgb(46%,46%,46%); stroke:none;" transform="translate(0,124) scale(1,-1)">These values diagnose the split only; they do not estimate how many AUROC points leakage added.</text>
+		</g>
+	</g>
+</svg>

@@ -1,66 +1,54 @@
-# Task 003A — Supervisor split-validation report
+# Task 003A — Why we replaced the former data split
 
-## Executive conclusion
+## One-sentence conclusion
 
-The original row-level fold is not suitable as an unbiased benchmark boundary because related sequences occur on both sides. The accepted components-v2 split keeps every protected sequence family together and passed all prespecified structural and independent leakage audits. No model prediction or performance metric was used to build or accept this split.
+The former teammate split individual rows, allowing closely related sequences to appear in both training and evaluation; our split assigns complete sequence families and passed every frozen leakage audit.
 
-- Final universe: **169,699 components across 361,180 rows**.
-- Final partition sizes: **246,017 train / 57,565 validation / 57,598 test**.
-- Component integrity: **0/169,699 components split**.
-- Independent exact/reverse-complement audit: **0 cross-partition groups**.
-- Fresh directed similarity audits: **0 qualifying cross-partition hits in all 18/18 searches**, with positive controls passing once per width.
-- Evaluation support: minimum **97 known positives** and **80 known negatives** per protein in validation/test (required floor: 30).
+| Question | Former teammate | Our accepted benchmark |
+|---|---|---|
+| What is assigned? | Individual rows | Whole connected sequence components |
+| Can related rows cross the boundary? | Yes | No under the frozen rules |
+| Holdout rows in a family also seen in training | **46,209/72,236 (63.97%)** | **0 split components** |
+| Independent similarity audit | Not protected by construction | **0 hits in 18/18 searches** |
+| Exact/reverse-complement groups crossing | Not protected by construction | **0** |
+| Final proportions | 80% train / 20% holdout | 68.11% train / 15.94% validation / 15.95% test |
 
-## 1. Why the former fold was rejected
+## 1. Direct comparison
 
-The former notebook's exact fold 0 was reproduced using its pinned dependency stack, seed, and positive-only stratification matrix. Against the rejected v1 grouping, **45,937/72,236 holdout rows (63.593%)** and **120,760/288,944 training rows (41.794%)** belonged to components crossing the boundary.
+![Former row split versus our component split](figures/003a/figure_01_former_vs_ours.svg)
 
-Task 003A separately recomputed that same frozen fold against final v2 membership: **46,209/72,236 holdout rows (63.969%)** and **125,772/288,944 training rows (43.528%)** are in crossing v2 components. This new value does not replace the historical v1 result; it answers the final-relation question directly.
+## 2. A concrete 500-nt example
 
-![Why the split changed](figures/003a/figure_01_split_transition.svg)
+Sequence identity is the fraction of aligned nucleotide positions that match in order. For a 500-nt pair, 450 matching aligned positions means 90% identity. A direct edge also requires enough of both windows to align: at 500 nt the frozen threshold is 80% bidirectional coverage. The search checks the forward sequence and its reverse complement.
 
-## 2. Independent leakage evidence
+![Worked similarity example](figures/003a/figure_02_similarity_example.svg)
 
-The intermediate v1 assignment was also rejected. Its first directed audit (500 nt, train→validation) found 4,792 qualifying pairs among 3,576 distinct rows (1,400 train queries and 2,176 validation targets). The audit stopped there by design, so 17/18 searches were not run and 4,792 is a lower bound—not a total v1 leakage count.
+A qualifying pair is placed in the same connected component. Components are transitive: if A is related to B and B to C, all three stay together even if A and C do not directly qualify.
 
-Components v2 were constructed from the complete direct-edge relation, exact/reverse-complement relations, and protected v1 co-membership. The final audit regenerated partition FASTAs and databases, passed positive controls, and completed all 18 width/direction searches with zero violations.
+## 3. What the audit found
 
-![Leakage evidence](figures/003a/figure_02_leakage_evidence.svg)
+When the former fold is evaluated using the final sequence-family definition, **46,209/72,236 former holdout rows (63.97%)** and **125,772/288,944 former training rows (43.53%)** belong to components crossing that old boundary.
 
-## 3. Component structure and protected relationships
+![Former versus accepted leakage evidence](figures/003a/figure_03_split_evidence.svg)
 
-The stricter relation produced 169,699 components. The largest contains 708 rows (0.196%), and the largest 20 together contain 1.809% of rows—well below the prespecified 5% and 20% stop gates.
+Our final split contains zero divided components, zero cross-partition exact/reverse-complement groups, and zero qualifying hits in all 18 fresh directed searches.
 
-![Component structure](figures/003a/figure_03_component_structure.svg)
+## 4. Is the replacement usable?
 
-![Protected widths](figures/003a/figure_04_width_edges.svg)
+Yes. It contains 246,017 train, 57,565 validation, and 57,598 test rows. The minimum evaluation support is 97 known positives and 80 known negatives per protein, above the floor of 30.
 
-## 4. Final partition and label support
+![Final split quality](figures/003a/figure_04_final_split_quality.svg)
 
-The achieved fractions are 68.11%/15.94%/15.95% versus 70%/15%/15% targets. Whole components were never split merely to hit exact percentages.
+The tradeoff is disclosed: 54/122 proteins have at least one validation/test fraction more than 3 percentage points from target. We do not divide related families merely to improve these percentages.
 
-![Partition sizes](figures/003a/figure_05_partition_integrity.svg)
-
-Known-label balance is disclosed rather than hidden: 86/122 proteins have at least one protein×class×partition cell more than 3 percentage points from the 70/15/15 target (218/732 cells). Restricting attention to validation/test gives 54 proteins and 117 cells. These are fraction-balance flags; every evaluation cell still exceeds the count floor.
-
-![Per-protein balance](figures/003a/figure_06_protein_balance.svg)
-
-![Evaluation support](figures/003a/figure_07_evaluation_support.svg)
-
-## 5. Sequence-composition check
-
-GC fraction, normalized mononucleotide entropy, and maximum homopolymer length were compared among final partitions at all three protected widths. The largest observed absolute standardized mean difference was **0.101** (normalized_entropy, 500 nt, train versus test). It is only 0.001 above the prespecified |SMD|≥0.10 reporting boundary and remains small in magnitude. The largest KS D was **0.057** (gc_fraction, 500 nt, train versus validation). Quantiles and KS D are descriptive; rows within components are not independent, so no row-level p-values are used.
-
-![Sequence composition](figures/003a/figure_08_sequence_composition.svg)
-
-## Allowed claims
+## What this establishes
 
 - The former fold is not leakage-safe under the frozen sequence rules.
 - The final split is deterministic, whole-component, and passed the prespecified structural, exact/RC, and 18 directed similarity audits.
 - No cross-partition relationship was detected under the frozen 500/251/101-nt rules.
 - Per-protein label imbalance remains and is reported explicitly; evaluation support remains above the prespecified count floor.
 
-## Claims not supported
+## What this does not establish
 
 - The audit does not quantify how much the former AUROC was inflated.
 - It does not prove that no biological or coordinate relationship exists outside the frozen rules.
@@ -69,4 +57,4 @@ GC fraction, normalized mononucleotide entropy, and maximum homopolymer length w
 
 ## Reproducibility
 
-All headline values originate from machine-readable tables in the Task 003A artifact package. Input hashes, output hashes, software versions, runtimes, and reconciliation gates are recorded in `provenance.json` and `manifests/task003a_split_validation_report.json`. The accepted split was not changed.
+All headline values originate from machine-readable tables in the Task 003A artifact package. The internal construction history, edge intersections, component distributions, per-protein heatmap, and sequence-composition checks remain available in the technical appendix. The largest composition effect is small/borderline (|SMD|=0.101; maximum KS D=0.057). Input hashes, output hashes, software versions, and reconciliation gates are recorded in `provenance.json` and `manifests/task003a_split_validation_report.json`.

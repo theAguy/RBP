@@ -95,6 +95,148 @@ def figure1_process() -> Drawing:
     return d
 
 
+def figure_supervisor_former_vs_ours(v2: Mapping, closure: Mapping) -> Drawing:
+    """Direct supervisor-facing comparison without the internal v1 history."""
+    d = Drawing(1000, 560)
+    title(d, "Figure 1. Former row split versus our sequence-family split", "The difference is the unit assigned to train, validation, or test")
+
+    panels = [
+        (55, RED, "Former teammate", "Split individual rows", "Related rows could land on opposite sides"),
+        (530, GREEN, "Our benchmark", "Split complete components", "Every protected sequence family stays together"),
+    ]
+    for x, color, heading, method, consequence in panels:
+        d.add(Rect(x, 205, 415, 245, rx=10, ry=10, fillColor=colors.Color(color.red, color.green, color.blue, alpha=0.07), strokeColor=color, strokeWidth=2.2))
+        text(d, x + 207.5, 410, heading, size=17, anchor="middle", bold=True, color=color)
+        text(d, x + 207.5, 375, method, size=13, anchor="middle", bold=True)
+        text(d, x + 207.5, 345, consequence, size=10, anchor="middle")
+
+    # Former split: related rows separated.
+    for y, label, fill in ((295, "row A", BLUE), (250, "row B (related)", ORANGE)):
+        d.add(Rect(105, y, 110, 30, rx=4, ry=4, fillColor=fill, strokeColor=None))
+        text(d, 160, y + 9, label, size=9, anchor="middle", color=WHITE, bold=True)
+    d.add(Line(220, 310, 315, 310, strokeColor=BLUE, strokeWidth=3))
+    d.add(Line(220, 265, 315, 265, strokeColor=ORANGE, strokeWidth=3))
+    text(d, 330, 306, "train", size=10, bold=True, color=BLUE)
+    text(d, 330, 261, "holdout", size=10, bold=True, color=ORANGE)
+    d.add(Line(155, 289, 155, 282, strokeColor=RED, strokeWidth=2))
+    d.add(Line(148, 285, 155, 278, strokeColor=RED, strokeWidth=2))
+    d.add(Line(162, 285, 155, 278, strokeColor=RED, strokeWidth=2))
+    text(d, 262, 222, f"{100*v2['crossing_holdout_row_rate']:.2f}% of holdout rows affected", size=12, anchor="middle", bold=True, color=RED)
+
+    # Our split: related rows grouped into one component.
+    d.add(Rect(590, 245, 210, 92, rx=9, ry=9, fillColor=colors.Color(GREEN.red, GREEN.green, GREEN.blue, alpha=0.10), strokeColor=GREEN, strokeWidth=2))
+    text(d, 695, 315, "one connected component", size=11, anchor="middle", bold=True, color=GREEN)
+    d.add(Rect(615, 265, 70, 27, rx=3, ry=3, fillColor=BLUE, strokeColor=None))
+    d.add(Rect(705, 265, 70, 27, rx=3, ry=3, fillColor=ORANGE, strokeColor=None))
+    text(d, 650, 273, "row A", size=8, anchor="middle", color=WHITE, bold=True)
+    text(d, 740, 273, "row B", size=8, anchor="middle", color=WHITE, bold=True)
+    d.add(Line(805, 291, 875, 291, strokeColor=GREEN, strokeWidth=3))
+    text(d, 890, 287, "one partition", size=10, bold=True, color=GREEN)
+    text(d, 737, 222, f"0 / {closure['universe']['component_count']:,} components split", size=12, anchor="middle", bold=True, color=GREEN)
+
+    wrapped(d, 55, 145, "The former split optimized label proportions at the row level. Our split accepts slightly imperfect proportions so that related sequences cannot be divided between model development and evaluation.", width_chars=150, size=10, color=BLACK)
+    wrapped(d, 55, 85, "This is a comparison of data boundaries, not model performance. Both models must later be trained and evaluated on the same accepted split before their AUROC values can be compared.", width_chars=150, size=9)
+    return d
+
+
+def figure_similarity_example() -> Drawing:
+    """Worked examples for identity, coverage, direct edges, and components."""
+    d = Drawing(1050, 650)
+    title(d, "Figure 2. Worked example: when do two 500-nt windows belong together?", "The rule compares aligned nucleotide order on both strands; it is not a count of A/C/G/T composition")
+
+    headers = ("Pair", "Aligned result", "Identity", "Coverage of each window", "Direct edge?")
+    xs = (55, 185, 440, 580, 850)
+    for x, header in zip(xs, headers):
+        text(d, x, 555, header, size=10, bold=True)
+    d.add(Line(45, 540, 1005, 540, strokeColor=LIGHT, strokeWidth=1.5))
+
+    rows = [
+        ("A ↔ B", "450 identical / 500 aligned", "90%", "500/500 = 100% both", True, "Qualifies: identity ≥90% and coverage ≥80%"),
+        ("A ↔ C", "400 identical / 500 aligned", "80%", "500/500 = 100% both", False, "Fails identity, even though the full windows align"),
+        ("A ↔ D", "315 identical / 350 aligned", "90%", "350/500 = 70% both", False, "Fails 500-nt coverage, even though identity is 90%"),
+    ]
+    for index, (pair, aligned, identity, coverage, edge, reason) in enumerate(rows):
+        y = 465 - index * 105
+        color = GREEN if edge else RED
+        text(d, xs[0], y + 22, pair, size=13, bold=True)
+        text(d, xs[1], y + 22, aligned, size=10)
+        text(d, xs[2], y + 22, identity, size=11, bold=True)
+        text(d, xs[3], y + 22, coverage, size=10)
+        d.add(Circle(xs[4] + 24, y + 26, 14, fillColor=colors.Color(color.red, color.green, color.blue, alpha=0.15), strokeColor=color, strokeWidth=2))
+        text(d, xs[4] + 24, y + 20, "YES" if edge else "NO", size=7.5, anchor="middle", bold=True, color=color)
+        text(d, xs[1], y - 12, reason, size=8.5, color=color, bold=edge)
+        d.add(Line(45, y - 35, 1005, y - 35, strokeColor=LIGHT))
+
+    text(d, 55, 170, "How the qualifying pair is used", size=12, bold=True)
+    d.add(Rect(70, 85, 105, 40, rx=5, ry=5, fillColor=BLUE, strokeColor=None))
+    d.add(Rect(250, 85, 105, 40, rx=5, ry=5, fillColor=ORANGE, strokeColor=None))
+    text(d, 122.5, 99, "window A", size=10, anchor="middle", color=WHITE, bold=True)
+    text(d, 302.5, 99, "window B", size=10, anchor="middle", color=WHITE, bold=True)
+    d.add(Line(175, 105, 250, 105, strokeColor=GREEN, strokeWidth=4))
+    text(d, 212.5, 118, "direct edge", size=8, anchor="middle", color=GREEN, bold=True)
+    d.add(Rect(45, 64, 335, 82, rx=8, ry=8, fillColor=None, strokeColor=GREEN, strokeWidth=2))
+    text(d, 212.5, 45, "A and B enter the same connected component and must receive the same partition.", size=9, anchor="middle", bold=True)
+    wrapped(d, 455, 125, "Both strands: the search also checks the reverse complement, so a reversed complementary copy is still recognized. Connected components are transitive: a pair with no direct edge can still belong together if a path through other windows connects them.", width_chars=87, size=9, color=BLACK)
+    text(d, 455, 58, "Frozen coverage thresholds: 500 nt requires 80%; 251 nt and 101 nt require 95%.", size=9, bold=True)
+    return d
+
+
+def figure_supervisor_split_evidence(v2: Mapping, closure: Mapping) -> Drawing:
+    d = Drawing(1000, 560)
+    title(d, "Figure 3. The former boundary leaks related families; ours does not", "Direct comparison using final components and independent audits")
+    text(d, 70, 450, "Former teammate's row split", size=15, bold=True, color=RED)
+    _bar(d, 70, 365, 360, 34, v2["crossing_holdout_row_rate"], RED, "Holdout rows in a family also present in training", f"{v2['crossing_holdout_row_count']:,}/{v2['holdout_count']:,}  ({100*v2['crossing_holdout_row_rate']:.2f}%)")
+    _bar(d, 70, 270, 360, 34, v2["crossing_train_row_rate"], RED, "Training rows in a family also present in holdout", f"{v2['crossing_train_row_count']:,}/{v2['train_count']:,}  ({100*v2['crossing_train_row_rate']:.2f}%)")
+    text(d, 570, 450, "Our component split", size=15, bold=True, color=GREEN)
+    evidence = [
+        ("Components divided across partitions", f"0 / {closure['universe']['component_count']:,}"),
+        ("Exact / reverse-complement groups crossing", "0"),
+        ("Qualifying hits in fresh directed audits", "0 in 18 / 18"),
+    ]
+    y = 365
+    for label, value in evidence:
+        d.add(Rect(570, y, 365, 58, rx=6, ry=6, fillColor=colors.Color(GREEN.red, GREEN.green, GREEN.blue, alpha=0.09), strokeColor=GREEN))
+        text(d, 590, y + 33, label, size=9)
+        text(d, 915, y + 22, value, size=14, anchor="end", bold=True, color=GREEN)
+        y -= 82
+    wrapped(d, 70, 125, "Interpretation: the former holdout was not independent of its training set under the frozen sequence-family definition. Our result is zero detected cross-partition relationships under those exact rules—not proof that no conceivable biological relationship exists.", width_chars=145, size=10, color=BLACK)
+    text(d, 70, 62, "These values diagnose the split only; they do not estimate how many AUROC points leakage added.", size=9, bold=True, color=GREY)
+    return d
+
+
+def figure_supervisor_final_quality(closure: Mapping, balance: Mapping) -> Drawing:
+    d = Drawing(1000, 600)
+    title(d, "Figure 4. The accepted split remains practical for model comparison", "Whole components are preserved while evaluation support stays above the frozen floor")
+    x0, w = 95, 520
+    for index, partition in enumerate(PARTITIONS):
+        y = 445 - index * 85
+        achieved = float(closure["partition_fractions"][partition])
+        target = {"train": 0.7, "validation": 0.15, "test": 0.15}[partition]
+        d.add(Rect(x0, y, w, 28, fillColor=LIGHT, strokeColor=None))
+        d.add(Rect(x0, y, w * achieved, 28, fillColor=PARTITION_COLOR[partition], strokeColor=None))
+        d.add(Line(x0 + w * target, y - 7, x0 + w * target, y + 35, strokeColor=BLACK, strokeWidth=2))
+        text(d, x0 - 15, y + 8, partition.title(), size=10, anchor="end", bold=True)
+        text(d, x0 + w + 12, y + 8, f"{closure['partition_row_counts'][partition]:,} ({100*achieved:.2f}%)", size=10, bold=True)
+    text(d, 95, 185, f"0 / {closure['universe']['component_count']:,} components split", size=13, bold=True, color=GREEN)
+
+    text(d, 735, 465, "Evaluation support", size=13, bold=True)
+    support = [
+        ("minimum known positives", balance["minimum_known_positive"]["count"], GREEN),
+        ("minimum known negatives", balance["minimum_known_negative"]["count"], BLUE),
+        ("required floor", 30, RED),
+    ]
+    y = 405
+    for label, value, color in support:
+        text(d, 735, y, label, size=9, color=GREY)
+        text(d, 930, y - 4, str(value), size=18, anchor="end", bold=True, color=color)
+        y -= 65
+    text(d, 735, 205, "Balance limitation", size=13, bold=True)
+    text(d, 735, 165, f"{balance['proteins_flagged_validation_or_test']} / 122 proteins", size=14, bold=True, color=ORANGE)
+    wrapped(d, 735, 142, "have at least one validation/test fraction more than 3 percentage points from target. We disclose this; we do not split related families to hide it.", width_chars=48, size=8.5, color=BLACK)
+    wrapped(d, 95, 100, "The achieved 68.11/15.94/15.95% proportions are close to 70/15/15. The slight deviation is the cost of keeping connected sequence families intact.", width_chars=95, size=9)
+    return d
+
+
 def _bar(d: Drawing, x: float, y: float, width: float, height: float, fraction: float, color, label: str, value: str) -> None:
     d.add(Rect(x, y, width, height, fillColor=LIGHT, strokeColor=None))
     d.add(Rect(x, y, width * max(0, min(1, fraction)), height, fillColor=color, strokeColor=None))

@@ -12,7 +12,7 @@ import zipfile
 
 from reportlab.graphics import renderSVG
 
-from rbpbench.analysis.figures import figure1_process
+from rbpbench.analysis.figures import figure_similarity_example
 from rbpbench.analysis.reporting import build_markdown
 from rbpbench.analysis.split_validation import (
     Membership,
@@ -192,12 +192,19 @@ class TableTests(unittest.TestCase):
             self.assertEqual(read_tsv(path), [{"a": "1", "b": "x"}, {"a": "2", "b": "y"}])
 
     def test_figure_source_is_deterministic(self):
-        first = renderSVG.drawToString(figure1_process())
-        second = renderSVG.drawToString(figure1_process())
+        first = renderSVG.drawToString(figure_similarity_example())
+        second = renderSVG.drawToString(figure_similarity_example())
         self.assertEqual(
             hashlib.sha256(first.encode()).digest(),
             hashlib.sha256(second.encode()).digest(),
         )
+
+    def test_similarity_example_states_qualifying_and_failing_cases(self):
+        source = renderSVG.drawToString(figure_similarity_example())
+        self.assertIn("450 identical / 500 aligned", source)
+        self.assertIn("400 identical / 500 aligned", source)
+        self.assertIn("315 identical / 350 aligned", source)
+        self.assertIn("reverse complement", source)
 
 
 class CompositionStreamingTests(unittest.TestCase):
@@ -304,10 +311,12 @@ class ReportingTests(unittest.TestCase):
 
     def test_caption_values_come_from_summaries(self):
         effects = [{"absolute_smd": 0.111, "standardized_mean_difference": -0.111, "metric": "gc_fraction", "width": 251, "partition_a": "train", "partition_b": "test", "smd_interpretation": "notable", "ks_d": 0.222}]
-        report = build_markdown(self._results(), effects, {f"figure{i}": f"f{i}.svg" for i in range(1, 9)})
+        report = build_markdown(self._results(), effects, {f"figure{i}": f"f{i}.svg" for i in range(1, 5)})
         self.assertIn("0.111", report)
         self.assertIn("0.222", report)
-        self.assertIn("3/4 holdout rows (75.000%)", report)
+        self.assertIn("3/4 former holdout rows (75.00%)", report)
+        self.assertIn("450 matching aligned positions means 90% identity", report)
+        self.assertNotIn("rejected v1", report.lower())
 
 
 class TransactionTests(unittest.TestCase):

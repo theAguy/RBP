@@ -466,6 +466,11 @@ QKI, and RBFOX2—to validate implementations and estimate compute. Joint models
 still train all 122 outputs, but only these eight results may guide engineering
 choices.
 
+Current status: Task 004A-1's faithful source/synthetic reconstruction is
+accepted. Task 004A-2 is in planning review as a bounded local CPU data-contract
+smoke with no full training and no test-field interpretation. See
+`docs/tasks/004a2_local_data_contract_smoke.md`.
+
 Substeps:
 
 - Task 004A reproduces the in-house architecture, loss, sample/output alignment

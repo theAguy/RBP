@@ -1,10 +1,12 @@
 # Task 004A — Former ResCNN reconstruction and development pilot
 
 **Status:** planning accepted with bounded corrections applied; checkpoint
-004A-1 synthetic/source implementation and its first-review corrections are
-complete and awaiting final independent review. Checkpoints 004A-2 through
+004A-1 synthetic/source implementation and its corrections are independently
+accepted. Task 004A-2 is in planning review; checkpoints 004A-3 through
 004A-5 have not started. See
-`docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md`.
+`docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md` and
+`docs/reviews/004a1_rescnn_acceptance.md`, with Task 004A-2 detailed in
+`docs/tasks/004a2_local_data_contract_smoke.md`.
 
 **Phase:** 4, first neural-model task
 
@@ -355,6 +357,10 @@ match; direct extracted-cell hashes match; singleton-tail and paired-RNG tests
 pass; the full existing repository test suite introduces no new failure.
 
 ### 004A-2 — local bounded data-contract smoke
+
+The detailed implementation/execution contract for this checkpoint is
+`docs/tasks/004a2_local_data_contract_smoke.md`. That document controls if a
+summary below is ambiguous.
 
 - Revalidate immutable hashes and accepted membership.
 - Build a compact train/validation-only index and exercise a small,

@@ -120,6 +120,11 @@ Development proteins: TARDBP, ELAVL1, U2AF2, PTBP1, HNRNPC, PUM2, QKI, and
 RBFOX2. Joint models still train all 122 outputs; only these eight results may
 guide implementation decisions.
 
+Task 004A-1's source/synthetic reconstruction is accepted. Task 004A-2 is now
+planned as a local CPU-only, 513-train/513-validation data-contract smoke; it
+does not perform full training or access test labels/sequences. See
+`docs/tasks/004a2_local_data_contract_smoke.md`.
+
 - Task 004A first reconstructs the former joint ResCNN at its literal 500-nt
   operating point and verifies loss components, output alignment and its
   actual final-epoch checkpoint behavior. The former notebook has no early

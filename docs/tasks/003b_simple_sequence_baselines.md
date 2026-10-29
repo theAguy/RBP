@@ -1,7 +1,9 @@
 # Task 003B — Simple sequence baselines on the locked split
 
-**Status:** checkpoints 003B-1, 003B-2 and final Phase A accepted; Phase B test
-scoring remains unstarted pending the required post-Phase-A report boundary
+**Status:** complete and accepted. Synthetic proof, the development pilot,
+final Phase A and the one authorized Phase B test evaluation all passed. See
+`manifests/task003b_simple_baselines.json` and
+`docs/reviews/003b_final_baseline_acceptance.md`.
 
 **Phase:** 3B, first predictive experiment after Task 003A
 

@@ -447,6 +447,18 @@ a synthetic proof, an eight-protein train-to-validation pilot, and a separately
 authorized one-time test run. The former ResCNN and published competitors are
 explicitly deferred until these baselines close.
 
+### 13.2 Simple sequence baselines — complete
+
+Task 003B is accepted. All 1,098 final logistic fits converged before test was
+opened, and the separately authorized test pass scored 122 proteins at 500,
+251 and 101 nt without refitting. The 500-nt macro AUROCs were 0.500 for
+prevalence, 0.716 for GC, 0.834 for 3-mer and 0.822 for 6-mer. After
+training-derived GC matching, GC fell to 0.507 while 3-mer and 6-mer retained
+AUROCs of 0.718 and 0.722. These are descriptive reference results, not a
+comparison with the still-unrun former model or competitors. See
+`docs/reviews/003b_final_baseline_acceptance.md` and
+`manifests/task003b_simple_baselines.json`.
+
 ## 14. Phase 4 — development pilot
 
 Use eight development proteins—TARDBP, ELAVL1, U2AF2, PTBP1, HNRNPC, PUM2,

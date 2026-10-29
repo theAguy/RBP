@@ -57,6 +57,12 @@ the complete hash-inventoried coefficient/scaler generation for all 122
 proteins, 1,098 converged logistic fits, fitting-label and resource summaries,
 and the proof that Phase B and all test interpretation remained unstarted.
 
+`task003b_simple_baselines.json` closes Task 003B. It binds the single
+authorized Phase-B test evaluation, all aggregate and per-protein metrics, the
+Git-ignored row-level predictions, GC-matched sensitivity results, balance
+disclosure, independent metric reproduction, and the explicit boundary that
+the former ResCNN and external competitors remain unrun.
+
 Future files include coordinate mappings, eligibility summaries, and frozen fold
 assignments.
 

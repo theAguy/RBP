@@ -18,12 +18,15 @@ are retained for provenance but are not authoritative specifications.
 
 ## Current stage
 
-Repository bootstrap, data auditing, and full sequence-similarity grouping are
-complete. Coordinate recovery was stopped safely when the required splice-aware
-human-genome index exceeded the available host memory and is not required for
-the core comparison. Component-level train/validation/test assignment and
-independent leakage audits are now in progress; model and baseline work has not
-started.
+Repository bootstrap, data auditing, full sequence-similarity grouping,
+component-level train/validation/test assignment, and independent leakage
+audits are complete. The simple prevalence, GC, 3-mer and sparse 6-mer
+baselines have also been fitted and evaluated once on the locked test set;
+their accepted closure is `manifests/task003b_simple_baselines.json`.
+Coordinate recovery was stopped safely when the required splice-aware human
+genome index exceeded the available host memory and is not required for the
+core comparison. The next stage is the development pilot for the former ResCNN
+and the prespecified published competitors.
 
 ## Quick start
 

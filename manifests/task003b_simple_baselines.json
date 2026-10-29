@@ -1,0 +1,87 @@
+{
+  "schema_version": "task003b_simple_baselines_closure_v1",
+  "status": "accepted",
+  "accepted_at_utc": "2026-10-29T04:43:39Z",
+  "execution_commit": "6cccdd1f0c2fec37e03a6cf13bfeb884ff9028bc",
+  "stage": "final_phase_b_test_scoring",
+  "phase_a": {
+    "manifest": "manifests/task003b_phase_a_003b3.json",
+    "manifest_sha256": "77922d6d906b7a4fd9ba8cae091e93072b0e1b09735a0397cdead2b2dfeed257",
+    "selection_sha256": "6e997c6fe9e3acc48baa4df8a36a82a2b5aa270ac4eea7f7f7ba5aefd82bf567",
+    "all_1098_logistic_fits_converged": true
+  },
+  "execution": {
+    "host": "local_mac",
+    "numerical_threads": 1,
+    "wall_seconds": 108.62,
+    "peak_rss_bytes": null,
+    "peak_rss_note": "Unavailable because the sandbox denied the macOS sysctl used by /usr/bin/time -l; the run itself exited successfully.",
+    "generation": "generations/final_phase_b_2bf2f83c80e9",
+    "models_refit_in_phase_b": 0,
+    "test_authorized": true,
+    "test_accessed": true
+  },
+  "reconciliation": {
+    "test_row_count": 57598,
+    "known_test_protein_row_pairs": 61946,
+    "protein_count": 122,
+    "widths": [500, 251, 101],
+    "baselines": ["prevalence", "gc", "3mer", "6mer"],
+    "metric_row_count": 1464,
+    "prediction_row_count": 743352,
+    "unique_prediction_identity_count": 743352,
+    "test_positive_count_range": [97, 784],
+    "test_negative_count_range": [80, 361],
+    "gc_matched_count_range": [50, 554],
+    "gc_matched_retention_fraction_range": [0.10183299389002037, 0.8934426229508197],
+    "prediction_metric_reconciliation_passed": true,
+    "independent_sklearn_max_metric_difference": 1.3322676295501878e-15,
+    "prevalence_sanity_groups": 366,
+    "prevalence_auroc_exactly_0_5": true
+  },
+  "balance_disclosure": {
+    "threshold_percentage_points": 3.0,
+    "proteins_flagged_any_partition": 86,
+    "cells_flagged_any_partition": 218,
+    "proteins_flagged_validation_or_test": 54,
+    "cells_flagged_validation_or_test": 117,
+    "accepted_split_totals_reproduced": true,
+    "flagged_proteins_excluded": 0
+  },
+  "macro_test_metrics": [
+    {"width": 500, "baseline": "prevalence", "auroc": 0.5, "average_precision": 0.5723526135882697, "gc_matched_auroc": 0.5, "gc_matched_average_precision": 0.5},
+    {"width": 500, "baseline": "gc", "auroc": 0.7155812764525804, "average_precision": 0.7482975026844968, "gc_matched_auroc": 0.506617376943038, "gc_matched_average_precision": 0.5102555384739049},
+    {"width": 500, "baseline": "3mer", "auroc": 0.8336456241419068, "average_precision": 0.8637008212186198, "gc_matched_auroc": 0.7181742632467328, "gc_matched_average_precision": 0.7249741626403327},
+    {"width": 500, "baseline": "6mer", "auroc": 0.8220060691238085, "average_precision": 0.8559185317819958, "gc_matched_auroc": 0.722118686186387, "gc_matched_average_precision": 0.726662636811196},
+    {"width": 251, "baseline": "prevalence", "auroc": 0.5, "average_precision": 0.5723526135882697, "gc_matched_auroc": 0.5, "gc_matched_average_precision": 0.5},
+    {"width": 251, "baseline": "gc", "auroc": 0.7179163026616445, "average_precision": 0.7504097444485509, "gc_matched_auroc": 0.505409733639093, "gc_matched_average_precision": 0.5106486321639004},
+    {"width": 251, "baseline": "3mer", "auroc": 0.8274530891380084, "average_precision": 0.8586538959404403, "gc_matched_auroc": 0.7098131429618583, "gc_matched_average_precision": 0.7156599315359674},
+    {"width": 251, "baseline": "6mer", "auroc": 0.8034541261231865, "average_precision": 0.8377707539033526, "gc_matched_auroc": 0.7016462246362001, "gc_matched_average_precision": 0.7047159095537756},
+    {"width": 101, "baseline": "prevalence", "auroc": 0.5, "average_precision": 0.5723526135882697, "gc_matched_auroc": 0.5, "gc_matched_average_precision": 0.5},
+    {"width": 101, "baseline": "gc", "auroc": 0.7109272748163308, "average_precision": 0.746178392661731, "gc_matched_auroc": 0.5037809027144625, "gc_matched_average_precision": 0.5093725121021924},
+    {"width": 101, "baseline": "3mer", "auroc": 0.8049461888296144, "average_precision": 0.8374238383044981, "gc_matched_auroc": 0.6821832249656669, "gc_matched_average_precision": 0.6847949724448568},
+    {"width": 101, "baseline": "6mer", "auroc": 0.7737883405975576, "average_precision": 0.8107294700411856, "gc_matched_auroc": 0.6669977483765853, "gc_matched_average_precision": 0.6684064677208912}
+  ],
+  "descriptive_width_checks": {
+    "3mer_500_minus_101_mean_auroc": 0.02869943531229244,
+    "3mer_proteins_500_greater_than_101": 97,
+    "6mer_500_minus_101_mean_auroc": 0.048217728526250773,
+    "6mer_proteins_500_greater_than_101": 103
+  },
+  "accepted_evidence": {
+    "selection_record": {"path": "artifacts/task003b_simple_baselines/selected/final_phase_b.json", "byte_size": 1067, "sha256": "f0898bc8560d8a9d0f138251787bc1831949b1c4aa4caf5b1ee735e97fe84e96"},
+    "summary": {"byte_size": 1793, "sha256": "b6dc9b2fb12575455c3a5f3abdbef4c390c10ec3b8bd2926e86f8da86261ba65"},
+    "metrics": {"byte_size": 1457511, "sha256": "66c9534994c3c1f49f14712c1a34cd35ab17743f6d3233294126efadd233baef"},
+    "aggregate_metrics": {"byte_size": 10517, "sha256": "d929166dde6b6e1525fb94563663f9de2085abfd48f5dbc80bf6c17b07b60ab4"},
+    "predictions": {"byte_size": 28095357, "sha256": "fcc8bb2922b2cada9229b5ecf309fa2b43e4ba60287b5d1ce4ffce91757afbf6", "git_ignored": true}
+  },
+  "interpretation_boundary": {
+    "descriptive_point_estimates_only": true,
+    "no_significance_claims": true,
+    "no_method_or_width_selected_from_test": true,
+    "former_model_and_competitors_not_run": true,
+    "gc_matched_analysis_is_secondary": true,
+    "component_aware_uncertainty_deferred": true
+  },
+  "review": "docs/reviews/003b_final_baseline_acceptance.md"
+}

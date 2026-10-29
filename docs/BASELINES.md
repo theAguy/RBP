@@ -51,14 +51,25 @@ split into two independently selected stages:
   baselines × three widths) on train plus validation, records prevalence and
   training-derived GC bins, and serializes coefficients/scalers. It rejects
   `--authorize-test` and never parses a test label or builds a test feature.
-- `final-phase-b` will verify the accepted Phase-A generation and requires
-  `--authorize-test` before the one permitted test scoring pass. It remains
-  deliberately unavailable until Phase A is executed and reviewed.
+- `final-phase-b` verifies the accepted Phase-A manifest, selection record and
+  every model artifact before it reads test labels or sequences. It requires
+  `--authorize-test`, loads the saved models without refitting, scores test
+  once, and runs the training-GC-bin sensitivity analysis. Predictions carry
+  a deterministic GC-matched indicator so full and matched metrics can be
+  regenerated from the prediction file before the generation is accepted.
 
 Phase A is run with the same immutable CSV, membership and three FASTAs as the
 pilot, plus the accepted `manifests/task003b_pilot_003b2.json`. A successful
 selection record is written to
 `artifacts/task003b_simple_baselines/selected/final_phase_a.json`.
+
+Phase B additionally requires the accepted
+`manifests/task003b_phase_a_003b3.json`. It recomputes the accepted split's
+per-protein balance disclosure from the frozen CSV and membership and checks
+the published totals before scoring. Flagged proteins remain in every result;
+aggregate output is stratified by the flag. Phase B is descriptive only: it
+does not select a baseline or width from test performance and makes no
+significance claim.
 
 Generated row-level predictions remain under the Git-ignored
 `artifacts/task003b_simple_baselines/` tree. Tracked manifests contain only

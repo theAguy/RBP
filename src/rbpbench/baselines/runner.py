@@ -8,6 +8,7 @@ import platform
 
 from rbpbench.baselines.config import load_config
 from rbpbench.baselines.phase_a import run_phase_a
+from rbpbench.baselines.phase_b import run_phase_b
 from rbpbench.baselines.pilot import run_pilot, sha256_file
 
 
@@ -16,6 +17,8 @@ class RunnerError(RuntimeError):
 
 
 PILOT_MANIFEST_SHA256 = "de7ae98749ba4338d334ef1ba15db575b1dcaae8c425ad24cfa7153a782d4529"
+PHASE_A_MANIFEST_SHA256 = "77922d6d906b7a4fd9ba8cae091e93072b0e1b09735a0397cdead2b2dfeed257"
+PHASE_A_SELECTION_SHA256 = "6e997c6fe9e3acc48baa4df8a36a82a2b5aa270ac4eea7f7f7ba5aefd82bf567"
 
 
 def parser() -> argparse.ArgumentParser:
@@ -31,6 +34,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--fasta-251", type=Path)
     result.add_argument("--fasta-101", type=Path)
     result.add_argument("--pilot-manifest", type=Path, default=Path("manifests/task003b_pilot_003b2.json"))
+    result.add_argument("--phase-a-manifest", type=Path, default=Path("manifests/task003b_phase_a_003b3.json"))
     result.add_argument("--output-dir", type=Path, default=Path("artifacts/task003b_simple_baselines"))
     result.add_argument("--expected-rows", type=int)
     result.add_argument("--authorize-test", action="store_true")
@@ -81,10 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.authorize_test:
             raise RunnerError("final stage requires --authorize-test")
         raise RunnerError("final execution is unavailable until an accepted pilot freezes C values")
-    if args.stage == "final-phase-b":
-        if not args.authorize_test:
-            raise RunnerError("final-phase-b requires --authorize-test")
-        raise RunnerError("final-phase-b is unavailable until Phase A is reviewed and accepted")
+    if args.stage == "final-phase-b" and not args.authorize_test:
+        raise RunnerError("final-phase-b requires --authorize-test")
     if args.stage == "final-phase-a" and args.authorize_test:
         raise RunnerError("final-phase-a must not receive --authorize-test")
     required = {"csv": args.csv, "membership": args.membership, "fasta_500": args.fasta_500, "fasta_251": args.fasta_251, "fasta_101": args.fasta_101}
@@ -100,6 +102,20 @@ def main(argv: list[str] | None = None) -> int:
             fasta_by_width={500: args.fasta_500, 251: args.fasta_251, 101: args.fasta_101},
             pilot_manifest_path=args.pilot_manifest,
             output_root=args.output_dir, expected_rows=args.expected_rows, force=args.force,
+        )
+    elif args.stage == "final-phase-b":
+        if not args.phase_a_manifest.is_file() or sha256_file(args.phase_a_manifest) != PHASE_A_MANIFEST_SHA256:
+            raise RunnerError("accepted Phase-A manifest is missing or has drifted")
+        selection_path = args.output_dir / "selected/final_phase_a.json"
+        if not selection_path.is_file() or sha256_file(selection_path) != PHASE_A_SELECTION_SHA256:
+            raise RunnerError("accepted Phase-A selection is missing or has drifted")
+        generation = run_phase_b(
+            config=config, csv_path=args.csv, membership_path=args.membership,
+            fasta_by_width={500: args.fasta_500, 251: args.fasta_251, 101: args.fasta_101},
+            phase_a_manifest_path=args.phase_a_manifest,
+            partition_manifest_path=args.repo_root.resolve() / "manifests/sequence_partitions_002c_v2.json",
+            output_root=args.output_dir, expected_rows=args.expected_rows,
+            authorize_test=True, force=args.force,
         )
     else:
         generation = run_pilot(

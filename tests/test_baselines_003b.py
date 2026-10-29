@@ -15,11 +15,12 @@ from rbpbench.baselines.access import AccessAudit, TestAccessError
 from rbpbench.baselines.config import BaselineConfigError, load_config
 from rbpbench.baselines.data import BaselineDataError, build_label_index, parse_labels, read_membership
 from rbpbench.baselines.features import FeatureError, gc_matrix, kmer_code, kmer_matrix, read_fasta_subset, sequence_kmer_counts
-from rbpbench.baselines.gc_matching import assign_bins, gc_bin_edges, matched_indices
+from rbpbench.baselines.gc_matching import assign_bins, gc_bin_edges, matched_indices, matched_indices_with_edges
 from rbpbench.baselines.metrics import MetricError, auroc, average_precision, summarize
 from rbpbench.baselines.models import BaselineFitError, fit_logistic, prevalence_score, select_c
 from rbpbench.baselines.output import Generation, OutputError, atomic_write, verify_selected
 from rbpbench.baselines.phase_a import PhaseAError, run_phase_a
+from rbpbench.baselines.phase_b import PhaseBError, run_phase_b
 from rbpbench.baselines.pilot import run_pilot
 from rbpbench.baselines.reproducibility import ReproducibilityError, compare_pilot_generations
 from rbpbench.baselines.runner import RunnerError, main as runner_main, verify_production_inputs
@@ -192,6 +193,14 @@ class GCMatchingTests(unittest.TestCase):
         self.assertEqual(int(selected_labels.sum()), len(first) // 2)
         self.assertTrue(set(first) <= set(range(7)))
 
+    def test_matching_can_use_phase_a_frozen_edges(self):
+        selected = matched_indices_with_edges(
+            edges=[0.0, 0.5, 1.0], evaluation_gc=[0.1, 0.1, 0.8, 0.8],
+            labels=[0, 1, 0, 1], sample_ids=[f"row_{i}" for i in range(4)],
+            seed=20261028, protein_id=1, width=500,
+        )
+        np.testing.assert_array_equal(selected, [0, 1, 2, 3])
+
 
 class AccessAndOutputTests(unittest.TestCase):
     def test_test_access_fails_closed(self):
@@ -304,7 +313,7 @@ class PilotPipelineTests(unittest.TestCase):
             runner_main(["--stage", "final", "--config", config, "--authorize-test"])
         with self.assertRaisesRegex(RunnerError, "requires --authorize-test"):
             runner_main(["--stage", "final-phase-b", "--config", config])
-        with self.assertRaisesRegex(RunnerError, "until Phase A is reviewed"):
+        with self.assertRaisesRegex(RunnerError, "requires"):
             runner_main(["--stage", "final-phase-b", "--config", config, "--authorize-test"])
         with self.assertRaisesRegex(RunnerError, "must not receive"):
             runner_main(["--stage", "final-phase-a", "--config", config, "--authorize-test"])
@@ -459,6 +468,149 @@ class FinalPhaseATests(unittest.TestCase):
                     output_root=output, expected_rows=5,
                 )
             self.assertFalse(output.exists())
+
+
+class FinalPhaseBTests(unittest.TestCase):
+    def _fixture(self, root: Path):
+        config = load_config(ROOT / "configs/baselines/task003b_v1.toml")
+        membership = root / "membership.tsv.gz"
+        membership.write_bytes(gzip.compress((
+            "sample_id\tcomponent_id\tpartition\n"
+            "row_0\tc0\ttrain\nrow_1\tc1\ttrain\n"
+            "row_2\tc2\tvalidation\nrow_3\tc3\tvalidation\n"
+            "row_4\tc4\ttest\nrow_5\tc5\ttest\n"
+        ).encode(), mtime=0))
+        positives = ";".join(str(value) for value in range(1, 123))
+        negatives = ";".join(f"-{value}" for value in range(1, 123))
+        csv_path = root / "tiny.csv"
+        csv_path.write_text(
+            "labels\n" + "".join(f'"{value}"\n' for value in (
+                positives, negatives, positives, negatives, positives, negatives,
+            ))
+        )
+        # Test positives/negatives deliberately share a GC bin so the tiny
+        # fixture exercises matching without relying on production-scale bin
+        # occupancy.
+        patterns = ("AC", "GT", "CA", "TG", "AG", "AG")
+        fastas = {}
+        for width in config.windows:
+            path = root / f"width_{width}.fasta"
+            path.write_text("".join(
+                f">row_{index}\n{(pattern * ((width + 1) // 2))[:width]}\n"
+                for index, pattern in enumerate(patterns)
+            ))
+            fastas[width] = path
+        selected_c = {
+            f"{baseline}_{width}": 0.01
+            for baseline in ("gc", "3mer", "6mer") for width in config.windows
+        }
+        pilot_manifest = root / "pilot.json"
+        pilot_manifest.write_text(json.dumps({
+            "schema_version": "task003b_pilot_acceptance_v1", "status": "accepted",
+            "test_boundary": {"test_accessed": False, "final_stage_authorized": False},
+            "development": {"selected_c": selected_c},
+        }))
+        output = root / "output"
+        phase_a_generation = run_phase_a(
+            config=config, csv_path=csv_path, membership_path=membership,
+            fasta_by_width=fastas, pilot_manifest_path=pilot_manifest,
+            output_root=output, expected_rows=6,
+        )
+        selection_path = output / "selected/final_phase_a.json"
+        selection = json.loads(selection_path.read_text())
+        import hashlib
+        phase_a_manifest = root / "phase_a_manifest.json"
+        phase_a_manifest.write_text(json.dumps({
+            "schema_version": "task003b_final_phase_a_acceptance_v1", "status": "accepted",
+            "inputs": {"pilot_manifest": {
+                "path": str(pilot_manifest),
+                "sha256": hashlib.sha256(pilot_manifest.read_bytes()).hexdigest(),
+            }},
+            "execution": {"generation": selection["generation"]},
+            "accepted_evidence": {"selection_record": {
+                "byte_size": selection_path.stat().st_size,
+                "sha256": hashlib.sha256(selection_path.read_bytes()).hexdigest(),
+            }},
+            "test_boundary": {"test_accessed": False, "phase_b_record_exists": False},
+        }))
+        partition_manifest = root / "partition_manifest.json"
+        partition_manifest.write_text(json.dumps({"balance_disclosure": {
+            "proteins_flagged_any_partition": 122,
+            "cells_flagged_any_partition": 732,
+            "proteins_flagged_validation_or_test": 122,
+            "cells_flagged_validation_or_test": 488,
+        }}))
+        return (
+            config, csv_path, membership, fastas, output, phase_a_manifest,
+            partition_manifest, phase_a_generation,
+        )
+
+    def test_phase_b_scores_only_test_reconciles_predictions_and_is_repeatable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            values = self._fixture(Path(tmp))
+            config, csv_path, membership, fastas, output, phase_a_manifest, partition_manifest, _ = values
+            generation = run_phase_b(
+                config=config, csv_path=csv_path, membership_path=membership,
+                fasta_by_width=fastas, phase_a_manifest_path=phase_a_manifest,
+                partition_manifest_path=partition_manifest, output_root=output,
+                expected_rows=6, authorize_test=True,
+            )
+            summary = json.loads((generation / "summary.json").read_text())
+            self.assertTrue(summary["test_accessed"])
+            self.assertEqual(summary["models_refit_in_phase_b"], 0)
+            self.assertEqual(summary["metric_row_count"], 122 * 3 * 4)
+            self.assertEqual(summary["prediction_row_count"], 2 * 122 * 3 * 4)
+            self.assertTrue(summary["prediction_metric_reconciliation_passed"])
+            metrics = json.loads((generation / "metrics.json").read_text())
+            self.assertEqual(len(metrics), 122 * 3 * 4)
+            prevalence = [row for row in metrics if row["baseline"] == "prevalence"]
+            self.assertTrue(all(row["auroc"] == 0.5 for row in prevalence))
+            self.assertTrue(all(row["matched_positive_count"] == row["matched_negative_count"] for row in metrics))
+            predictions = gzip.decompress((generation / "predictions.tsv.gz").read_bytes()).decode()
+            self.assertNotIn("row_0\t", predictions)
+            self.assertNotIn("row_1\t", predictions)
+            self.assertNotIn("row_2\t", predictions)
+            self.assertNotIn("row_3\t", predictions)
+            self.assertIn("row_4\t", predictions)
+            first = {name: (generation / name).read_bytes() for name in (
+                "metrics.json", "aggregate_metrics.json", "predictions.tsv.gz",
+            )}
+            repeat = run_phase_b(
+                config=config, csv_path=csv_path, membership_path=membership,
+                fasta_by_width=fastas, phase_a_manifest_path=phase_a_manifest,
+                partition_manifest_path=partition_manifest, output_root=output,
+                expected_rows=6, authorize_test=True, force=True,
+            )
+            for name, content in first.items():
+                self.assertEqual((repeat / name).read_bytes(), content)
+
+    def test_phase_b_requires_authorization_before_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            values = self._fixture(Path(tmp))
+            config, csv_path, membership, fastas, output, phase_a_manifest, partition_manifest, _ = values
+            with self.assertRaisesRegex(PhaseBError, "authorization"):
+                run_phase_b(
+                    config=config, csv_path=csv_path, membership_path=membership,
+                    fasta_by_width=fastas, phase_a_manifest_path=phase_a_manifest,
+                    partition_manifest_path=partition_manifest, output_root=output,
+                    expected_rows=6, authorize_test=False,
+                )
+            self.assertFalse((output / "selected/final_phase_b.json").exists())
+
+    def test_phase_a_artifact_drift_stops_before_phase_b_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            values = self._fixture(Path(tmp))
+            config, csv_path, membership, fastas, output, phase_a_manifest, partition_manifest, phase_a_generation = values
+            array = phase_a_generation / "prevalence.npy"
+            array.write_bytes(array.read_bytes() + b"drift")
+            with self.assertRaisesRegex(OutputError, "drift"):
+                run_phase_b(
+                    config=config, csv_path=csv_path, membership_path=membership,
+                    fasta_by_width=fastas, phase_a_manifest_path=phase_a_manifest,
+                    partition_manifest_path=partition_manifest, output_root=output,
+                    expected_rows=6, authorize_test=True,
+                )
+            self.assertFalse((output / "selected/final_phase_b.json").exists())
 
 
 if __name__ == "__main__":

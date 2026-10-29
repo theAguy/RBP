@@ -33,15 +33,27 @@ def _key(seed: int, sample_id: str, protein_id: int, width: int) -> bytes:
     return hashlib.sha256(f"{seed}\0{sample_id}\0{protein_id}\0{width}".encode()).digest()
 
 
-def matched_indices(*, fitting_gc, evaluation_gc, labels, sample_ids, seed: int, protein_id: int, width: int) -> tuple[np.ndarray, np.ndarray]:
+def matched_indices_with_edges(
+    *, edges, evaluation_gc, labels, sample_ids, seed: int, protein_id: int, width: int
+) -> np.ndarray:
+    """Return the deterministic class-balanced evaluation subset for frozen edges.
+
+    Phase A derives the GC quantiles from fitting rows and persists them.  Phase
+    B must consume those exact edges rather than deriving anything from test.
+    """
     labels = np.asarray(labels, dtype=np.int8)
     evaluation_gc = np.asarray(evaluation_gc, dtype=np.float64)
+    edges = np.asarray(edges, dtype=np.float64)
     sample_ids = list(sample_ids)
-    if len(labels) != len(evaluation_gc) or len(labels) != len(sample_ids) or not np.isin(labels, [0, 1]).all():
+    if (
+        len(labels) != len(evaluation_gc)
+        or len(labels) != len(sample_ids)
+        or not np.isin(labels, [0, 1]).all()
+        or not np.isfinite(evaluation_gc).all()
+    ):
         raise GCMatchError("evaluation arrays must align with binary labels")
     if len(sample_ids) != len(set(sample_ids)):
         raise GCMatchError("sample IDs must be unique")
-    edges = gc_bin_edges(fitting_gc)
     bins = assign_bins(evaluation_gc, edges)
     selected: list[int] = []
     for bin_id in sorted(set(map(int, bins))):
@@ -56,4 +68,15 @@ def matched_indices(*, fitting_gc, evaluation_gc, labels, sample_ids, seed: int,
     selected_array = np.asarray(sorted(selected), dtype=np.int64)
     if not len(selected_array) or len(set(labels[selected_array])) != 2:
         raise GCMatchError("GC matching retained fewer than two classes")
-    return selected_array, edges
+    if int(labels[selected_array].sum()) * 2 != len(selected_array):
+        raise GCMatchError("GC matching did not retain equal class counts")
+    return selected_array
+
+
+def matched_indices(*, fitting_gc, evaluation_gc, labels, sample_ids, seed: int, protein_id: int, width: int) -> tuple[np.ndarray, np.ndarray]:
+    edges = gc_bin_edges(fitting_gc)
+    selected = matched_indices_with_edges(
+        edges=edges, evaluation_gc=evaluation_gc, labels=labels,
+        sample_ids=sample_ids, seed=seed, protein_id=protein_id, width=width,
+    )
+    return selected, edges

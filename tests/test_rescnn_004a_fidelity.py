@@ -61,6 +61,18 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaises(ResCNNConfigError):
                     load_config(path)
 
+    def test_unknown_loss_config_key_is_rejected(self):
+        source = CONFIG.read_text().replace(
+            'config_id = "submitted"',
+            'config_id = "submitted"\nunreviewed_override = true',
+            1,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(source)
+            with self.assertRaisesRegex(ResCNNConfigError, "loss_configs"):
+                load_config(path)
+
 
 class NotebookFidelityTests(unittest.TestCase):
     @classmethod
@@ -200,6 +212,40 @@ class LossFidelityTests(unittest.TestCase):
             with self.subTest(targets=targets, masks=masks), self.assertRaises(ResCNNLossError):
                 decomposed_masked_bce(
                     outputs, targets, masks, positive_multiplier=15, unknown_negative_coefficient=1,
+                )
+
+    def test_batch_size_variation_matches_oracle(self):
+        for batch_size in (1, 3, 9):
+            with self.subTest(batch_size=batch_size):
+                generator = torch.Generator().manual_seed(802 + batch_size)
+                outputs = torch.randn(batch_size, 5, generator=generator)
+                targets = torch.randint(0, 2, (batch_size, 5), generator=generator).float()
+                masks = torch.randint(0, 2, (batch_size, 5), generator=generator).float()
+                masks[0, 0] = 1
+                masks[0, 1] = 0
+                clean = masked_bce_with_soft_neg(outputs, targets, masks, 1, 15)
+                oracle = self.oracle_loss(outputs, targets, masks, 1, 15)
+                torch.testing.assert_close(clean, oracle, rtol=0.0, atol=0.0)
+
+    def test_nonbinary_masks_and_negative_coefficients_stop(self):
+        outputs = torch.zeros(1, 3)
+        targets = torch.tensor([[1.0, 0.0, 0.0]])
+        with self.assertRaisesRegex(ResCNNLossError, "masks must be binary"):
+            decomposed_masked_bce(
+                outputs,
+                targets,
+                torch.tensor([[1.0, 0.5, 0.0]]),
+                positive_multiplier=15,
+                unknown_negative_coefficient=1,
+            )
+        for positive, unknown in ((0, 1), (-1, 1), (15, -1)):
+            with self.subTest(positive=positive, unknown=unknown), self.assertRaises(ResCNNLossError):
+                decomposed_masked_bce(
+                    outputs,
+                    targets,
+                    torch.tensor([[1.0, 1.0, 0.0]]),
+                    positive_multiplier=positive,
+                    unknown_negative_coefficient=unknown,
                 )
 
 

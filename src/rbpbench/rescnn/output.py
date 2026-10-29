@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import uuid
 
@@ -133,6 +134,8 @@ class WholeRunGeneration(AbstractContextManager):
 
 
 def verify_selected(output_root: Path, stage: str, *, fingerprint: str) -> dict | None:
+    if not stage or "/" in stage or ".." in stage:
+        raise ResCNNOutputError("invalid stage name")
     selected_path = Path(output_root) / "selected" / f"{stage}.json"
     if not selected_path.exists():
         return None
@@ -145,10 +148,10 @@ def verify_selected(output_root: Path, stage: str, *, fingerprint: str) -> dict 
         return None
     if record.get("mid_run_resume_supported") is not False:
         raise ResCNNOutputError("selection record does not forbid mid-run resume")
-    expected_generation_prefix = f"generations/{stage}_"
-    if not isinstance(record.get("generation"), str) or not record["generation"].startswith(
-        expected_generation_prefix
-    ):
+    expected_generation_pattern = rf"generations/{re.escape(stage)}_[0-9a-f]{{12}}"
+    if not isinstance(record.get("generation"), str) or re.fullmatch(
+        expected_generation_pattern, record["generation"]
+    ) is None:
         raise ResCNNOutputError("selection-record generation path is invalid")
     generation = Path(output_root) / record["generation"]
     if not generation.is_dir():

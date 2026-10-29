@@ -78,7 +78,8 @@ parameter count; singleton-tail handling; paired RNG streams; strict runtime
 settings; partition-first test blindness; compact one-hot encoding; exactly
 122 scheduler outputs; collapse diagnostics; validation-only prediction
 schema; nested artifact inventory; whole-run rollback; and final-checkpoint
-save/reload identity.
+save/reload identity. Final-checkpoint reload requires a pre-deserialization
+file hash, complete run identity and explicit former-checkpoint rejection.
 
 Task 004A-1 does not demonstrate real-data joins, GPU resource suitability or
 scientific performance. Those remain checkpoints 004A-2 through 004A-5.

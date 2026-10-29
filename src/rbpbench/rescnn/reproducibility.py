@@ -6,10 +6,12 @@ from dataclasses import dataclass
 import hashlib
 import os
 import random
-from typing import Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Iterator, Sequence
 
 import numpy as np
 import torch
+
+from rbpbench.rescnn.fidelity import canonical_state_hash
 
 
 class DeterminismError(RuntimeError):
@@ -31,6 +33,13 @@ class EpochOrder:
     dropped_indices: tuple[int, ...]
     order_sha256: str
     dropped_sha256: str
+
+
+@dataclass(frozen=True)
+class PairedModelStart:
+    model: torch.nn.Module
+    streams: SeedStreams
+    initial_state_sha256: str
 
 
 def derive_seed(master_seed: int, label: str) -> int:
@@ -55,6 +64,31 @@ def reset_random_state(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def initialize_paired_model(
+    master_seed: int,
+    model_factory: Callable[[], torch.nn.Module],
+) -> PairedModelStart:
+    """Build one config's model without allowing config identity into its RNG.
+
+    Every paired configuration must call this same sequence immediately before
+    its first training-mode forward: reset the initialization stream, construct
+    the model, hash its complete state, then reset the model-stochastic stream.
+    """
+
+    streams = seed_streams(master_seed)
+    reset_random_state(streams.initialization)
+    model = model_factory()
+    if not isinstance(model, torch.nn.Module):
+        raise DeterminismError("model_factory did not return a torch module")
+    initial_state_sha256 = canonical_state_hash(model.state_dict())
+    reset_random_state(streams.model_stochasticity)
+    return PairedModelStart(
+        model=model,
+        streams=streams,
+        initial_state_sha256=initial_state_sha256,
+    )
 
 
 def configure_strict_float32(*, require_cuda: bool) -> dict[str, object]:

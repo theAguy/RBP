@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 from pathlib import Path
 import uuid
@@ -17,6 +18,10 @@ class ResCNNCheckpointError(RuntimeError):
 
 
 SCHEMA_VERSION = "task004a_checkpoint_v1"
+FORMER_CHECKPOINT_SHA256 = "9c036fceab966442d3cea40146a757114d8b23711c41cba227c3dafd24ff27c3"
+REQUIRED_IDENTITY_KEYS = frozenset(
+    {"source_sha256", "config_sha256", "environment_sha256", "seed", "config_id"}
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -83,10 +88,39 @@ def atomic_save_checkpoint(
     }
 
 
-def load_final_model_checkpoint(path: Path, *, model, expected_epoch: int, expected_identity: dict[str, object]) -> dict:
+def load_final_model_checkpoint(
+    path: Path,
+    *,
+    model,
+    expected_epoch: int,
+    expected_sha256: str,
+    expected_identity: dict[str, object],
+) -> dict:
     # This loader accepts only a checkpoint produced inside the current trusted
     # run. Former/untrusted pickle artifacts are never routed through it.
-    payload = torch.load(Path(path), map_location="cpu")
+    actual_sha256 = sha256_file(Path(path))
+    if actual_sha256 == FORMER_CHECKPOINT_SHA256:
+        raise ResCNNCheckpointError("former checkpoint is forbidden in the Task 004A loader")
+    if actual_sha256 != expected_sha256:
+        raise ResCNNCheckpointError("checkpoint file SHA-256 mismatch before deserialization")
+    if set(expected_identity) != REQUIRED_IDENTITY_KEYS:
+        raise ResCNNCheckpointError(
+            f"checkpoint identity must contain exactly {sorted(REQUIRED_IDENTITY_KEYS)!r}"
+        )
+    for key in ("source_sha256", "config_sha256", "environment_sha256"):
+        value = expected_identity[key]
+        if not isinstance(value, str) or len(value) != 64 or set(value) - set("0123456789abcdef"):
+            raise ResCNNCheckpointError(f"expected {key} is not a lowercase SHA-256")
+    if expected_identity["seed"] not in (20261029, 20261030, 20261031):
+        raise ResCNNCheckpointError("expected seed is outside the frozen Task 004A set")
+    if expected_identity["config_id"] not in (
+        "submitted", "submitted_no_unknown", "joint_standard"
+    ):
+        raise ResCNNCheckpointError("expected config_id is outside the frozen Task 004A set")
+    load_arguments = {"map_location": "cpu"}
+    if "weights_only" in inspect.signature(torch.load).parameters:
+        load_arguments["weights_only"] = True
+    payload = torch.load(Path(path), **load_arguments)
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise ResCNNCheckpointError("checkpoint schema mismatch")
     if payload.get("epoch") != expected_epoch:

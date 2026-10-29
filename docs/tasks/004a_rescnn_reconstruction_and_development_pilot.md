@@ -1,8 +1,9 @@
 # Task 004A — Former ResCNN reconstruction and development pilot
 
 **Status:** planning accepted with bounded corrections applied; checkpoint
-004A-1 synthetic/source implementation is complete and awaiting independent
-review. Checkpoints 004A-2 through 004A-5 have not started. See
+004A-1 synthetic/source implementation and its first-review corrections are
+complete and awaiting final independent review. Checkpoints 004A-2 through
+004A-5 have not started. See
 `docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md`.
 
 **Phase:** 4, first neural-model task

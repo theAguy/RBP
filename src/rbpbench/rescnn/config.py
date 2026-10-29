@@ -168,6 +168,23 @@ def _require_equal(actual, expected, label: str) -> None:
         raise ResCNNConfigError(f"{label} drift: {actual!r} != {expected!r}")
 
 
+def _parse_loss_config(row: object, index: int) -> LossConfig:
+    expected_keys = {"config_id", "positive_multiplier", "unknown_negative_coefficient"}
+    if not isinstance(row, dict) or set(row) != expected_keys:
+        raise ResCNNConfigError(
+            f"loss_configs[{index}] keys drift: "
+            f"{sorted(row) if isinstance(row, dict) else type(row).__name__!r}"
+        )
+    try:
+        return LossConfig(
+            str(row["config_id"]),
+            float(row["positive_multiplier"]),
+            float(row["unknown_negative_coefficient"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ResCNNConfigError(f"loss_configs[{index}] contains invalid values") from exc
+
+
 def load_config(path: Path) -> Task004AConfig:
     raw = tomllib.loads(Path(path).read_text())
     _require_equal(set(raw), EXPECTED_TOP_LEVEL_KEYS, "top-level keys")
@@ -178,12 +195,8 @@ def load_config(path: Path) -> Task004AConfig:
     _require_equal(seeds, EXPECTED_SEEDS, "seeds")
     _require_equal(development_ids, EXPECTED_DEVELOPMENT_IDS, "development_protein_ids")
     losses = tuple(
-        LossConfig(
-            str(row.get("config_id")),
-            float(row.get("positive_multiplier")),
-            float(row.get("unknown_negative_coefficient")),
-        )
-        for row in raw.get("loss_configs", ())
+        _parse_loss_config(row, index)
+        for index, row in enumerate(raw.get("loss_configs", ()))
     )
     _require_equal(losses, EXPECTED_LOSSES, "loss_configs")
     _require_equal(raw.get("architecture"), EXPECTED_ARCHITECTURE, "architecture")

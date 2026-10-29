@@ -468,10 +468,13 @@ choices.
 
 Substeps:
 
-- reproduce the in-house architecture and checkpoint behavior;
-- smoke-test the three core competitor implementations;
-- verify sample/output alignment, loss terms, early stopping, and checkpoint
-  restoration;
+- Task 004A reproduces the in-house architecture, loss, sample/output alignment
+  and actual epoch-30 checkpoint behavior at 500 nt. The former notebook has
+  no early stopping or best-checkpoint restoration, so neither is introduced
+  during fidelity reconstruction;
+- later, separately reviewed Task 004 checkpoints smoke-test the three core
+  competitor implementations and define any common early-stopping or
+  validation-selected checkpoint rule;
 - measure runtime, memory, learning curves, and seed variability; and
 - compare positive weights 15 and 1 for the joint in-house model.
 

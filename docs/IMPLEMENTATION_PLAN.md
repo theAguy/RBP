@@ -120,8 +120,13 @@ Development proteins: TARDBP, ELAVL1, U2AF2, PTBP1, HNRNPC, PUM2, QKI, and
 RBFOX2. Joint models still train all 122 outputs; only these eight results may
 guide implementation decisions.
 
-- Smoke-test every core architecture.
-- Verify loss components, output alignment, checkpointing, and early stopping.
+- Task 004A first reconstructs the former joint ResCNN at its literal 500-nt
+  operating point and verifies loss components, output alignment and its
+  actual final-epoch checkpoint behavior. The former notebook has no early
+  stopping, so Task 004A must not add it.
+- Smoke-test the three core competitor architectures and define any common
+  validation-based checkpoint/early-stopping rule only in later, separately
+  reviewed Task 004 checkpoints.
 - Measure runtime, memory, learning curves, and seed variability.
 - Compare positive weights 15 and 1 for the in-house joint model.
 

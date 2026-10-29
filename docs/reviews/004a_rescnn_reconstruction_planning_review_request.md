@@ -1,5 +1,8 @@
 # Task 004A ResCNN reconstruction — independent planning review request
 
+**Review status:** completed with bounded corrections; reconciled in
+`docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md`.
+
 ## Requested verdict
 
 Review `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md` as a

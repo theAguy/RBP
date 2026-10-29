@@ -1,7 +1,8 @@
 # Task 004A — Former ResCNN reconstruction and development pilot
 
-**Status:** proposed; implementation is forbidden until independent planning
-review is accepted.
+**Status:** planning accepted with bounded corrections applied; implementation
+has not started. See
+`docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md`.
 
 **Phase:** 4, first neural-model task
 
@@ -90,8 +91,11 @@ Task 004A may use only **train** for gradient updates and **validation** for
 learning-rate scheduling, development metrics and engineering decisions.
 
 The implementation may hash whole accepted files and may stream past records
-because the inputs are sequential. For a row assigned to test, however, it
-must not:
+because the inputs are sequential. A test row may therefore be read as raw
+bytes by the CSV/FASTA reader, but its label and sequence fields must be
+discarded without interpretation. The canonical `row_<n>` ID determines its
+partition before either field is parsed. For a row assigned to test, the
+implementation must not:
 
 - parse or count its protein labels;
 - decode, one-hot encode, cache or retain its sequence;
@@ -145,12 +149,20 @@ running statistics. ReLU is not in-place. Max-pool uses kernel and stride 2
 with no padding and floor output sizing. These defaults must be explicit in
 the frozen config rather than left to a future package version.
 
-The exact learnable-parameter count is **9,029,562**. Synthetic acceptance
-must compare the clean implementation with an independently transcribed
-notebook oracle after copying identical weights. Logits and gradients must
-agree within a frozen float32 tolerance in both training and evaluation mode,
-with identical RNG state when dropout is active;
-state-dictionary tensor shapes, dropout rates, batch-normalization settings
+The exact learnable-parameter count is **9,029,562**. The oracle is not a
+second hand transcription. The test must hash-check the notebook, extract and
+execute its exact architecture cell 8 in an isolated namespace containing
+only the required `torch`/`nn` symbols, and verify the extracted UTF-8 source
+SHA-256 `2bc4917653698b2c38e690c184924b46c222ea2ebe632d7bf225993b6fff1e0c`.
+
+Under the same initialization seed, the clean model and extracted oracle must
+produce identical initial state dictionaries. The canonical state hash is
+computed from ordered key, dtype, shape and contiguous CPU tensor bytes, not
+from a version-sensitive `torch.save` container. Logits and gradients must
+then agree within a frozen float32 tolerance in both training and evaluation
+mode, with identical RNG state when dropout is active. A second comparison
+after copying identical weights tests forward/backward equivalence.
+State-dictionary tensor shapes, dropout rates, batch-normalization settings
 and parameter count must also agree.
 
 ### 6.1 Width boundary
@@ -199,14 +211,25 @@ multiplier. All three still train one joint model with all 122 outputs.
 
 Unit tests must cover hand-calculated logits, positive, known-negative and
 unknown entries; coefficient zero; batch-size variation; finite gradients;
-zero-denominator refusal; and equality with the notebook formula.
+zero-denominator refusal; and equality with the notebook formula. The notebook
+loss oracle must be extracted directly from cell 11, whose exact source hash
+is `dbb61960cb79ee5bc727b03d7f3703a857a3f61a02899cd8af250d362a312f5a`,
+then called explicitly with `(lambda_pos, lambda_unknown)` equal to `(15,1)`,
+`(15,0)` and `(1,0)`. Its own default `lambda_pos=2.0` is not the submitted
+setting; the submitted constants come from cell 22, source hash
+`b8fa0fadfd365e5ade84dffdda4d055018405132705dc44ca38524824644a3b4`.
 
 ## 8. Frozen training behavior
 
 The fidelity pilot retains the notebook's optimization behavior:
 
 - float32 training; no automatic mixed precision and no `torch.compile`;
-- batch size 256, `drop_last=False`;
+- batch size 256;
+- training loader `drop_last=True`, the one forced deviation from the
+  notebook: 246,017 training rows leave a one-sample tail that would make the
+  dense `BatchNorm1d(512)` raise in training mode. Exactly one shuffled row is
+  omitted per epoch, identically across the three paired configs; validation
+  remains `drop_last=False` and retains all 57,565 rows;
 - Adam with learning rate `1e-3`, betas `(0.9, 0.999)`, epsilon `1e-8`, no
   weight decay and no AMSGrad;
 - at most 30 epochs, with all 30 run unless numerical/resource failure occurs;
@@ -217,6 +240,20 @@ The fidelity pilot retains the notebook's optimization behavior:
 - validation loader unshuffled; training loader shuffled by a recorded seeded
   generator with deterministically seeded workers.
 
+The launcher must set `CUBLAS_WORKSPACE_CONFIG=:4096:8` before Python imports
+PyTorch or initializes CUDA. At process start it must assert and log:
+
+- `torch.backends.cudnn.allow_tf32 = False`;
+- `torch.backends.cuda.matmul.allow_tf32 = False`;
+- `torch.set_float32_matmul_precision("highest")`;
+- `torch.use_deterministic_algorithms(True, warn_only=False)`;
+- `torch.backends.cudnn.deterministic = True`; and
+- `torch.backends.cudnn.benchmark = False`.
+
+This prevents Ampere-or-newer GPUs from silently replacing true float32
+convolution/matrix operations with TF32 and makes a nondeterministic kernel a
+hard error.
+
 The notebook does **not** implement early stopping or best-checkpoint
 restoration. Task 004A must not silently add either. The primary fidelity
 artifact is the epoch-30 checkpoint. Every epoch checkpoint may be retained
@@ -226,9 +263,24 @@ checkpoint rule for every method after explicit review.
 
 The three prespecified seeds are `20261029`, `20261030` and `20261031`. They
 are replications, never candidates from which to select a favorable result.
-Python, NumPy, PyTorch CPU, CUDA, data-loader and CUDA-library determinism
-settings must be recorded. If an operation cannot be made deterministic, the
-run stops rather than downgrading silently.
+For a given seed the three configs are a paired experiment: they start from
+byte-identical initial weights, receive the same sample order in every epoch,
+drop the same one tail row and consume the same dropout masks. Separate,
+labelled deterministic streams are derived from the master seed for model
+initialization, loader shuffling and model stochasticity. After model
+construction, the model-stochastic CPU/CUDA stream is reset identically before
+each config begins. Loss configuration must not enter seed derivation.
+
+The initial-state hash, every epoch's ordered-sample hash and dropped-row hash
+must match across all three configs for that seed. Python, NumPy, PyTorch CPU,
+CUDA, data-loader and CUDA-library determinism settings are recorded. If an
+operation cannot be made deterministic, the run stops rather than downgrading
+silently.
+
+Mid-run resume is deliberately unsupported. An interrupted candidate is
+discarded and restarted from epoch 0 with the same source/config/environment
+and seed. Accepted-stage restart may skip a completed immutable generation
+only after fully revalidating its inventory.
 
 ## 9. Development proteins and metrics
 
@@ -252,9 +304,21 @@ the unweighted eight-protein macro mean, but do not select a config or epoch
 from it. F1 threshold optimization is excluded from Task 004A. A score of 0.5
 may be used only for descriptive diagnostics.
 
+All 122 outputs must contain both validation classes and be eligible for the
+scheduler at every epoch; the accepted split guarantees at least 30 of each.
+Anything other than 122/122 is a join or metric failure. If the notebook's
+single flattened AP diagnostic is reproduced, it must be named
+`pooled_known_entry_AP`, never `mAP`: on a one-dimensional input its
+`average="macro"` argument does not create a per-protein macro average.
+
 Training logs separately report the known weighted term, unknown-negative
 term, coefficient-weighted total, gradient norm, learning rate, epoch time,
 validation time, peak CPU memory and peak GPU allocated/reserved memory.
+For every protein they also report validation score standard deviation,
+unique-score count, fraction exactly equal to its modal float32 score and
+fraction saturated at `score <= 1e-6` or `score >= 1 - 1e-6`. One unique score,
+a non-finite score or zero standard deviation is technical collapse; high
+saturation is flagged for inspection but is not itself proof of failure.
 Non-development output summaries may be recorded for fidelity diagnostics,
 but cannot justify an engineering change.
 
@@ -271,14 +335,22 @@ reported; it is not patched inside a real training invocation.
 - Extract the architecture, loss, optimizer, scheduler, label mapping and
   training loop into a tracked source-evidence specification.
 - Implement model, loss decomposition, deterministic loader, metric code,
-  atomic checkpoint writer and restart validation.
-- Add notebook-oracle equivalence and hand-calculated loss tests.
+  atomic whole-run writer and completed-generation restart validation.
+- Add direct notebook-cell extraction/oracle equivalence, identical-default-
+  initialization and hand-calculated loss tests.
+- Add a training-loader regression with `N mod 256 = 1` proving that the
+  singleton is dropped, the dense BatchNorm does not receive it, and the
+  validation loader still retains its tail.
+- Prove that the three configs within one seed have identical initial-state,
+  per-epoch order and dropped-row hashes while changing only the frozen loss
+  coefficients.
 - Add prediction-schema, membership-join and no-test-access tests with only
   synthetic fixtures.
 - No real CSV, accepted FASTA, ignored artifact or GPU training is permitted.
 
 **Gate:** focused tests pass twice; parameter count and oracle logits/gradients
-match; the full existing repository test suite introduces no new failure.
+match; direct extracted-cell hashes match; singleton-tail and paired-RNG tests
+pass; the full existing repository test suite introduces no new failure.
 
 ### 004A-2 — local bounded data-contract smoke
 
@@ -287,8 +359,12 @@ match; the full existing repository test suite introduces no new failure.
   deterministic real-data sample on CPU.
 - Reconcile sample IDs, partitions, 500-nt lengths, A/C/G/T alphabet, output
   columns and label/mask counts independently.
+- Compare the CSV bit encoding with the accepted FASTA sequence for every
+  train/validation row while the cache builder already streams them. Test-row
+  fields remain uninterpreted and discarded.
 - Run forward/backward/update, checkpoint save/reload and prediction identity
-  checks on the bounded sample for all three loss configurations.
+  checks on the bounded sample for all three loss configurations. The bounded
+  training sample size must also have remainder one modulo 256.
 
 **Gate:** zero test labels/sequences retained; independent counts and
 round-trips match; checkpoint reload reproduces logits exactly; no non-finite
@@ -303,26 +379,34 @@ value or identity mismatch.
   evidence and only the permitted train/validation input artifacts.
 - Request one GPU, four CPUs and sufficient RAM; record the actual GPU model,
   driver, CUDA/PyTorch versions and scheduler request.
-- Run one deterministic bounded subset through one epoch for each config.
+- Assert every strict-float32/determinism setting from section 8 after CUDA
+  initialization and preserve the evidence.
+- Run one deterministic bounded subset whose size is one modulo 256 through
+  one epoch for each config, in one allocation on one GPU. Confirm identical
+  initial-state, epoch-order and dropped-row hashes across configs.
 - Estimate full-run wall time and peak resources conservatively. No full pilot
   may start in the same job.
 
 **Gate:** CUDA is genuinely used; all three runs finish; peak memory fits with
 at least 20% headroom; projected job time fits the reviewed allocation; repeat
 on the same seed gives identical sample order, checkpoint digest and
-predictions, or a documented numerical tolerance accepted before proceeding.
+predictions on the same GPU model/environment. The return records the GPU model
+that later stages must request. If the scheduler cannot guarantee that model,
+exact reproducibility is claimed only within a model and a cross-model
+numerical tolerance must be accepted before proceeding.
 
 ### 004A-4 — full-data single-seed convergence gate
 
 - Run all three configurations on the full train partition using seed
-  `20261029`.
+  `20261029`, sequentially within one allocation on the same GPU.
 - Evaluate validation after each epoch, never test.
 - Stop the package after these three runs and return sanitized evidence.
 
 **Gate:** 30 epochs complete for every config; loss and gradients remain
-finite; all validation identities/counts reconcile; epoch-30 checkpoints
-reload; runtime/memory remain within the measured budget; no config shows
-unresolved collapse or execution defect.
+finite; exactly 122/122 scheduler outputs are eligible every epoch; paired
+initial-state/order/drop hashes match; all validation identities/counts
+reconcile; epoch-30 checkpoints reload; runtime/memory remain within the
+measured budget; no config shows unresolved collapse or execution defect.
 
 Scientific underperformance is reported, not treated as a code failure.
 Collapse means a technical pathology such as constant/non-finite scores,
@@ -331,14 +415,17 @@ not merely a low AUROC.
 ### 004A-5 — two additional seeds and closure
 
 - Only after 004A-4 acceptance, repeat unchanged with seeds `20261030` and
-  `20261031`.
+  `20261031`. Each seed's three configs run in one same-GPU allocation, and the
+  requested GPU model matches 004A-3 whenever the scheduler supports it.
 - Aggregate mean, standard deviation and range across the three seeds for each
   development protein/config.
 - Write a sanitized closure manifest binding all configs, environments,
   checkpoints, logs, predictions, counts and resource evidence.
 
-**Gate:** all nine runs reconcile, no seed is omitted, and no test access or
-post-hoc hyperparameter change occurred.
+**Gate:** all nine runs use one source/config/environment hash and reconcile;
+no seed is omitted, and no test access or post-hoc hyperparameter change
+occurred. Any code change after 004A-4 invalidates and repeats the seed-1 runs
+before the later seeds can be accepted.
 
 ## 11. Artifact and provenance contract
 
@@ -373,6 +460,9 @@ source, environment, input evidence, model checkpoints, optimizer/scheduler
 state, logs, predictions and summaries. Resume decisions revalidate live
 upstream evidence rather than trusting a completed-stage flag.
 
+Epoch checkpoints are evidence and debugging aids, not resume points. A failed
+or interrupted whole training run is never promoted and is rerun from epoch 0.
+
 Tracked manifests contain no sequences, row-level labels, row-level scores or
 model weights.
 
@@ -386,9 +476,12 @@ Stop before further execution if any of the following occurs:
   learnable parameters;
 - a loss microtest or coefficient-isolation test fails;
 - a denominator is zero, or any loss, gradient, weight or score is non-finite;
-- checkpoint save/reload, optimizer/scheduler resume or artifact inventory
-  differs;
+- checkpoint save/reload, recorded optimizer/scheduler state or artifact
+  inventory differs;
 - CUDA is absent from a GPU-authorized run;
+- a strict-float32/determinism flag is absent or changed;
+- paired configs differ in initial state, epoch order or dropped tail row;
+- fewer or more than 122 scheduler outputs are eligible;
 - deterministic sample order or accepted numerical reproducibility fails;
 - memory/disk/time limits are crossed or projected with inadequate headroom;
 - a real run exposes a code defect; or

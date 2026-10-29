@@ -2,11 +2,13 @@
 
 **Status:** planning accepted with bounded corrections applied; checkpoint
 004A-1 synthetic/source implementation and its corrections are independently
-accepted. Task 004A-2 is in planning review; checkpoints 004A-3 through
-004A-5 have not started. See
+accepted. Task 004A-2 planning is accepted with bounded corrections and its
+implementation has not started; checkpoints 004A-3 through 004A-5 have not
+started. See
 `docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md` and
 `docs/reviews/004a1_rescnn_acceptance.md`, with Task 004A-2 detailed in
-`docs/tasks/004a2_local_data_contract_smoke.md`.
+`docs/tasks/004a2_local_data_contract_smoke.md` and reconciled in
+`docs/reviews/004a2_local_data_contract_smoke_planning_reconciliation.md`.
 
 **Phase:** 4, first neural-model task
 

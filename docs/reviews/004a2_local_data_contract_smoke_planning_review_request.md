@@ -1,5 +1,8 @@
 # Task 004A-2 local data-contract smoke — planning review request
 
+**Review status:** completed with bounded corrections; reconciled in
+`docs/reviews/004a2_local_data_contract_smoke_planning_reconciliation.md`.
+
 ## Requested verdict
 
 Review `docs/tasks/004a2_local_data_contract_smoke.md` and return one of:

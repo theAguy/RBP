@@ -1,7 +1,8 @@
 # Task 004A-2 — local bounded data-contract smoke
 
-**Status:** planning draft for independent review. No implementation or real
-data execution is authorized by this document.
+**Status:** planning approved with bounded corrections applied. Implementation
+has not started, and real-data execution remains separately gated. See
+`docs/reviews/004a2_local_data_contract_smoke_planning_reconciliation.md`.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 
@@ -81,7 +82,8 @@ For all 303,582 train/validation rows it must:
 
 - validate canonical ID and partition;
 - parse the signed/unsigned 122-protein label grammar;
-- decode the CSV's 2,000-bit sequence into 500 A/C/G/T bases;
+- decode the CSV's 2,000-bit sequence into 500 A/C/G/T bases, requiring
+  exactly one `1` in every consecutive four-bit A/C/G/T group;
 - validate the matching FASTA header, length and alphabet;
 - require byte-exact equality between the decoded CSV sequence and FASTA;
 - aggregate per-partition known-positive, known-negative and unknown counts;
@@ -89,10 +91,11 @@ For all 303,582 train/validation rows it must:
 - retain only aggregate counts, digests and bounded sampler state.
 
 For all 57,598 test rows it may validate only the canonical row ID,
-membership presence and partition. The CSV label/sequence suppliers and FASTA
-sequence interpreter must not be called. The raw CSV/FASTA record is consumed
-and discarded without label parsing, bit decoding, alphabet counting,
-length-based inference or tensor construction.
+membership presence, component ID and partition. Reading the component ID is
+permitted only for membership/component-integrity reconciliation. The CSV
+label/sequence suppliers and FASTA sequence interpreter must not be called.
+The raw CSV/FASTA record is consumed and discarded without label parsing, bit
+decoding, alphabet counting, length-based inference or tensor construction.
 
 The audit must record explicit counters:
 
@@ -109,6 +112,27 @@ test_accessed = false
 Calling any forbidden supplier is an immediate failure. A synthetic test must
 plant malformed test labels and bases and prove that they remain
 uninterpreted, while the same malformed values in train or validation fail.
+
+Gate A's per-protein count matrix is development-only: train and validation
+are recorded separately, and their combined summary must agree with the
+accepted Task 003B Phase A evidence in
+`manifests/task003b_phase_a_003b3.json`:
+
+```text
+train_plus_validation_rows = 303582
+known_labels_per_protein_min = 806
+known_labels_per_protein_max = 3159
+positive_labels_per_protein_min = 388
+negative_labels_per_protein_min = 408
+```
+
+Gate B's second streaming pass must independently count the same
+train/validation labels with a separate counter implementation and reproduce
+Gate A's complete 122-by-partition positive/negative/unknown matrix exactly.
+`manifests/dataset_audit.json` may establish file identity, grammar and the
+whole-universe row count, but its whole-dataset protein totals must not be
+subtracted from development counts. No test positive, negative, known or
+unknown count may be computed, inferred, recorded or reported.
 
 #### Deterministic smoke samples
 
@@ -127,6 +151,10 @@ The accepted split guarantees at least 30 examples of each known class for
 every protein in validation/test and substantially more in train, so the 244
 per-partition protein/class quotas are feasible within 513 unique rows. The
 implementation must nevertheless verify feasibility rather than assume it.
+
+The streaming implementation holds only 488 running quota minima (244 per
+partition) and one bounded heap of the 513 smallest partition-level ranks per
+partition. It must not retain every eligible row or rank.
 
 This label-aware sampling is permitted only because it uses train and
 validation, and only to exercise all 122 output paths. It must never be used
@@ -148,6 +176,10 @@ Gate B makes a second partition-first streaming pass and materializes only the
 
 It must not construct the current full-universe tuple-of-records plus tensor
 duplication. Cache bytes, process peak RSS and wall time are measured.
+For each selected row, Gate A records a canonical content digest over sample
+ID, component ID, partition, base codes, targets and masks. Gate B must
+reproduce the same per-row and aggregate digests from its independently
+materialized cache before any model operation.
 
 For master seed `20261029`, the smoke runs `submitted`,
 `submitted_no_unknown` and `joint_standard` sequentially on CPU. Each config
@@ -183,6 +215,17 @@ separately demonstrates both the unknown penalty and positive multiplier;
 post-Adam state differences alone are insufficient because Adam's first step
 can obscure gradient-magnitude changes.
 
+The first admitted batch must contain at least one known positive. The
+decomposition must also prove, at exact tensor equality where applicable,
+that:
+
+- the known-weighted term is identical for `submitted` and
+  `submitted_no_unknown`, which both use multiplier 15;
+- the uncoefficiented unknown-negative term is identical across all three
+  configurations; and
+- each total equals its known-weighted term plus the frozen coefficient times
+  its unknown-negative term.
+
 The complete bounded smoke is then repeated from a fresh model and fresh
 output subdirectory. Initial states, order/tail evidence, loss components,
 gradient hashes, checkpoint model hashes and reloaded validation logits must
@@ -192,7 +235,10 @@ match exactly between primary and repeat. Runtime and memory may differ.
 
 Task 004A-2 adds factories that accept the loaded `Task004AConfig` and one of
 its exact `LossConfig` objects. Callers cannot override coefficients or
-optimizer/scheduler parameters.
+optimizer/scheduler parameters. Effective values are checked against the
+module's frozen expected constants as well as the loaded config, so a caller
+cannot bypass the contract by constructing a dataclass manually. The supplied
+`LossConfig` must be one of the three entries in that loaded config.
 
 The factories must assert these effective values after construction:
 
@@ -218,6 +264,17 @@ caller argument. It accepts only the final-training role. A smoke checkpoint
 can never be presented as a final model, and neither loader accepts the former
 checkpoint hash.
 
+Both schemas carry an explicit artifact role. Each loader rejects the other
+role before accepting state, and authenticates the file hash and refuses the
+former-checkpoint hash before deserialization. The smoke reload must call
+`torch.load(..., weights_only=True)` and record `weights_only_used: true`.
+
+Smoke prediction rows use a separate role/fold value such as
+`components_v2_coverage_smoke`, never the later
+`components_v2_pilot`. The output validator accepts the smoke role only in
+the 004A-2 smoke schema, preventing these predictions from being mixed with
+validation-pilot evidence.
+
 ## 5. Environment and resource boundary
 
 Before any real input is opened, implementation must create and verify a
@@ -231,15 +288,19 @@ local CPU environment manifest recording at least:
 
 The existing ad-hoc cached PyTorch overlay is not accepted as undocumented
 real-run provenance. The actual available local environment is queried first;
-versions are recorded rather than invented. Environment creation and the
-source-only suite must complete before real data authorization.
+versions are recorded rather than invented. The selected PyTorch must expose
+the `weights_only` argument on `torch.load`; lack of that interface is a hard
+pre-data failure. Prefer the same PyTorch major/minor intended for Newton. If
+CUDA compatibility later requires a different 004A-3 version, that difference
+needs explicit review. The complete 004A-1 focused suite and new 004A-2A suite
+must pass in this exact local environment before real data authorization.
 
 Frozen execution limits for the local run are:
 
 | Resource | Gate |
 |---|---:|
 | device | CPU only |
-| numerical worker threads | 4 maximum |
+| numerical worker threads | exactly 4 |
 | installed RAM | at least 16 GiB, numeric reading required |
 | available RAM before Gate A and Gate B | at least 4 GiB |
 | free disk before each gate | at least 20 GiB |
@@ -250,6 +311,11 @@ Frozen execution limits for the local run are:
 No input file is copied into the output generation. A resource-reading
 failure is fail-closed. A resource-gate failure is evidence that 004A-2 needs
 a revised host plan; it is not authority to weaken the scientific contract.
+On macOS, available RAM is read numerically from `vm_stat` as
+free + inactive + speculative pages. Peak RSS normalization must account for
+macOS `ru_maxrss` reporting bytes while Linux reports KiB. Both conversions,
+missing readings and boundary values require synthetic tests even though
+004A-2 runs only on macOS.
 
 ## 6. Transactional output and provenance
 
@@ -270,7 +336,8 @@ The selection record must bind:
 - the three config identities and paired-start/order/tail evidence;
 - pre-update loss/gradient evidence;
 - checkpoint/prediction inventories and primary/repeat comparison;
-- wall time, peak RSS, free disk and thread cap; and
+- wall time, peak RSS, free disk and thread count;
+- `weights_only_used: true` for every smoke reload; and
 - `test_accessed: false` plus all zero test-field counters.
 
 After independent acceptance, one small tracked manifest may be committed as
@@ -298,16 +365,23 @@ Required focused tests include:
 
 - canonical membership/CSV/FASTA lockstep and mismatch failures;
 - supplier counters proving malformed test fields remain uninterpreted;
+- no derivation of test class counts from whole-dataset minus development
+  totals;
 - 513-row quota/fill determinism, uniqueness, class coverage and digest
   stability under input-order changes;
+- exact Gate-A-to-cache per-row/content digest agreement;
 - compact dtype/shape and no full-universe record retention;
 - config-only loss/Adam/scheduler construction and unknown override refusal;
 - independent per-config order derivation and paired dropout/logits;
 - every-pair pre-update loss and gradient distinction;
+- exact loss-component identities and a known positive in the updated batch;
 - float32 sigmoid metric semantics, 122/122 eligibility and unshuffled
   validation tail retention;
 - smoke/final checkpoint role separation, pre-load authentication and exact
-  reload identity;
+  `weights_only=True` reload identity;
+- distinct smoke-prediction role enforcement;
+- macOS/Linux peak-RSS units, named macOS available-RAM parsing and exact
+  four-thread evidence;
 - transaction rollback, restart invalidation and resource failures; and
 - manifest sanitation and explicit `test_accessed:false`.
 
@@ -329,19 +403,26 @@ Task 004A-2 passes only if all of the following hold:
 1. all immutable inputs and manifest relationships match;
 2. 361,180 canonical membership rows reconcile exactly;
 3. all 303,582 train/validation CSV-to-FASTA sequences match exactly;
-4. all test-field interpretation/tensor/prediction counters are zero;
-5. train and validation samples contain 513 unique allowed IDs and both known
+4. the two independent train/validation count passes match, accepted Phase A
+   aggregate bounds match and no test class count is derived;
+5. all test-field interpretation/tensor/prediction counters are zero;
+6. train and validation samples contain 513 unique allowed IDs and both known
    classes for every one of 122 outputs;
-6. compact cache evidence is within the frozen resource limits;
-7. all three configs share initialization, order, dropped row and pre-update
+7. Gate A and Gate B sample-content digests match, and compact cache evidence
+   is within the frozen resource limits;
+8. all three configs share initialization, order, dropped row and pre-update
    logits while every config pair has distinct loss/gradient evidence;
-8. Adam/scheduler effective settings equal the frozen config;
-9. validation keeps its singleton tail and metrics consume float32 sigmoid
+9. the loss-component identities hold and the updated batch contains a known
+   positive;
+10. Adam/scheduler effective settings equal the frozen expected constants;
+11. validation keeps its singleton tail and metrics consume float32 sigmoid
    probabilities with 122/122 eligible outputs;
-10. every value, gradient and score is finite;
-11. smoke checkpoint authentication/reload and exact logits/predictions pass;
-12. primary and repeat scientific evidence is identical; and
-13. the selected generation inventory and sanitized manifest reproduce.
+12. every value, gradient and score is finite;
+13. smoke checkpoint authentication, explicit-role refusal,
+    `weights_only=True` reload and exact logits/predictions pass;
+14. primary and repeat scientific evidence is identical under exactly four
+    threads; and
+15. the selected generation inventory and sanitized manifest reproduce.
 
 ## 9. Explicit non-goals
 
@@ -359,3 +440,6 @@ Task 004A-2 does not:
 
 After acceptance, Task 004A-3 will freeze the Newton CUDA environment and run
 a separately reviewed one-epoch GPU resource smoke before any 30-epoch pilot.
+That later plan must also record and pin Adam's GPU-sensitive implementation
+flags (`foreach`, `fused`, `capturable`, `differentiable` and `maximize`);
+they are not silently introduced into this CPU contract smoke.

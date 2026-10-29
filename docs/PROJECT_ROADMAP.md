@@ -467,8 +467,9 @@ still train all 122 outputs, but only these eight results may guide engineering
 choices.
 
 Current status: Task 004A-1's faithful source/synthetic reconstruction is
-accepted. Task 004A-2 is in planning review as a bounded local CPU data-contract
-smoke with no full training and no test-field interpretation. See
+accepted. Task 004A-2 planning is accepted with bounded corrections as a
+bounded local CPU data-contract smoke; implementation has not started. It has
+no full training and no test-field interpretation. See
 `docs/tasks/004a2_local_data_contract_smoke.md`.
 
 Substeps:

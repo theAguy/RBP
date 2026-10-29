@@ -1,0 +1,121 @@
+schema_version = "task004a_rescnn_v1"
+window = 500
+output_count = 122
+train_row_count = 246017
+validation_row_count = 57565
+batch_size = 256
+train_drop_last = true
+validation_drop_last = false
+epochs = 30
+seeds = [20261029, 20261030, 20261031]
+development_protein_ids = [33, 53, 82, 84, 85, 86, 107, 112]
+
+[architecture]
+input_layout = "batch,window,channel"
+input_channels = 4
+block_channels = [64, 128, 256]
+kernel_sizes = [7, 7, 5]
+conv_stride = 1
+conv_dilation = 1
+conv_groups = 1
+conv_padding = "same_floor_half_kernel"
+conv_padding_mode = "zeros"
+conv_bias = true
+batch_norm_epsilon = 1e-5
+batch_norm_momentum = 0.1
+batch_norm_affine = true
+batch_norm_track_running_stats = true
+relu_inplace = false
+pool_kernel = 2
+pool_stride = 2
+pool_padding = 0
+pool_dilation = 1
+pool_ceil_mode = false
+post_pool_length = 62
+flattened_features = 15872
+dense_features = [512, 256, 122]
+dense_bias = true
+dropout_probabilities = [0.4, 0.3]
+dropout_inplace = false
+learnable_parameter_count = 9029562
+
+[label_contract]
+protein_id_minimum = 1
+protein_id_maximum = 122
+output_column_rule = "protein_id_minus_one"
+unsigned_token = "known_positive"
+explicit_plus_token = "known_positive"
+negative_token = "known_negative"
+absent_token = "unknown"
+target_dtype = "float32"
+mask_dtype = "float32"
+
+[input_encoding]
+alphabet = "ACGT"
+channel_order = ["A", "C", "G", "T"]
+retained_dtype = "uint8"
+batch_dtype = "float32"
+orientation = "supplied"
+one_hot_shape = [500, 4]
+
+[inputs]
+csv_sha256 = "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945"
+dataset_audit_sha256 = "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c"
+proteins_sha256 = "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9"
+decode_manifest_sha256 = "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3"
+partition_manifest_sha256 = "b6f6f16fab4e6afc23c16a8dc5b3476130719d579f637cd3cf18002cc7fb7419"
+membership_sha256 = "ca527da4f0c0615bcb9d31c6fc705523238e8fb8f4751473ccc2af3ee0aecddb"
+fasta_500_sha256 = "0849d4f8aceaed37c3dc7fec69056f38ae344338aa4adf321a3e11c4a72df0b0"
+notebook_sha256 = "9a04f551ed9e5420c720074bf57f41f1c93ab92acc37c3b8ff44868e6b021b84"
+checkpoint_sha256 = "9c036fceab966442d3cea40146a757114d8b23711c41cba227c3dafd24ff27c3"
+architecture_cell_sha256 = "2bc4917653698b2c38e690c184924b46c222ea2ebe632d7bf225993b6fff1e0c"
+loss_cell_sha256 = "dbb61960cb79ee5bc727b03d7f3703a857a3f61a02899cd8af250d362a312f5a"
+hyperparameter_cell_sha256 = "b8fa0fadfd365e5ade84dffdda4d055018405132705dc44ca38524824644a3b4"
+
+[optimizer]
+name = "Adam"
+learning_rate = 0.001
+betas = [0.9, 0.999]
+epsilon = 1e-8
+weight_decay = 0.0
+amsgrad = false
+
+[scheduler]
+name = "ReduceLROnPlateau"
+mode = "max"
+factor = 0.5
+patience = 2
+threshold = 0.0001
+threshold_mode = "rel"
+cooldown = 0
+minimum_learning_rate = 0.0
+epsilon = 1e-8
+
+[determinism]
+cublas_workspace_config = ":4096:8"
+cudnn_allow_tf32 = false
+cuda_matmul_allow_tf32 = false
+float32_matmul_precision = "highest"
+deterministic_algorithms = true
+cudnn_deterministic = true
+cudnn_benchmark = false
+seed_derivation = "sha256-labelled-u63-v1"
+
+[[loss_configs]]
+config_id = "submitted"
+positive_multiplier = 15.0
+unknown_negative_coefficient = 1.0
+
+[[loss_configs]]
+config_id = "submitted_no_unknown"
+positive_multiplier = 15.0
+unknown_negative_coefficient = 0.0
+
+[[loss_configs]]
+config_id = "joint_standard"
+positive_multiplier = 1.0
+unknown_negative_coefficient = 0.0
+
+[collapse]
+saturation_lower = 1e-6
+saturation_upper = 0.999999

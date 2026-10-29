@@ -1,0 +1,27 @@
+Please act as the independent second planning reviewer for Task 004A.
+
+Read, in order:
+
+1. docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md
+2. docs/reviews/004a_rescnn_reconstruction_planning_review_request.md
+3. docs/reviews/003b_final_baseline_acceptance.md
+4. docs/reviews/002c_final_sequence_partition_acceptance.md
+5. docs/DATA.md
+6. docs/IMPLEMENTATION_PLAN.md
+7. docs/PROJECT_ROADMAP.md
+8. intRBP ResCNN - for students.ipynb
+
+For the notebook, inspect source code only. Do not execute its cells and do not
+trust its saved outputs as new evidence.
+
+Do not implement anything. Do not train a model. Do not open the real CSV,
+accepted FASTAs, final membership, ignored predictions or model artifacts.
+Review only the tracked plan, source notebook, contracts and small tracked
+manifests named by the task.
+
+Return one evidence-backed verdict: Approve, Approve with bounded corrections,
+or Stop. Answer every numbered question in the review request. Focus on exact
+notebook fidelity, one-change-at-a-time loss ablations, test blindness,
+deterministic reproducibility and realistic Newton GPU execution. Distinguish
+blocking defects from work explicitly deferred to later tasks; do not expand
+the task into competitors, test scoring or the 251/101 comparison.

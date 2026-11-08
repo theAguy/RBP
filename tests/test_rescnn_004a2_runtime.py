@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import gzip
+import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -20,7 +23,12 @@ from rbpbench.rescnn.checkpoint import (
     load_smoke_model_checkpoint,
 )
 from rbpbench.rescnn.config import ResCNNConfigError, load_config
-from rbpbench.rescnn.data_004a2 import CacheRecord, CompactSampleCache, canonical_content_sha256
+from rbpbench.rescnn.data_004a2 import (
+    CacheRecord,
+    CompactSampleCache,
+    ResCNN004A2DataError,
+    canonical_content_sha256,
+)
 from rbpbench.rescnn.environment_004a2 import require_safe_torch_load
 from rbpbench.rescnn.factories_004a2 import build_adam, build_scheduler
 from rbpbench.rescnn.output import ResCNNOutputError, validate_prediction_rows
@@ -35,11 +43,18 @@ from rbpbench.rescnn.resources_004a2 import (
 )
 from rbpbench.rescnn.runner_004a2 import (
     ResCNN004A2RunnerError,
+    _bound_source_evidence,
     build_parser,
     execute,
     resolve_fasta_500,
 )
 from rbpbench.rescnn.smoke_004a2 import run_paired_smoke, scientific_signature
+from rbpbench.rescnn.model import (
+    CNNMultiLabelResidual,
+    EXPECTED_LEARNABLE_PARAMETERS,
+    count_learnable_parameters,
+)
+from rbpbench.rescnn.reproducibility import configure_strict_float32
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +69,20 @@ class TinyDropoutModel(torch.nn.Module):
 
     def forward(self, values):
         return self.linear(self.dropout(values.flatten(1)))
+
+
+class DriftingBatchNormModel(torch.nn.Module):
+    calls = 0
+
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(500 * 4, 122)
+        self.batch_norm = torch.nn.BatchNorm1d(122)
+        type(self).calls += 1
+        self.batch_norm.running_var.fill_(float(type(self).calls))
+
+    def forward(self, values):
+        return self.batch_norm(self.linear(values.flatten(1)))
 
 
 def _cache() -> CompactSampleCache:
@@ -203,8 +232,84 @@ class RoleAndSmokeTests(unittest.TestCase):
             self.assertEqual(result.evidence["metrics"]["eligible_output_count"], 122)
             self.assertTrue(result.evidence["weights_only_used"])
 
+    def test_paired_smoke_refuses_different_initial_state_with_equal_training_logits(self):
+        require_safe_torch_load()
+        config = load_config(CONFIG)
+        DriftingBatchNormModel.calls = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "initial model state"):
+                run_paired_smoke(
+                    _cache(), config=config, output_dir=Path(tmp) / "drift",
+                    source_sha256="a" * 64, config_sha256="b" * 64,
+                    environment_sha256="c" * 64, model_factory=DriftingBatchNormModel,
+                )
+
+    def test_real_cnn_completes_paired_primary_repeat_at_four_threads(self):
+        require_safe_torch_load()
+        configure_exact_threads(torch)
+        configure_strict_float32(require_cuda=False)
+        config = load_config(CONFIG)
+        cache = _cache()
+        factory = lambda: CNNMultiLabelResidual(config.output_count)
+        self.assertEqual(
+            count_learnable_parameters(factory()), EXPECTED_LEARNABLE_PARAMETERS,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = run_paired_smoke(
+                cache, config=config, output_dir=Path(tmp) / "cnn-primary",
+                source_sha256="a" * 64, config_sha256="b" * 64,
+                environment_sha256="c" * 64, model_factory=factory,
+            )
+            repeat = run_paired_smoke(
+                cache, config=config, output_dir=Path(tmp) / "cnn-repeat",
+                source_sha256="a" * 64, config_sha256="b" * 64,
+                environment_sha256="c" * 64, model_factory=factory,
+            )
+            checkpoint_bytes = sum(
+                int(result.evidence["checkpoint"]["byte_size"])
+                for run in (primary, repeat)
+                for result in run.by_config.values()
+            )
+        self.assertEqual(scientific_signature(primary), scientific_signature(repeat))
+        self.assertTrue(primary.evidence["all_initial_model_state_hashes_equal"])
+        self.assertEqual(
+            len({
+                result.evidence["initial_model_state_sha256"]
+                for result in primary.by_config.values()
+            }),
+            1,
+        )
+        self.assertLess(checkpoint_bytes, GIB)
+        for result in primary.by_config.values():
+            self.assertEqual(result.evidence["validation_batch_sizes"], [256, 256, 1])
+            self.assertEqual(result.evidence["metrics"]["eligible_output_count"], 122)
+            self.assertTrue(result.evidence["weights_only_used"])
+
 
 class RunnerBoundaryTests(unittest.TestCase):
+    def test_source_evidence_includes_loaded_baseline_dependencies(self):
+        evidence = _bound_source_evidence(ROOT)
+        paths = {row["path"] for row in evidence["files"]}
+        self.assertIn("rbpbench/baselines/data.py", paths)
+        self.assertIn("rbpbench/baselines/metrics.py", paths)
+        self.assertIn("rbpbench/rescnn/runner_004a2.py", paths)
+        self.assertTrue(all(not Path(path).is_absolute() for path in paths))
+
+    def test_loaded_rbpbench_module_outside_source_tree_stops_before_input_hashing(self):
+        module = sys.modules["rbpbench.rescnn.data_004a2"]
+        with tempfile.TemporaryDirectory() as tmp:
+            stale = Path(tmp) / "stale.py"
+            stale.write_text("# stale installed copy\n")
+            args = SimpleNamespace(repo_root=ROOT)
+            with mock.patch.object(module, "__file__", str(stale)), mock.patch(
+                "rbpbench.rescnn.runner_004a2._require_clean_worktree"
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2._input_evidence"
+            ) as input_evidence:
+                with self.assertRaisesRegex(ResCNN004A2RunnerError, "outside repo_root/src"):
+                    execute(args)
+                input_evidence.assert_not_called()
+
     def test_decode_manifest_is_authoritative_for_fasta_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -239,6 +344,75 @@ class RunnerBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(ResCNN004A2RunnerError, "environment stopped"):
                 execute(args)
             input_evidence.assert_not_called()
+
+    def test_gate_a_failure_writes_sanitized_stop_record_and_no_selection(self):
+        good = ResourceSnapshot("Darwin", 16 * GIB, 8 * GIB, 40 * GIB, 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            csv_path = root / "input.csv"
+            csv_path.write_text("sequence,labels\n")
+            fasta_path = root / "input.fasta"
+            fasta_path.write_text(">row_0\nA\n")
+            membership_path = root / "membership.tsv.gz"
+            with gzip.open(membership_path, "wt") as handle:
+                handle.write("sample_id\tcomponent_id\tpartition\n")
+            output_dir = root / "output"
+            args = SimpleNamespace(
+                repo_root=ROOT,
+                config=CONFIG,
+                environment_manifest=root / "environment.json",
+                output_dir=output_dir,
+                csv=csv_path,
+                dataset_audit=root / "dataset_audit.json",
+                proteins=root / "proteins.tsv",
+                decode_manifest=root / "decode.json",
+                partition_manifest=root / "partition.json",
+                membership=membership_path,
+                phase_a_manifest=root / "phase_a.json",
+            )
+            fake_evidence = {"path": "synthetic", "byte_size": 1, "sha256": "a" * 64}
+            with mock.patch(
+                "rbpbench.rescnn.runner_004a2._require_clean_worktree"
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2._bound_source_evidence",
+                return_value={"sha256": "b" * 64, "files": []},
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2._verify_environment",
+                return_value=({}, "c" * 64),
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2.configure_exact_threads",
+                return_value={"numerical_threads": 4},
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2.configure_strict_float32",
+                return_value={"deterministic_algorithms": True},
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2.torch.cuda.is_available", return_value=False,
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2.local_resource_snapshot", return_value=good,
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2._input_evidence", return_value=fake_evidence,
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2._verify_phase_a_bounds",
+                return_value=fake_evidence,
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2.resolve_fasta_500", return_value=fasta_path,
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2._source_commit", return_value="d" * 40,
+            ), mock.patch(
+                "rbpbench.rescnn.runner_004a2.audit_streams",
+                side_effect=ResCNN004A2DataError("lockstep ID mismatch at row_0"),
+            ):
+                with self.assertRaisesRegex(ResCNN004A2DataError, "lockstep ID mismatch"):
+                    execute(args)
+
+            stopped = json.loads((output_dir / "STOPPED.json").read_text())
+            self.assertEqual(stopped["status"], "STOPPED")
+            self.assertEqual(stopped["stage"], "gate_a_audit")
+            self.assertEqual(stopped["error"]["class"], "ResCNN004A2DataError")
+            self.assertFalse(stopped["test_accessed"])
+            self.assertFalse(stopped["selection_record_written"])
+            self.assertFalse((output_dir / "selected" / "local_data_contract_smoke.json").exists())
+            self.assertFalse(any((output_dir / "generations").glob("*")))
 
     def test_cli_requires_every_bound_manifest(self):
         parser = build_parser()

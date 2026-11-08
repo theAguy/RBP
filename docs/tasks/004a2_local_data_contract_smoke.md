@@ -1,9 +1,10 @@
 # Task 004A-2 — local bounded data-contract smoke
 
-**Status:** 004A-2A synthetic-only implementation is complete and awaiting
-independent implementation review. No real input has been opened or hashed,
-and 004A-2B real-data execution remains separately gated. See
-`docs/reviews/004a2a_local_smoke_implementation_review_request.md`.
+**Status:** 004A-2A synthetic-only implementation and its bounded review
+corrections are complete and awaiting a short correction review. No real
+input has been opened or hashed, and 004A-2B real-data execution remains
+separately gated. See
+`docs/reviews/004a2a_bounded_correction_review_request.md`.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 
@@ -353,7 +354,9 @@ fresh input/environment hashes and full accepted-inventory validation.
 
 ## 7. Implementation and review sequence
 
-This task deliberately uses only two handoffs.
+This task uses one synthetic implementation review followed by one separately
+authorized real-data execution handoff. Any bounded correction review closes
+the synthetic review; it does not authorize or add a real-data invocation.
 
 ### 004A-2A — implementation without real data
 

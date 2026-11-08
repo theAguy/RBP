@@ -7,6 +7,7 @@ synthetic fixtures. Opening and hash-binding real paths belongs to the runner.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
 import csv
 import hashlib
 import heapq
@@ -151,6 +152,90 @@ class _CountAccumulator:
             rows=dict(self.rows),
             positive={key: tuple(value) for key, value in self.positive.items()},
             negative={key: tuple(value) for key, value in self.negative.items()},
+        )
+
+
+@dataclass(frozen=True)
+class IndependentDevelopmentCounts:
+    """Gate-B counts represented independently from Gate A's dense matrices."""
+
+    rows_by_partition: Mapping[str, int]
+    label_counts: Mapping[tuple[str, int, int], int]
+    output_count: int
+
+    def matrix(self) -> dict[str, dict[str, tuple[int, ...] | int]]:
+        result: dict[str, dict[str, tuple[int, ...] | int]] = {}
+        for partition in DEVELOPMENT_PARTITIONS:
+            rows = int(self.rows_by_partition.get(partition, 0))
+            positive = tuple(
+                int(self.label_counts.get((partition, protein_id, 1), 0))
+                for protein_id in range(1, self.output_count + 1)
+            )
+            negative = tuple(
+                int(self.label_counts.get((partition, protein_id, 0), 0))
+                for protein_id in range(1, self.output_count + 1)
+            )
+            result[partition] = {
+                "rows": rows,
+                "positive": positive,
+                "negative": negative,
+                "unknown": tuple(
+                    rows - positive_count - negative_count
+                    for positive_count, negative_count in zip(positive, negative)
+                ),
+            }
+        return result
+
+    def combined_bounds(self) -> dict[str, int]:
+        known: list[int] = []
+        positive: list[int] = []
+        negative: list[int] = []
+        for protein_id in range(1, self.output_count + 1):
+            pos = sum(
+                int(self.label_counts.get((partition, protein_id, 1), 0))
+                for partition in DEVELOPMENT_PARTITIONS
+            )
+            neg = sum(
+                int(self.label_counts.get((partition, protein_id, 0), 0))
+                for partition in DEVELOPMENT_PARTITIONS
+            )
+            positive.append(pos)
+            negative.append(neg)
+            known.append(pos + neg)
+        return {
+            "train_plus_validation_rows": sum(
+                int(self.rows_by_partition.get(partition, 0))
+                for partition in DEVELOPMENT_PARTITIONS
+            ),
+            "known_labels_per_protein_min": min(known),
+            "known_labels_per_protein_max": max(known),
+            "positive_labels_per_protein_min": min(positive),
+            "negative_labels_per_protein_min": min(negative),
+        }
+
+
+class _IndependentCountAccumulator:
+    """Sparse Gate-B implementation sharing no counting state/code with Gate A."""
+
+    def __init__(self, output_count: int):
+        self.output_count = output_count
+        self.rows_by_partition: Counter[str] = Counter()
+        self.label_counts: Counter[tuple[str, int, int]] = Counter()
+
+    def observe(self, partition: str, labels: Mapping[int, int]) -> None:
+        if partition != "train" and partition != "validation":
+            raise ResCNN004A2DataError("Gate B attempted to count a non-development partition")
+        self.rows_by_partition[partition] += 1
+        for protein_id, label in labels.items():
+            if not 1 <= protein_id <= self.output_count or label not in (0, 1):
+                raise ResCNN004A2DataError("Gate B received an invalid protein label")
+            self.label_counts[(partition, protein_id, label)] += 1
+
+    def freeze(self) -> IndependentDevelopmentCounts:
+        return IndependentDevelopmentCounts(
+            rows_by_partition=dict(self.rows_by_partition),
+            label_counts=dict(self.label_counts),
+            output_count=self.output_count,
         )
 
 
@@ -514,7 +599,7 @@ class CompactSampleCache(Dataset):
 @dataclass(frozen=True)
 class CacheBuildResult:
     cache: CompactSampleCache
-    counts: DevelopmentCounts
+    counts: IndependentDevelopmentCounts
     selected_content_sha256: str
     access: Mapping[str, int | bool]
 
@@ -536,7 +621,7 @@ def build_cache_streams(
     if len(expected) != sum(len(selected[p]) for p in DEVELOPMENT_PARTITIONS):
         raise ResCNN004A2DataError("selected IDs are duplicated across partitions")
     counters = AccessCounters()
-    counts = _CountAccumulator(output_count)
+    counts = _IndependentCountAccumulator(output_count)
     records: list[CacheRecord] = []
     streams = zip_longest(
         _membership_rows(membership_lines), _csv_rows(csv_lines), _fasta_rows(fasta_lines),
@@ -555,7 +640,7 @@ def build_cache_streams(
             continue
         raw_bits, raw_labels = csv_row
         labels = _parse_labels_independent(raw_labels, output_count)
-        counts.add(member.partition, labels)
+        counts.observe(member.partition, labels)
         candidate = expected.get(member.sample_id)
         if candidate is None:
             continue
@@ -603,7 +688,7 @@ def build_cache_streams(
 
 def require_count_reconciliation(
     gate_a: DevelopmentCounts,
-    gate_b: DevelopmentCounts,
+    gate_b: IndependentDevelopmentCounts,
     *,
     expected_bounds: Mapping[str, int] | None = None,
 ) -> None:

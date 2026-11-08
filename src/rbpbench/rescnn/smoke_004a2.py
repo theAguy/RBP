@@ -145,6 +145,7 @@ def run_paired_smoke(
     output_dir.mkdir(parents=True, exist_ok=False)
     results: dict[str, ConfigSmokeResult] = {}
     orders = []
+    initial_hashes: list[str] = []
     pre_logits: list[torch.Tensor] = []
     known_terms: dict[str, torch.Tensor] = {}
     unknown_terms: dict[str, torch.Tensor] = {}
@@ -152,6 +153,9 @@ def run_paired_smoke(
 
     for loss_config in config.loss_configs:
         start = initialize_paired_model(seed, model_factory)
+        initial_hashes.append(start.initial_state_sha256)
+        if initial_hashes[0] != start.initial_state_sha256:
+            raise ResCNNSmokeError("paired configurations did not share initial model state")
         order = epoch_order(
             len(train_indices), batch_size=config.batch_size,
             loader_seed=start.streams.loader, epoch=0,
@@ -295,6 +299,7 @@ def run_paired_smoke(
         "shared_initial_model_state_sha256": next(iter(results.values())).evidence[
             "initial_model_state_sha256"
         ],
+        "all_initial_model_state_hashes_equal": len(set(initial_hashes)) == 1,
         "shared_order_sha256": orders[0].order_sha256,
         "shared_dropped_sha256": orders[0].dropped_sha256,
         "shared_pre_update_logits_sha256": _tensor_sha256(pre_logits[0]),

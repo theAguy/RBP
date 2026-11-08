@@ -15,8 +15,9 @@ import json
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
-from typing import Callable, Iterator, Mapping
+from typing import Iterator, Mapping
 
 import torch
 
@@ -34,7 +35,11 @@ from rbpbench.rescnn.environment_004a2 import (
     discover_environment_manifest,
     environment_sha256,
 )
-from rbpbench.rescnn.model import CNNMultiLabelResidual
+from rbpbench.rescnn.model import (
+    CNNMultiLabelResidual,
+    EXPECTED_LEARNABLE_PARAMETERS,
+    count_learnable_parameters,
+)
 from rbpbench.rescnn.output import (
     PREDICTION_FIELDS,
     WholeRunGeneration,
@@ -80,17 +85,44 @@ def _require_sha(value: object, label: str) -> str:
     return value
 
 
-def _hash_tree(root: Path) -> str:
+def _bound_source_evidence(repo_root: Path) -> dict[str, object]:
+    """Bind every already-loaded rbpbench module to the source tree and hash it."""
+
+    source_root = (Path(repo_root) / "src").resolve()
+    files: dict[Path, set[str]] = {}
+    for module_name, module in sorted(sys.modules.items()):
+        if module_name != "rbpbench" and not module_name.startswith("rbpbench."):
+            continue
+        raw_file = getattr(module, "__file__", None)
+        if not isinstance(raw_file, str):
+            raise ResCNN004A2RunnerError(f"loaded module has no source file: {module_name}")
+        unresolved = Path(raw_file)
+        if unresolved.is_symlink():
+            raise ResCNN004A2RunnerError(f"loaded module uses a symlink: {module_name}")
+        path = unresolved.resolve()
+        if path.suffix != ".py" or not path.is_file() or not path.is_relative_to(source_root):
+            raise ResCNN004A2RunnerError(
+                f"loaded module is outside repo_root/src: {module_name} -> {path}"
+            )
+        files.setdefault(path, set()).add(module_name)
+    if not files:
+        raise ResCNN004A2RunnerError("no loaded rbpbench source modules were found")
+
     digest = hashlib.sha256()
-    paths = sorted(path for path in Path(root).rglob("*.py") if "__pycache__" not in path.parts)
-    if not paths:
-        raise ResCNN004A2RunnerError("ResCNN source tree is empty")
-    for path in paths:
-        relative = path.relative_to(root).as_posix().encode("utf-8")
+    entries: list[dict[str, object]] = []
+    for path in sorted(files):
+        relative_text = path.relative_to(source_root).as_posix()
+        relative = relative_text.encode("utf-8")
+        file_sha256 = sha256_file(path)
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(bytes.fromhex(sha256_file(path)))
-    return digest.hexdigest()
+        digest.update(bytes.fromhex(file_sha256))
+        entries.append({
+            "path": relative_text,
+            "sha256": file_sha256,
+            "modules": sorted(files[path]),
+        })
+    return {"sha256": digest.hexdigest(), "files": entries}
 
 
 def _source_commit(repo_root: Path) -> str:
@@ -106,11 +138,13 @@ def _source_commit(repo_root: Path) -> str:
 
 def _require_clean_worktree(repo_root: Path) -> None:
     completed = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=no"],
+        ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=repo_root, check=True, text=True, capture_output=True, timeout=10,
     )
     if completed.stdout.strip():
-        raise ResCNN004A2RunnerError("tracked worktree must be clean before real execution")
+        raise ResCNN004A2RunnerError(
+            "worktree, including untracked files, must be clean before real execution"
+        )
 
 
 def resolve_fasta_500(repo_root: Path, decode_manifest: Path, expected_sha256: str) -> Path:
@@ -150,22 +184,34 @@ def _verify_environment(path: Path) -> tuple[dict[str, object], str]:
     return recorded, digest
 
 
-def _input_evidence(path: Path, expected_sha256: str, label: str) -> dict[str, object]:
+def _input_evidence(
+    path: Path, expected_sha256: str, label: str, *, repo_root: Path,
+) -> dict[str, object]:
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise ResCNN004A2RunnerError(f"{label} is missing or a symlink")
     actual = sha256_file(path)
     if actual != expected_sha256:
         raise ResCNN004A2RunnerError(f"{label} SHA-256 drift")
-    return {"path": str(path), "byte_size": path.stat().st_size, "sha256": actual}
+    resolved = path.resolve()
+    root = Path(repo_root).resolve()
+    if not resolved.is_relative_to(root):
+        raise ResCNN004A2RunnerError(f"{label} is outside the repository")
+    return {
+        "path": resolved.relative_to(root).as_posix(),
+        "byte_size": resolved.stat().st_size,
+        "sha256": actual,
+    }
 
 
 def _fingerprint(value: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
-def _verify_phase_a_bounds(path: Path) -> dict[str, object]:
-    evidence = _input_evidence(path, PHASE_A_MANIFEST_SHA256, "Task 003B Phase A manifest")
+def _verify_phase_a_bounds(path: Path, *, repo_root: Path) -> dict[str, object]:
+    evidence = _input_evidence(
+        path, PHASE_A_MANIFEST_SHA256, "Task 003B Phase A manifest", repo_root=repo_root,
+    )
     payload = json.loads(Path(path).read_text())
     fitting = payload.get("fitting")
     if not isinstance(fitting, dict):
@@ -174,6 +220,64 @@ def _verify_phase_a_bounds(path: Path) -> dict[str, object]:
     if observed != EXPECTED_BOUNDS:
         raise ResCNN004A2RunnerError("Task 003B Phase A development bounds drift")
     return evidence
+
+
+def _structural_access_evidence() -> dict[str, int | bool | str]:
+    return {
+        "test_rows_seen": 0,
+        "test_label_supplier_calls": 0,
+        "test_csv_sequence_supplier_calls": 0,
+        "test_fasta_sequence_interpretations": 0,
+        "test_tensor_rows": 0,
+        "test_prediction_rows": 0,
+        "test_accessed": False,
+        "measurement": "structural: test rows branch before field interpretation",
+    }
+
+
+def _write_stop_record(
+    output_dir: Path,
+    *,
+    stage: str,
+    error: Exception,
+    input_evidence: Mapping[str, object],
+    gate_a_access: Mapping[str, object] | None,
+    gate_b_access: Mapping[str, object] | None,
+) -> Path:
+    path = Path(output_dir) / "STOPPED.json"
+    if path.exists():
+        raise ResCNN004A2RunnerError("a prior STOPPED.json requires review before any retry")
+    gate_a = dict(gate_a_access) if gate_a_access is not None else _structural_access_evidence()
+    gate_b = dict(gate_b_access) if gate_b_access is not None else _structural_access_evidence()
+    payload = {
+        "schema_version": "task004a2_sanitized_stop_v1",
+        "status": "STOPPED",
+        "stage": stage,
+        "error": {
+            "class": type(error).__name__,
+            "message": str(error).replace("\n", " ")[:1000],
+        },
+        "input_evidence": dict(input_evidence),
+        "access_counters": {"gate_a": gate_a, "gate_b": gate_b},
+        "test_accessed": bool(gate_a.get("test_accessed") or gate_b.get("test_accessed")),
+        "selection_record_written": False,
+        "retry_authorized": False,
+    }
+    atomic_write(path, canonical_json(payload))
+    return path
+
+
+def _production_model_factory(output_count: int) -> CNNMultiLabelResidual:
+    model = CNNMultiLabelResidual(output_count)
+    if type(model) is not CNNMultiLabelResidual:
+        raise ResCNN004A2RunnerError("production model class drifted")
+    parameters = count_learnable_parameters(model)
+    if parameters != EXPECTED_LEARNABLE_PARAMETERS:
+        raise ResCNN004A2RunnerError(
+            f"production model has {parameters} learnable parameters; "
+            f"expected {EXPECTED_LEARNABLE_PARAMETERS}"
+        )
+    return model
 
 
 def _open_membership(path: Path):
@@ -251,10 +355,12 @@ def _deadline(seconds: int):
         signal.signal(signal.SIGALRM, prior)
 
 
-def execute(args, *, model_factory: Callable[[], torch.nn.Module] | None = None) -> Path:
+def execute(args) -> Path:
     start = time.monotonic()
     repo_root = Path(args.repo_root).resolve()
     _require_clean_worktree(repo_root)
+    source_evidence = _bound_source_evidence(repo_root)
+    source_digest = str(source_evidence["sha256"])
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
     if sha256_file(config_path) != CONFIG_SHA256:
@@ -270,158 +376,195 @@ def execute(args, *, model_factory: Callable[[], torch.nn.Module] | None = None)
     require_local_resources(before_a)
 
     fixed = {
-        "config": _input_evidence(config_path, CONFIG_SHA256, "config"),
-        "csv": _input_evidence(Path(args.csv), config.inputs["csv_sha256"], "CSV"),
+        "config": _input_evidence(
+            config_path, CONFIG_SHA256, "config", repo_root=repo_root,
+        ),
+        "csv": _input_evidence(
+            Path(args.csv), config.inputs["csv_sha256"], "CSV", repo_root=repo_root,
+        ),
         "dataset_audit": _input_evidence(
             Path(args.dataset_audit), config.inputs["dataset_audit_sha256"], "dataset audit",
+            repo_root=repo_root,
         ),
         "proteins": _input_evidence(
             Path(args.proteins), config.inputs["proteins_sha256"], "proteins config",
+            repo_root=repo_root,
         ),
         "decode_manifest": _input_evidence(
             Path(args.decode_manifest), config.inputs["decode_manifest_sha256"], "decode manifest",
+            repo_root=repo_root,
         ),
         "partition_manifest": _input_evidence(
             Path(args.partition_manifest), config.inputs["partition_manifest_sha256"],
-            "partition manifest",
+            "partition manifest", repo_root=repo_root,
         ),
         "membership": _input_evidence(
             Path(args.membership), config.inputs["membership_sha256"], "membership",
+            repo_root=repo_root,
         ),
-        "phase_a_manifest": _verify_phase_a_bounds(Path(args.phase_a_manifest)),
+        "phase_a_manifest": _verify_phase_a_bounds(
+            Path(args.phase_a_manifest), repo_root=repo_root,
+        ),
     }
     fasta_path = resolve_fasta_500(
         repo_root, Path(args.decode_manifest), config.inputs["fasta_500_sha256"],
     )
     fixed["fasta_500"] = _input_evidence(
-        fasta_path, config.inputs["fasta_500_sha256"], "500-nt FASTA",
+        fasta_path, config.inputs["fasta_500_sha256"], "500-nt FASTA", repo_root=repo_root,
     )
-    source_root = repo_root / "src/rbpbench/rescnn"
-    source_digest = _hash_tree(source_root)
-    provenance = {
-        "inputs": fixed,
-        "source_commit": _source_commit(repo_root),
-        "source_sha256": source_digest,
-        "environment_sha256": environment_digest,
-        "threads": thread_evidence,
-        "strict_float32": strict_evidence,
-    }
-    fingerprint = _fingerprint(provenance)
-    prior = verify_selected(Path(args.output_dir), STAGE, fingerprint=fingerprint)
-    if prior is not None:
-        return Path(args.output_dir) / prior["generation"]
+    output_dir = Path(args.output_dir)
+    if (output_dir / "STOPPED.json").exists():
+        raise ResCNN004A2RunnerError("a prior STOPPED.json requires review before any retry")
 
-    factory = model_factory or (lambda: CNNMultiLabelResidual(config.output_count))
-    with _deadline(TIMEOUT_SECONDS), WholeRunGeneration(Path(args.output_dir), STAGE) as generation:
-        with _open_membership(Path(args.membership)) as membership, \
-             Path(args.csv).open("r", newline="") as csv_handle, \
-             fasta_path.open("r") as fasta_handle:
-            audit = audit_streams(
-                membership, csv_handle, fasta_handle,
-                width=config.window, output_count=config.output_count,
-                sample_size=513, seed=config.seeds[0],
-                expected_partition_rows=EXPECTED_PARTITIONS,
-                expected_component_count=EXPECTED_COMPONENTS,
+    audit: AuditResult | None = None
+    cache_result: CacheBuildResult | None = None
+    stage = "post_input_hash"
+    try:
+        provenance = {
+            "inputs": fixed,
+            "source_commit": _source_commit(repo_root),
+            "source_sha256": source_digest,
+            "source_files": source_evidence["files"],
+            "environment_sha256": environment_digest,
+            "threads": thread_evidence,
+            "strict_float32": strict_evidence,
+        }
+        fingerprint = _fingerprint(provenance)
+        stage = "restart_validation"
+        prior = verify_selected(output_dir, STAGE, fingerprint=fingerprint)
+        if prior is not None:
+            return output_dir / prior["generation"]
+
+        factory = lambda: _production_model_factory(config.output_count)
+        with _deadline(TIMEOUT_SECONDS), WholeRunGeneration(output_dir, STAGE) as generation:
+            stage = "gate_a_audit"
+            with _open_membership(Path(args.membership)) as membership, \
+                 Path(args.csv).open("r", newline="") as csv_handle, \
+                 fasta_path.open("r") as fasta_handle:
+                audit = audit_streams(
+                    membership, csv_handle, fasta_handle,
+                    width=config.window, output_count=config.output_count,
+                    sample_size=513, seed=config.seeds[0],
+                    expected_partition_rows=EXPECTED_PARTITIONS,
+                    expected_component_count=EXPECTED_COMPONENTS,
+                )
+            if audit.counts.combined_bounds() != EXPECTED_BOUNDS:
+                raise ResCNN004A2RunnerError("Gate A development-only aggregate bounds drift")
+            _write_selected_rows(generation.candidate / "selected_rows.tsv", audit)
+
+            stage = "gate_b_cache"
+            before_b = local_resource_snapshot(generation.candidate)
+            require_local_resources(before_b)
+            with _open_membership(Path(args.membership)) as membership, \
+                 Path(args.csv).open("r", newline="") as csv_handle, \
+                 fasta_path.open("r") as fasta_handle:
+                cache_result = build_cache_streams(
+                    membership, csv_handle, fasta_handle, selected=audit.selected,
+                    width=config.window, output_count=config.output_count,
+                )
+            require_count_reconciliation(
+                audit.counts, cache_result.counts, expected_bounds=EXPECTED_BOUNDS,
             )
-        if audit.counts.combined_bounds() != EXPECTED_BOUNDS:
-            raise ResCNN004A2RunnerError("Gate A development-only aggregate bounds drift")
-        _write_selected_rows(generation.candidate / "selected_rows.tsv", audit)
-
-        before_b = local_resource_snapshot(generation.candidate)
-        require_local_resources(before_b)
-        with _open_membership(Path(args.membership)) as membership, \
-             Path(args.csv).open("r", newline="") as csv_handle, \
-             fasta_path.open("r") as fasta_handle:
-            cache_result = build_cache_streams(
-                membership, csv_handle, fasta_handle, selected=audit.selected,
-                width=config.window, output_count=config.output_count,
+            stage = "paired_smoke_primary"
+            primary = run_paired_smoke(
+                cache_result.cache, config=config,
+                output_dir=generation.candidate / "primary",
+                source_sha256=source_digest, config_sha256=CONFIG_SHA256,
+                environment_sha256=environment_digest, model_factory=factory,
             )
-        require_count_reconciliation(
-            audit.counts, cache_result.counts, expected_bounds=EXPECTED_BOUNDS,
-        )
-        primary = run_paired_smoke(
-            cache_result.cache, config=config,
-            output_dir=generation.candidate / "primary",
-            source_sha256=source_digest, config_sha256=CONFIG_SHA256,
-            environment_sha256=environment_digest, model_factory=factory,
-        )
-        repeat = run_paired_smoke(
-            cache_result.cache, config=config,
-            output_dir=generation.candidate / "repeat",
-            source_sha256=source_digest, config_sha256=CONFIG_SHA256,
-            environment_sha256=environment_digest, model_factory=factory,
-        )
-        if scientific_signature(primary) != scientific_signature(repeat):
-            raise ResCNN004A2RunnerError("primary/repeat scientific evidence differs")
-        prediction_count = _write_predictions(
-            generation.candidate / "coverage_smoke_predictions.tsv",
-            cache_result, primary, CONFIG_SHA256,
-        )
-        final_resources = local_resource_snapshot(generation.candidate)
-        require_local_resources(final_resources)
-        elapsed = time.monotonic() - start
-        if elapsed > TIMEOUT_SECONDS:
-            raise ResCNN004A2RunnerError("Task 004A-2 exceeded its timeout")
+            stage = "paired_smoke_repeat"
+            repeat = run_paired_smoke(
+                cache_result.cache, config=config,
+                output_dir=generation.candidate / "repeat",
+                source_sha256=source_digest, config_sha256=CONFIG_SHA256,
+                environment_sha256=environment_digest, model_factory=factory,
+            )
+            if scientific_signature(primary) != scientific_signature(repeat):
+                raise ResCNN004A2RunnerError("primary/repeat scientific evidence differs")
+            stage = "prediction_and_commit"
+            prediction_count = _write_predictions(
+                generation.candidate / "coverage_smoke_predictions.tsv",
+                cache_result, primary, CONFIG_SHA256,
+            )
+            final_resources = local_resource_snapshot(generation.candidate)
+            require_local_resources(final_resources)
+            elapsed = time.monotonic() - start
+            if elapsed > TIMEOUT_SECONDS:
+                raise ResCNN004A2RunnerError("Task 004A-2 exceeded its timeout")
 
-        full_summary = {
-            "schema_version": "task004a2_local_smoke_generation_v1",
-            "provenance": provenance,
-            "audit": {
-                "row_count": audit.row_count,
-                "component_count": audit.component_count,
+            full_summary = {
+                "schema_version": "task004a2_local_smoke_generation_v1",
+                "provenance": provenance,
+                "audit": {
+                    "row_count": audit.row_count,
+                    "component_count": audit.component_count,
+                    "partition_rows": dict(audit.partition_rows),
+                    "development_counts": audit.counts.matrix(),
+                    "development_bounds": audit.counts.combined_bounds(),
+                    "selected_content_sha256": audit.selected_content_sha256,
+                    "gate_a_access": dict(audit.access),
+                    "gate_b_access": dict(cache_result.access),
+                },
+                "cache": {
+                    "rows": len(cache_result.cache),
+                    "base_shape": list(cache_result.cache.base_codes.shape),
+                    "target_shape": list(cache_result.cache.targets.shape),
+                    "base_dtype": str(cache_result.cache.base_codes.dtype),
+                    "target_dtype": str(cache_result.cache.targets.dtype),
+                    "mask_dtype": str(cache_result.cache.masks.dtype),
+                    "retained_tensor_bytes": cache_result.cache.retained_bytes(),
+                },
+                "smoke": scientific_signature(primary),
+                "coverage_smoke_prediction_rows": prediction_count,
+                "runtime": {
+                    "wall_seconds": elapsed,
+                    "peak_rss_bytes": final_resources.peak_rss_bytes,
+                    "free_disk_before_gate_a": before_a.free_disk_bytes,
+                    "free_disk_before_gate_b": before_b.free_disk_bytes,
+                    "free_disk_after": final_resources.free_disk_bytes,
+                },
+                "test_accessed": False,
+                "test_access_evidence_type": "structural branch-before-interpretation guarantee",
+            }
+            atomic_write(generation.candidate / "summary.json", canonical_json(full_summary))
+            inventory = generation_inventory(generation.candidate)
+            generation_bytes = sum(int(row["byte_size"]) for row in inventory)
+            if generation_bytes > MAX_GENERATION_BYTES:
+                raise ResCNN004A2RunnerError("accepted generation exceeds 1 GiB")
+            sanitized = {
+                "input_evidence": fixed,
+                "source_commit": provenance["source_commit"],
+                "source_sha256": source_digest,
+                "environment_sha256": environment_digest,
+                "audit_access": {
+                    "gate_a": dict(audit.access), "gate_b": dict(cache_result.access),
+                },
                 "partition_rows": dict(audit.partition_rows),
-                "development_counts": audit.counts.matrix(),
+                "component_count": audit.component_count,
                 "development_bounds": audit.counts.combined_bounds(),
+                "sample_counts": {"train": 513, "validation": 513},
                 "selected_content_sha256": audit.selected_content_sha256,
-                "gate_a_access": dict(audit.access),
-                "gate_b_access": dict(cache_result.access),
-            },
-            "cache": {
-                "rows": len(cache_result.cache),
-                "base_shape": list(cache_result.cache.base_codes.shape),
-                "target_shape": list(cache_result.cache.targets.shape),
-                "base_dtype": str(cache_result.cache.base_codes.dtype),
-                "target_dtype": str(cache_result.cache.targets.dtype),
-                "mask_dtype": str(cache_result.cache.masks.dtype),
-                "retained_tensor_bytes": cache_result.cache.retained_bytes(),
-            },
-            "smoke": scientific_signature(primary),
-            "coverage_smoke_prediction_rows": prediction_count,
-            "runtime": {
+                "cache_retained_tensor_bytes": cache_result.cache.retained_bytes(),
+                "smoke": scientific_signature(primary),
+                "prediction_rows": prediction_count,
+                "generation_bytes": generation_bytes,
                 "wall_seconds": elapsed,
                 "peak_rss_bytes": final_resources.peak_rss_bytes,
-                "free_disk_before_gate_a": before_a.free_disk_bytes,
-                "free_disk_before_gate_b": before_b.free_disk_bytes,
-                "free_disk_after": final_resources.free_disk_bytes,
-            },
-            "test_accessed": False,
-        }
-        atomic_write(generation.candidate / "summary.json", canonical_json(full_summary))
-        inventory = generation_inventory(generation.candidate)
-        generation_bytes = sum(int(row["byte_size"]) for row in inventory)
-        if generation_bytes > MAX_GENERATION_BYTES:
-            raise ResCNN004A2RunnerError("accepted generation exceeds 1 GiB")
-        sanitized = {
-            "input_evidence": fixed,
-            "source_commit": provenance["source_commit"],
-            "source_sha256": source_digest,
-            "environment_sha256": environment_digest,
-            "audit_access": {"gate_a": dict(audit.access), "gate_b": dict(cache_result.access)},
-            "partition_rows": dict(audit.partition_rows),
-            "component_count": audit.component_count,
-            "development_bounds": audit.counts.combined_bounds(),
-            "sample_counts": {"train": 513, "validation": 513},
-            "selected_content_sha256": audit.selected_content_sha256,
-            "cache_retained_tensor_bytes": cache_result.cache.retained_bytes(),
-            "smoke": scientific_signature(primary),
-            "prediction_rows": prediction_count,
-            "generation_bytes": generation_bytes,
-            "wall_seconds": elapsed,
-            "peak_rss_bytes": final_resources.peak_rss_bytes,
-            "numerical_threads": 4,
-            "test_accessed": False,
-        }
-        return generation.commit(fingerprint=fingerprint, payload=sanitized)
+                "numerical_threads": 4,
+                "test_accessed": False,
+                "test_access_evidence_type": "structural branch-before-interpretation guarantee",
+            }
+            return generation.commit(fingerprint=fingerprint, payload=sanitized)
+    except Exception as exc:
+        _write_stop_record(
+            output_dir,
+            stage=stage,
+            error=exc,
+            input_evidence=fixed,
+            gate_a_access=None if audit is None else audit.access,
+            gate_b_access=None if cache_result is None else cache_result.access,
+        )
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:

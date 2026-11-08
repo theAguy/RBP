@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 try:
     import torch
@@ -20,6 +21,7 @@ from rbpbench.rescnn.data_004a2 import (
     decode_one_hot_bits,
     require_count_reconciliation,
 )
+from rbpbench.rescnn import data_004a2 as data_module
 
 
 def _fixture(*, malformed_development: bool = False):
@@ -150,6 +152,44 @@ class StreamingBoundaryTests(unittest.TestCase):
         matrix = audit.counts.matrix()
         self.assertEqual(set(matrix), {"train", "validation"})
         self.assertNotIn("test", repr(matrix))
+
+    def test_gate_b_counting_detects_a_gate_a_accumulator_bug(self):
+        membership, csv_rows, fasta = _fixture()
+        original = data_module._CountAccumulator.add
+
+        def collapses_classes(accumulator, partition, labels):
+            return original(
+                accumulator, partition,
+                {protein_id: 1 for protein_id in labels},
+            )
+
+        with mock.patch.object(data_module._CountAccumulator, "add", collapses_classes):
+            audit = audit_streams(
+                io.StringIO(membership), io.StringIO(csv_rows), io.StringIO(fasta),
+                width=500, output_count=122, sample_size=513, seed=20261029,
+            )
+        cache = build_cache_streams(
+            io.StringIO(membership), io.StringIO(csv_rows), io.StringIO(fasta),
+            selected=audit.selected, width=500, output_count=122,
+        )
+        with self.assertRaisesRegex(ResCNN004A2DataError, "count matrices differ"):
+            require_count_reconciliation(audit.counts, cache.counts)
+
+    def test_gate_b_refuses_selected_row_content_drift(self):
+        membership, csv_rows, fasta = _fixture()
+        audit = audit_streams(
+            io.StringIO(membership), io.StringIO(csv_rows), io.StringIO(fasta),
+            width=500, output_count=122, sample_size=513, seed=20261029,
+        )
+        lines = csv_rows.splitlines()
+        bits, _labels = lines[1].split(",", 1)
+        lines[1] = bits + "," + ";".join(f"-{protein}" for protein in range(1, 123))
+        drifted_csv = "\n".join(lines) + "\n"
+        with self.assertRaisesRegex(ResCNN004A2DataError, "Gate A/Gate B content drift"):
+            build_cache_streams(
+                io.StringIO(membership), io.StringIO(drifted_csv), io.StringIO(fasta),
+                selected=audit.selected, width=500, output_count=122,
+            )
 
 
 if __name__ == "__main__":

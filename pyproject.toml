@@ -25,7 +25,7 @@ rbp-splits = "rbpbench.splits.runner:main"
 rbp-splits-002c = "rbpbench.splits.runner_002c:main"
 rbp-split-validation-report = "rbpbench.analysis.task003a:main"
 rbp-baselines = "rbpbench.baselines.runner:main"
-rbp-rescnn-smoke = "rbpbench.rescnn.runner_004a2:main"
+rbp-rescnn-smoke = "rbpbench.cli_rescnn_004a2:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

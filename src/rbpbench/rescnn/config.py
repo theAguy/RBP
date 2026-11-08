@@ -185,6 +185,40 @@ def _parse_loss_config(row: object, index: int) -> LossConfig:
         raise ResCNNConfigError(f"loss_configs[{index}] contains invalid values") from exc
 
 
+def validate_config_object(config: Task004AConfig) -> None:
+    """Reject hand-built dataclasses that bypass the TOML loader's contract."""
+
+    if not isinstance(config, Task004AConfig):
+        raise ResCNNConfigError("expected a Task004AConfig")
+    for key, expected in EXPECTED_SCALARS.items():
+        _require_equal(getattr(config, key), expected, key)
+    _require_equal(tuple(config.seeds), EXPECTED_SEEDS, "seeds")
+    _require_equal(
+        tuple(config.development_protein_ids), EXPECTED_DEVELOPMENT_IDS,
+        "development_protein_ids",
+    )
+    _require_equal(tuple(config.loss_configs), EXPECTED_LOSSES, "loss_configs")
+    _require_equal(dict(config.architecture), EXPECTED_ARCHITECTURE, "architecture")
+    _require_equal(dict(config.label_contract), EXPECTED_LABEL_CONTRACT, "label_contract")
+    _require_equal(dict(config.input_encoding), EXPECTED_INPUT_ENCODING, "input_encoding")
+    _require_equal(dict(config.optimizer), EXPECTED_OPTIMIZER, "optimizer")
+    _require_equal(dict(config.scheduler), EXPECTED_SCHEDULER, "scheduler")
+    _require_equal(dict(config.determinism), EXPECTED_DETERMINISM, "determinism")
+    _require_equal(dict(config.inputs), EXPECTED_INPUTS, "inputs")
+    _require_equal(
+        dict(config.collapse),
+        {"saturation_lower": 1e-6, "saturation_upper": 0.999999},
+        "collapse thresholds",
+    )
+
+
+def require_loss_config(config: Task004AConfig, loss_config: LossConfig) -> LossConfig:
+    validate_config_object(config)
+    if loss_config not in config.loss_configs or loss_config not in EXPECTED_LOSSES:
+        raise ResCNNConfigError("loss configuration is outside the frozen Task 004A set")
+    return loss_config
+
+
 def load_config(path: Path) -> Task004AConfig:
     raw = tomllib.loads(Path(path).read_text())
     _require_equal(set(raw), EXPECTED_TOP_LEVEL_KEYS, "top-level keys")
@@ -215,7 +249,7 @@ def load_config(path: Path) -> Task004AConfig:
     collapse = raw.get("collapse")
     if collapse != {"saturation_lower": 1e-6, "saturation_upper": 0.999999}:
         raise ResCNNConfigError("collapse thresholds drift")
-    return Task004AConfig(
+    config = Task004AConfig(
         schema_version=raw["schema_version"], window=raw["window"], output_count=raw["output_count"],
         train_row_count=raw["train_row_count"], validation_row_count=raw["validation_row_count"],
         batch_size=raw["batch_size"], train_drop_last=raw["train_drop_last"],
@@ -226,3 +260,5 @@ def load_config(path: Path) -> Task004AConfig:
         scheduler=dict(raw["scheduler"]), determinism=dict(raw["determinism"]),
         loss_configs=losses, collapse=dict(collapse),
     )
+    validate_config_object(config)
+    return config

@@ -1,8 +1,9 @@
 # Task 004A-2 — local bounded data-contract smoke
 
-**Status:** planning approved with bounded corrections applied. Implementation
-has not started, and real-data execution remains separately gated. See
-`docs/reviews/004a2_local_data_contract_smoke_planning_reconciliation.md`.
+**Status:** 004A-2A synthetic-only implementation is complete and awaiting
+independent implementation review. No real input has been opened or hashed,
+and 004A-2B real-data execution remains separately gated. See
+`docs/reviews/004a2a_local_smoke_implementation_review_request.md`.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 

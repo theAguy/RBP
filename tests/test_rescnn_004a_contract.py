@@ -16,7 +16,7 @@ except ModuleNotFoundError as exc:  # clean base environments do not carry the o
 from rbpbench.rescnn.checkpoint import (
     FORMER_CHECKPOINT_SHA256,
     ResCNNCheckpointError,
-    atomic_save_checkpoint,
+    atomic_save_final_checkpoint,
     load_final_model_checkpoint,
 )
 from rbpbench.rescnn.config import load_config
@@ -333,6 +333,7 @@ class OutputAndCheckpointTests(unittest.TestCase):
             self.assertFalse((root / "selected/seed_1.json").exists())
 
     def test_atomic_final_checkpoint_round_trip_and_identity(self):
+        config = load_config(CONFIG)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "epoch30.pt"
             reset_random_state(44)
@@ -342,44 +343,33 @@ class OutputAndCheckpointTests(unittest.TestCase):
                 optimizer, mode="max", factor=0.5, patience=2,
             )
             before = canonical_state_hash(model.state_dict())
-            evidence = atomic_save_checkpoint(
+            identity = {
+                "source_sha256": "a" * 64,
+                "config_sha256": "b" * 64,
+                "environment_sha256": "c" * 64,
+                "seed": 20261029,
+                "config_id": "submitted",
+            }
+            evidence = atomic_save_final_checkpoint(
                 path, model=model, optimizer=optimizer, scheduler=scheduler,
-                epoch=30, source_sha256="a" * 64, config_sha256="b" * 64,
-                environment_sha256="c" * 64, seed=20261029, config_id="submitted",
+                config=config, identity=identity,
             )
             self.assertEqual(evidence["model_state_sha256"], before)
+            self.assertEqual(evidence["epoch"], config.epochs)
             restored = torch.nn.Linear(4, 2)
             payload = load_final_model_checkpoint(
                 path,
                 model=restored,
-                expected_epoch=30,
+                config=config,
                 expected_sha256=evidence["sha256"],
-                expected_identity={
-                    "source_sha256": "a" * 64,
-                    "config_sha256": "b" * 64,
-                    "environment_sha256": "c" * 64,
-                    "seed": 20261029,
-                    "config_id": "submitted",
-                },
+                expected_identity=identity,
             )
             self.assertFalse(payload["mid_run_resume_supported"])
+            self.assertTrue(payload["weights_only_used"])
             self.assertEqual(canonical_state_hash(restored.state_dict()), before)
-            with self.assertRaisesRegex(ResCNNCheckpointError, "final epoch"):
-                load_final_model_checkpoint(
-                    path,
-                    model=restored,
-                    expected_epoch=29,
-                    expected_sha256=evidence["sha256"],
-                    expected_identity={
-                        "source_sha256": "a" * 64,
-                        "config_sha256": "b" * 64,
-                        "environment_sha256": "c" * 64,
-                        "seed": 20261029,
-                        "config_id": "submitted",
-                    },
-                )
 
     def test_checkpoint_hash_and_complete_identity_are_required_before_load(self):
+        config = load_config(CONFIG)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.pt"
             path.write_bytes(b"not a pickle")
@@ -389,7 +379,7 @@ class OutputAndCheckpointTests(unittest.TestCase):
                     load_final_model_checkpoint(
                         path,
                         model=model,
-                        expected_epoch=30,
+                        config=config,
                         expected_sha256="0" * 64,
                         expected_identity={
                             "source_sha256": "a" * 64,
@@ -407,13 +397,14 @@ class OutputAndCheckpointTests(unittest.TestCase):
                     load_final_model_checkpoint(
                         path,
                         model=model,
-                        expected_epoch=30,
+                        config=config,
                         expected_sha256=actual_hash,
                         expected_identity={"seed": 20261029},
                     )
                 loader.assert_not_called()
 
     def test_former_checkpoint_hash_is_refused_before_deserialization(self):
+        config = load_config(CONFIG)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "former.pt"
             path.write_bytes(b"forensic evidence placeholder")
@@ -425,7 +416,7 @@ class OutputAndCheckpointTests(unittest.TestCase):
                     load_final_model_checkpoint(
                         path,
                         model=torch.nn.Linear(2, 1),
-                        expected_epoch=30,
+                        config=config,
                         expected_sha256=FORMER_CHECKPOINT_SHA256,
                         expected_identity={
                             "source_sha256": "a" * 64,

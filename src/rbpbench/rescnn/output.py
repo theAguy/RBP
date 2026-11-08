@@ -22,14 +22,32 @@ PREDICTION_FIELDS = (
 )
 
 
-def validate_prediction_rows(rows) -> int:
+PREDICTION_ROLES = {
+    "validation_pilot": ("task004a_prediction_v1", "components_v2_pilot"),
+    "coverage_smoke": ("task004a_smoke_prediction_v1", "components_v2_coverage_smoke"),
+}
+
+
+def validate_prediction_rows(
+    rows, *, artifact_role: str = "validation_pilot",
+    schema_version: str = "task004a_prediction_v1",
+) -> int:
+    if artifact_role not in PREDICTION_ROLES:
+        raise ResCNNOutputError(f"unknown prediction artifact role: {artifact_role!r}")
+    expected_schema, expected_fold = PREDICTION_ROLES[artifact_role]
+    if schema_version != expected_schema:
+        raise ResCNNOutputError(
+            f"prediction role {artifact_role!r} requires schema {expected_schema!r}"
+        )
     identities = set()
     count = 0
     for row in rows:
         if tuple(row) != PREDICTION_FIELDS:
             raise ResCNNOutputError(f"prediction fields drift: {tuple(row)!r}")
-        if row["fold"] != "components_v2_pilot" or row["partition"] != "validation":
-            raise ResCNNOutputError("Task 004A predictions must be validation-only components_v2_pilot rows")
+        if row["fold"] != expected_fold or row["partition"] != "validation":
+            raise ResCNNOutputError(
+                f"Task 004A {artifact_role} predictions must be validation-only {expected_fold} rows"
+            )
         if int(row["window"]) != 500 or int(row["protein_id"]) not in range(1, 123):
             raise ResCNNOutputError("prediction width or protein ID drift")
         label = int(row["label"])

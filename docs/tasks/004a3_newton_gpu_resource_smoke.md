@@ -1,9 +1,9 @@
 # Task 004A-3 — Newton GPU environment and resource smoke
 
-**Status:** bounded planning corrections applied; independent correction
-acceptance pending. The 004A-3A synthetic implementation task is prepared but
-not yet authorized. No Newton job, GPU environment, real-data subset or
-training run is authorized by this document.
+**Status:** planning accepted after C1–C4 and D1–D4. The 004A-3A synthetic
+implementation is complete and awaiting independent implementation review. No
+Newton job, GPU environment, real-data subset or training run is authorized by
+this document.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 
@@ -89,8 +89,11 @@ After discovery acceptance:
    assert these effective values together with the already-frozen learning
    rate, betas, epsilon, weight decay and AMSGrad values. A synthetic one-step
    oracle compares this optimizer with the `foreach=False` single-tensor
-   reference using float32 `rtol=1e-6` and `atol=1e-7`; pre-update loss and
-   gradients must be bitwise identical. No implicit PyTorch default or fused
+   reference for three consecutive steps with distinct deterministic
+   gradients. Parameters, `exp_avg` and `exp_avg_sq` use float32 `rtol=1e-6`
+   and `atol=1e-7`; step counters are exactly equal, while each step's
+   pre-update loss and gradients are bitwise identical. The oracle runs on CPU
+   in 3A and CUDA in the pre-data probe. No implicit PyTorch default or fused
    implementation is allowed.
 4. Build a local, deterministic subset of exactly **8,193 train and 8,193
    validation rows**. Each partition contains both known classes for every
@@ -105,11 +108,14 @@ After discovery acceptance:
 7. Build and verify one self-contained archive containing frozen source,
    config, environment/runtime evidence, subset, launcher and inventory.
 
-The discovery return determines the exact lock, but not the installation
-procedure. The reviewed smoke launcher installs or verifies that exact lock at
-`$HOME/.conda/envs/rbpbench-004a3-<lock_sha256_prefix>`. A pre-existing prefix
-is reusable only when its complete runtime manifest and lock hashes match;
-otherwise the job stops. Before the subset path is opened, the GPU job must:
+The discovery return determines the exact lock and records whether compute
+nodes can reach every required package channel. A separate tracked install
+script installs that exact lock, according to the recorded site policy, on the
+login node or in a CPU-only job at
+`$HOME/.conda/envs/rbpbench-004a3-<lock_sha256_prefix>`. The GPU smoke job
+never installs packages; it only verifies the frozen lock and complete runtime
+manifest. A pre-existing prefix is reusable only when both match; otherwise
+the job stops. Before the subset path is opened, the GPU job must:
 
 1. run the accepted 004A-1/004A-2 focused suites in that environment;
 2. run the real CNN, each accepted loss and one Adam step at batch size 256 on
@@ -160,10 +166,11 @@ projection.
 Do not extrapolate the subset metric time linearly. Before the subset is
 opened, benchmark the accepted metric implementation on deterministic
 synthetic arrays with the full validation shape `[57_565, 122]` and the exact
-validation known-entry count recorded by the reviewed cache builder. Record
-median and p95 across repeated metric calls after warm-up. Also measure and
-record the scheduler step, atomic checkpoint write/reload, process startup and
-hash/inventory overhead.
+accepted per-protein validation known counts recorded by the reviewed cache
+builder. Every known entry receives a distinct float32 score, and every
+protein contains both classes. Record median and p95 across repeated metric
+calls after warm-up. Also measure and record the scheduler step, atomic
+checkpoint write/reload, process startup and hash/inventory overhead.
 
 The conservative single-seed 004A-4 wall-time projection is:
 
@@ -176,6 +183,7 @@ startup
   + scheduler_p95
   + checkpoint_p95
   )
++ final_inventory_hashing
 ```
 
 The complete sum is multiplied by `1.5`. The constants are fixed by the
@@ -186,10 +194,12 @@ The storage projection includes the verified environment and bundle when they
 share the quota, all 90 retained epoch checkpoints, 90 epochs of measured
 non-checkpoint output growth, the largest observed atomic-write temporary and
 return-package overhead. It uses measured checkpoint bytes rather than an
-estimate (the expected order is about 108 MB each, or about 9.7 GB for 90)
-and applies the same `1.5` safety factor. It must fit both free space and the
-machine-readable user quota returned by discovery; missing quota evidence is
-a stop, not permission to rely on filesystem-wide free space.
+estimate (the expected order is about 108 MB each, or about 9.7 GB for 90),
+and includes the measured time required to hash that projected final
+inventory. Startup is counted once per runner process in the reviewed 004A-4
+topology. The same `1.5` safety factor applies. Storage must fit both free
+space and the machine-readable user quota returned by discovery; missing quota
+evidence is a stop, not permission to rely on filesystem-wide free space.
 
 ## 4. Resource and reproducibility gates
 

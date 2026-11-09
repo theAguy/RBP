@@ -1,12 +1,13 @@
 # Task 004A-3A — GPU resource-smoke implementation and synthetic validation
 
-**Status:** prepared for implementation; no implementation, real-input read,
-Newton query, environment installation, GPU use or remote submission is
-authorized by this document alone.
+**Status:** synthetic-only implementation complete and locally verified;
+independent implementation review pending. No real-input read, Newton query,
+environment installation, GPU use or remote submission has occurred or is
+authorized by this document.
 
 **Parent:** `docs/tasks/004a3_newton_gpu_resource_smoke.md`
 
-**Corrected planning record (independent confirmation pending):**
+**Accepted corrected planning record:**
 `docs/reviews/004a3_gpu_resource_smoke_planning_reconciliation.md`
 
 ## 1. Objective
@@ -65,28 +66,37 @@ Focused tests must prove at least:
    and independent content/count reconciliation.
 2. **Optimizer:** all five GPU flags and all existing Adam fields are asserted;
    unknown/changed fields fail; `foreach=True` and `foreach=False` start from
-   identical state/loss/gradients and finish within `rtol=1e-6`, `atol=1e-7`.
+   identical state and run three distinct deterministic-gradient steps. Every
+   pre-update loss/gradient is bitwise equal; parameters, `exp_avg` and
+   `exp_avg_sq` finish within `rtol=1e-6`, `atol=1e-7`, and step counters are
+   exactly equal. The same oracle supports CPU 3A and CUDA pre-data execution.
 3. **Timing:** injected synchronizers bracket every timed region; exactly four
    warm-up train and validation batches per run are excluded; loader, copy,
    one-hot and model work fall inside the interval; median/p95 use retained
    samples only.
 4. **Metrics:** the projection invokes the accepted real metric function on a
-   synthetic `[57_565, 122]` shape and exact supplied known-entry count; a
-   shortcut based on subset scaling fails.
+   synthetic `[57_565, 122]` shape using the exact accepted per-protein known
+   counts, both classes per protein and a distinct float32 score for every
+   known entry. Tied/quantized scores and subset scaling fail.
 5. **Wall time:** the equation uses 961 train batches, 225 validation batches,
-   30 epochs, three configs, startup and the 1.5 factor exactly; removal or
-   replacement of any term fails.
+   30 epochs, three configs, startup once per reviewed runner process, final
+   inventory hashing and the 1.5 factor exactly; removal or replacement of any
+   term fails. Peak GPU reserved memory above 80%, peak RSS above 80% of
+   requested RAM or projected time above the reviewed Slurm limit fails.
 6. **Storage:** 90 measured checkpoint sizes, non-checkpoint epoch growth,
    largest atomic temporary, environment/bundle and return bytes are included;
    absent quota, insufficient free space or insufficient quota fails closed.
 7. **Fresh processes:** the allocation launcher invokes primary and repeat as
    two Python processes, pins both to the same visible GPU and compares every
-   required digest. A same-process shortcut and a repeat after failed primary
-   are refused.
-8. **Pre-data gate:** environment verification, both accepted focused suites,
-   twice-repeated synthetic CUDA probe and GPU model/UUID binding precede the
-   first possible subset open. Failure produces STOPPED evidence and zero data
-   opens.
+   required digest, GPU UUID and runtime-manifest digest. A same-process
+   shortcut, identity mismatch and repeat after failed primary are refused.
+8. **Pre-data gate:** a separate policy-directed exact-lock installation is
+   followed by GPU-job environment verification, both accepted focused suites,
+   twice-repeated synthetic CUDA probe and GPU model/UUID binding before the
+   first possible subset open. The launcher exports
+   `CUBLAS_WORKSPACE_CONFIG=:4096:8`, `OMP_NUM_THREADS=4`, `MKL_NUM_THREADS=4`,
+   `OPENBLAS_NUM_THREADS=4` and `VECLIB_MAXIMUM_THREADS=4` before Python
+   starts. Failure produces STOPPED evidence and zero data opens.
 9. **Transactions/restart:** candidate failure preserves prior accepted
    evidence, selection-record failure discards the candidate, pre-existing
    STOPPED/selection evidence prevents silent retry and archives are verified
@@ -97,6 +107,11 @@ Focused tests must prove at least:
 
 Tests must use injected fake commands/devices/resources where required. They
 must not weaken production checks merely to run without CUDA.
+
+Evidence construction and hashing, including the approximately 36 MB
+per-step gradient transfer, must occur outside synchronized batch timing
+regions. Discovery evidence includes compute-node package-channel reachability
+and the site-approved installation location.
 
 ## 5. Verification and review checkpoint
 

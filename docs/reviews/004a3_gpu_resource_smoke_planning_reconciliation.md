@@ -1,9 +1,8 @@
 # Task 004A-3 planning-review reconciliation
 
-**Verdict:** `Approve with bounded corrections`; C1–C4 are applied here and
-await independent correction confirmation. The 004A-3A synthetic-only task is
-prepared but must not begin before that confirmation and separate
-authorization. Newton discovery, environment installation, real-data subset
+**Verdict:** `Accepted after bounded corrections`. C1–C4 and the final D1–D4
+implementation-shaping corrections are incorporated in the frozen 004A-3A
+contract. Newton discovery, environment installation, real-data subset
 construction and GPU execution remain separately gated.
 
 ## Review boundary
@@ -55,11 +54,23 @@ prediction, per-step loss and gradient digests.
 ### C4 — frozen Adam GPU implementation
 
 The accepted GPU Adam flags are `foreach=True`, `fused=False`,
-`capturable=False`, `differentiable=False`, `maximize=False`. The one-step
-float32 oracle compares against the `foreach=False` single-tensor reference
-with `rtol=1e-6` and `atol=1e-7`; pre-update loss and gradients remain bitwise
-identical. Effective optimizer fields are asserted, so PyTorch defaults cannot
-change the implementation silently.
+`capturable=False`, `differentiable=False`, `maximize=False`. The three-step
+float32 oracle uses distinct deterministic gradients and compares parameters
+and moment buffers against the `foreach=False` single-tensor reference with
+`rtol=1e-6` and `atol=1e-7`; step counters match exactly and pre-update
+loss/gradients remain bitwise identical. Effective optimizer fields are
+asserted, so PyTorch defaults cannot change the implementation silently.
+
+## Final bounded additions D1–D4
+
+The correction review accepted C1–C4 subject to four implementation-shaping
+additions: the Adam oracle is three-step and state-aware; the full metric
+benchmark uses distinct float32 scores and accepted per-protein known counts;
+environment installation is a separate site-policy-directed step while the
+GPU job verifies only; and explicit regressions cover resource limits,
+GPU/runtime identity, pre-Python determinism/thread exports and exclusion of
+evidence hashing from timed regions. Final inventory-hashing time and startup
+per actual runner process are also included in projection.
 
 ## Accepted boundary
 

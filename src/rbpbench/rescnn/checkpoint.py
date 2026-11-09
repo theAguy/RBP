@@ -20,8 +20,10 @@ class ResCNNCheckpointError(RuntimeError):
 
 FINAL_SCHEMA_VERSION = "task004a_checkpoint_v2"
 SMOKE_SCHEMA_VERSION = "task004a_smoke_checkpoint_v1"
+RESOURCE_SMOKE_SCHEMA_VERSION = "task004a3_resource_checkpoint_v1"
 FINAL_ROLE = "final_epoch_model"
 SMOKE_ROLE = "local_data_contract_after_one_update"
+RESOURCE_SMOKE_ROLE = "gpu_resource_smoke_after_one_epoch"
 FORMER_CHECKPOINT_SHA256 = "9c036fceab966442d3cea40146a757114d8b23711c41cba227c3dafd24ff27c3"
 REQUIRED_IDENTITY_KEYS = frozenset(
     {"source_sha256", "config_sha256", "environment_sha256", "seed", "config_id"}
@@ -119,6 +121,20 @@ def atomic_save_smoke_checkpoint(
     ))
 
 
+def atomic_save_resource_smoke_checkpoint(
+    path: Path, *, model, optimizer, scheduler, identity: dict[str, object],
+    training_steps: int,
+) -> dict[str, object]:
+    if training_steps != 32:
+        raise ResCNNCheckpointError("resource smoke requires exactly 32 training steps")
+    return _atomic_save(path, _payload(
+        schema_version=RESOURCE_SMOKE_SCHEMA_VERSION,
+        artifact_role=RESOURCE_SMOKE_ROLE, epoch=1,
+        training_step=training_steps, model=model, optimizer=optimizer,
+        scheduler=scheduler, identity=identity,
+    ))
+
+
 def _authenticated_load(
     path: Path, *, expected_sha256: str,
     expected_identity: dict[str, object],
@@ -183,6 +199,27 @@ def load_smoke_model_checkpoint(
         raise ResCNNCheckpointError("checkpoint is not a local smoke artifact")
     if payload.get("epoch") is not None or payload.get("training_step") != 1:
         raise ResCNNCheckpointError("smoke checkpoint step identity drifted")
+    _restore_model(payload, model)
+    result = dict(payload)
+    result["weights_only_used"] = True
+    return result
+
+
+def load_resource_smoke_model_checkpoint(
+    path: Path, *, model, expected_sha256: str,
+    expected_identity: dict[str, object],
+) -> dict:
+    payload = _authenticated_load(
+        path, expected_sha256=expected_sha256,
+        expected_identity=expected_identity,
+    )
+    if (
+        payload.get("schema_version") != RESOURCE_SMOKE_SCHEMA_VERSION
+        or payload.get("artifact_role") != RESOURCE_SMOKE_ROLE
+    ):
+        raise ResCNNCheckpointError("checkpoint is not a GPU resource-smoke artifact")
+    if payload.get("epoch") != 1 or payload.get("training_step") != 32:
+        raise ResCNNCheckpointError("resource-smoke checkpoint step identity drifted")
     _restore_model(payload, model)
     result = dict(payload)
     result["weights_only_used"] = True

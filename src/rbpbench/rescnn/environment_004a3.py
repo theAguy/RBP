@@ -1,0 +1,94 @@
+"""Exact-lock/runtime verification for the Task 004A-3 Newton environment."""
+
+from __future__ import annotations
+
+import hashlib
+import argparse
+import json
+import os
+from pathlib import Path
+
+
+class ResCNN004A3EnvironmentError(RuntimeError):
+    pass
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_runtime(
+    prefix: Path,
+    *,
+    manifest_path: Path,
+    manifest_sha256: str,
+    lock_path: Path,
+    lock_sha256: str,
+) -> dict[str, object]:
+    prefix = Path(prefix).resolve()
+    if sha256_file(manifest_path) != manifest_sha256:
+        raise ResCNN004A3EnvironmentError("runtime manifest hash mismatch")
+    if sha256_file(lock_path) != lock_sha256:
+        raise ResCNN004A3EnvironmentError("environment lock hash mismatch")
+    manifest = json.loads(Path(manifest_path).read_text())
+    entries = manifest.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ResCNN004A3EnvironmentError("runtime manifest is empty")
+    listed = set()
+    for entry in entries:
+        relative = entry.get("path")
+        if not isinstance(relative, str) or not relative or relative in listed:
+            raise ResCNN004A3EnvironmentError("invalid/duplicate runtime path")
+        listed.add(relative)
+        path = prefix / relative
+        if entry.get("type") == "file":
+            if path.is_symlink() or not path.is_file():
+                raise ResCNN004A3EnvironmentError(f"runtime file missing: {relative}")
+            if path.stat().st_size != entry.get("byte_size") or sha256_file(path) != entry.get("sha256"):
+                raise ResCNN004A3EnvironmentError(f"runtime file drift: {relative}")
+        elif entry.get("type") == "symlink":
+            if not path.is_symlink() or os.readlink(path) != entry.get("target"):
+                raise ResCNN004A3EnvironmentError(f"runtime symlink drift: {relative}")
+        else:
+            raise ResCNN004A3EnvironmentError("unknown runtime manifest entry type")
+    actual = set()
+    for directory, dirnames, filenames in os.walk(prefix, followlinks=False):
+        for name in list(dirnames):
+            path = Path(directory) / name
+            if path.is_symlink():
+                actual.add(path.relative_to(prefix).as_posix())
+                dirnames.remove(name)
+        for name in filenames:
+            actual.add((Path(directory) / name).relative_to(prefix).as_posix())
+    if actual != listed:
+        raise ResCNN004A3EnvironmentError("runtime contains missing or extra entries")
+    return {
+        "runtime_manifest_sha256": manifest_sha256,
+        "environment_lock_sha256": lock_sha256,
+        "entry_count": len(entries),
+    }
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prefix", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--lock", type=Path, required=True)
+    parser.add_argument("--bundle-config", type=Path, required=True)
+    args = parser.parse_args(argv)
+    config = json.loads(args.bundle_config.read_text())
+    result = verify_runtime(
+        args.prefix, manifest_path=args.manifest,
+        manifest_sha256=config["runtime_manifest_sha256"],
+        lock_path=args.lock, lock_sha256=config["environment_lock_sha256"],
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

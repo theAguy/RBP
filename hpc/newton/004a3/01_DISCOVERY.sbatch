@@ -21,7 +21,7 @@ for url in https://conda.anaconda.org/pytorch/ https://conda.anaconda.org/nvidia
 done
 export CHANNELS_REACHABLE
 PYTHONPATH=src python3 - <<'PY'
-import json, os, platform, re, shutil, subprocess
+import getpass, json, os, platform, re, shutil, subprocess
 from pathlib import Path
 from rbpbench.discovery_004a3 import parse_slurm_max_time
 
@@ -53,6 +53,8 @@ mem={}
 for line in Path('/proc/meminfo').read_text().splitlines():
     key, value = line.split(':',1); mem[key]=int(value.strip().split()[0])*1024
 conda_path = shutil.which("conda")
+user_name = os.environ.get("USER") or getpass.getuser()
+home_path = os.environ.get("HOME") or str(Path.home())
 payload = {
   "schema_version": "task004a3_discovery_v2",
   "host": platform.node(), "system": platform.system(), "machine": platform.machine(),
@@ -83,8 +85,8 @@ payload = {
   "module_avail": command_evidence("module avail", shell=True),
   "python3_version": command_evidence(["python3", "--version"]),
   "quota_s": command_evidence(["quota", "-s"]),
-  "lfs_quota": command_evidence(["lfs", "quota", "-u", os.environ["USER"], os.environ["HOME"]]),
-  "df_home": command_evidence(["df", "-B1", os.environ["HOME"]]),
+  "lfs_quota": command_evidence(["lfs", "quota", "-u", user_name, home_path]),
+  "df_home": command_evidence(["df", "-B1", home_path]),
   "requires_owner_review_before_lock": True,
 }
 Path("discovery/DISCOVERY.json").write_text(json.dumps(payload, indent=2, sort_keys=True)+"\n")

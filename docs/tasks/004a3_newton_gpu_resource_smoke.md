@@ -1,9 +1,9 @@
 # Task 004A-3 — Newton GPU environment and resource smoke
 
-**Status:** planning accepted after C1–C4 and D1–D4. The 004A-3A synthetic
-implementation, E1–E6 correction and bounded F1–F2 correction are complete
-and awaiting final independent review. No Newton job, GPU environment,
-real-data subset or training run is authorized by this document.
+**Status:** planning accepted after C1–C4 and D1–D4; 004A-3A is independently
+accepted and closed. The data-free 004A-3B discovery handoff is prepared and
+awaiting review and explicit owner authorization. No Newton job, GPU
+environment, real-data subset or training run is authorized by this document.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 

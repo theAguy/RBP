@@ -392,6 +392,47 @@ class ProjectionAndResourceTests(unittest.TestCase):
         self.assertNotIn("text=", script)
         self.assertNotIn("rbpbench.rescnn", script)
 
+    def test_discovery_submit_refuses_bad_quota_and_missing_user_before_sbatch(self):
+        submit = ROOT / "hpc/newton/004a3/00_SUBMIT_DISCOVERY.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            temporary = Path(tmp)
+            marker = temporary / "sbatch-called"
+            stub = temporary / "sbatch"
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf called > {marker!s}\n"
+            )
+            stub.chmod(0o755)
+            base = dict(os.environ)
+            base.update({
+                "PATH": str(temporary) + os.pathsep + base.get("PATH", ""),
+                "RBP_004A3_INSTALL_LOCATION": "login_node",
+                "RBP_SLURM_MAIL_USER": "synthetic@example.invalid",
+                "HOME": str(temporary), "USER": "synthetic-user",
+            })
+            cases = (
+                ("non_numeric_quota", {**base, "RBP_004A3_QUOTA_AVAILABLE_BYTES": "10G"}),
+                ("missing_user", {**base, "RBP_004A3_QUOTA_AVAILABLE_BYTES": "1000"}),
+            )
+            cases[1][1].pop("USER")
+            for name, environment in cases:
+                marker.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["/bin/bash", str(submit)], env=environment,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    universal_newlines=True, check=False,
+                )
+                with self.subTest(case=name):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(marker.exists())
+
+    def test_discovery_heredoc_uses_safe_user_and_home_fallbacks(self):
+        script = (ROOT / "hpc/newton/004a3/01_DISCOVERY.sbatch").read_text()
+        self.assertNotIn('os.environ["USER"]', script)
+        self.assertNotIn('os.environ["HOME"]', script)
+        self.assertIn('os.environ.get("USER") or getpass.getuser()', script)
+        self.assertIn('os.environ.get("HOME") or str(Path.home())', script)
+
     def test_discovery_limit_evidence_survives_unlimited_but_validator_refuses_it(self):
         from rbpbench.discovery_004a3 import parse_slurm_max_time
 

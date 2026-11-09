@@ -3,6 +3,12 @@ set -Eeuo pipefail
 : "${RBP_004A3_INSTALL_LOCATION:?set login_node or cpu_job after site-policy confirmation}"
 : "${RBP_004A3_QUOTA_AVAILABLE_BYTES:?numeric quota availability required}"
 : "${RBP_SLURM_MAIL_USER:?email address required for BEGIN/END/FAIL notices}"
+: "${USER:?non-empty USER required before discovery submission}"
+: "${HOME:?non-empty HOME required before discovery submission}"
+[[ "$RBP_004A3_QUOTA_AVAILABLE_BYTES" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'RBP_004A3_QUOTA_AVAILABLE_BYTES must be a positive integer in bytes.\n' >&2
+  exit 2
+}
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd -P)
 [[ ! -e "$ROOT/discovery" ]] || { printf 'Refusing existing discovery evidence.\n' >&2; exit 1; }
 export RBP_004A3_ROOT="$ROOT"

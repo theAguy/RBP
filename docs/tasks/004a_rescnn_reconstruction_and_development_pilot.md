@@ -1,9 +1,9 @@
 # Task 004A — Former ResCNN reconstruction and development pilot
 
-**Status:** checkpoints 004A-1 and 004A-2 are independently accepted and
-closed. Task 004A-3 planning is accepted; its 004A-3A synthetic implementation
-is complete and awaiting independent implementation review. No Newton
-discovery, real-data subset construction or GPU execution has started.
+**Status:** checkpoints 004A-1, 004A-2 and 004A-3A are independently accepted
+and closed. The data-free 004A-3B discovery handoff is prepared and awaiting
+review and explicit owner authorization. No Newton discovery, real-data subset
+construction or GPU execution has started.
 Checkpoints 004A-4 and 004A-5 have not started. See
 `docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md` and
 `docs/reviews/004a1_rescnn_acceptance.md`, with Task 004A-2 detailed in

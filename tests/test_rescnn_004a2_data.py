@@ -52,7 +52,90 @@ def _fixture(*, malformed_development: bool = False):
     return "".join(membership), "".join(csv_rows), "".join(fasta)
 
 
+def _lexically_order_membership(membership: str) -> str:
+    header, *rows = membership.splitlines()
+    return "\n".join((header, *sorted(rows))) + "\n"
+
+
 class StreamingBoundaryTests(unittest.TestCase):
+    def test_lexical_membership_order_joins_by_canonical_numeric_id(self):
+        membership, csv_rows, fasta = _fixture()
+        lexical = _lexically_order_membership(membership)
+        self.assertEqual(
+            [line.split("\t", 1)[0] for line in lexical.splitlines()[1:7]],
+            ["row_0", "row_1", "row_10", "row_100", "row_1000", "row_1001"],
+        )
+        numeric_audit = audit_streams(
+            io.StringIO(membership), io.StringIO(csv_rows), io.StringIO(fasta),
+            width=500, output_count=122, sample_size=513, seed=20261029,
+            expected_partition_rows={"train": 513, "validation": 513, "test": 1},
+            expected_component_count=1027,
+        )
+        lexical_audit = audit_streams(
+            io.StringIO(lexical), io.StringIO(csv_rows), io.StringIO(fasta),
+            width=500, output_count=122, sample_size=513, seed=20261029,
+            expected_partition_rows={"train": 513, "validation": 513, "test": 1},
+            expected_component_count=1027,
+        )
+        self.assertEqual(lexical_audit, numeric_audit)
+
+        cache = build_cache_streams(
+            io.StringIO(lexical), io.StringIO(csv_rows), io.StringIO(fasta),
+            selected=lexical_audit.selected, width=500, output_count=122,
+        )
+        require_count_reconciliation(lexical_audit.counts, cache.counts)
+        self.assertEqual(cache.selected_content_sha256, lexical_audit.selected_content_sha256)
+        self.assertFalse(cache.access["test_accessed"])
+
+    def test_membership_index_refuses_duplicate_missing_and_foreign_ids(self):
+        membership, csv_rows, fasta = _fixture()
+        header, *rows = membership.splitlines()
+
+        duplicate = "\n".join((header, rows[0], rows[0], *rows[1:])) + "\n"
+        with self.assertRaisesRegex(ResCNN004A2DataError, "duplicate membership"):
+            audit_streams(
+                io.StringIO(duplicate), io.StringIO(csv_rows), io.StringIO(fasta),
+                width=500, output_count=122, sample_size=513, seed=20261029,
+            )
+
+        missing = "\n".join((header, *rows[:2], *rows[3:])) + "\n"
+        with self.assertRaisesRegex(ResCNN004A2DataError, "not contiguous"):
+            audit_streams(
+                io.StringIO(missing), io.StringIO(csv_rows), io.StringIO(fasta),
+                width=500, output_count=122, sample_size=513, seed=20261029,
+            )
+
+        foreign_rows = list(rows)
+        foreign_rows[2] = foreign_rows[2].replace("row_2\t", "row_9999\t", 1)
+        foreign = "\n".join((header, *foreign_rows)) + "\n"
+        with self.assertRaisesRegex(ResCNN004A2DataError, "not contiguous"):
+            audit_streams(
+                io.StringIO(foreign), io.StringIO(csv_rows), io.StringIO(fasta),
+                width=500, output_count=122, sample_size=513, seed=20261029,
+            )
+
+    def test_membership_and_csv_fasta_tail_mismatch_fails_in_both_gates(self):
+        membership, csv_rows, fasta = _fixture()
+        header, *rows = membership.splitlines()
+        missing_tail = "\n".join((header, *rows[:-1])) + "\n"
+        extra_tail = "\n".join((header, *rows, "row_1027\tcomponent-1027\ttest")) + "\n"
+
+        audit = audit_streams(
+            io.StringIO(membership), io.StringIO(csv_rows), io.StringIO(fasta),
+            width=500, output_count=122, sample_size=513, seed=20261029,
+        )
+        for changed in (missing_tail, extra_tail):
+            with self.assertRaisesRegex(ResCNN004A2DataError, "row counts differ"):
+                audit_streams(
+                    io.StringIO(changed), io.StringIO(csv_rows), io.StringIO(fasta),
+                    width=500, output_count=122, sample_size=513, seed=20261029,
+                )
+            with self.assertRaisesRegex(ResCNN004A2DataError, "row counts differ"):
+                build_cache_streams(
+                    io.StringIO(changed), io.StringIO(csv_rows), io.StringIO(fasta),
+                    selected=audit.selected, width=500, output_count=122,
+                )
+
     def test_malformed_test_fields_are_consumed_but_never_interpreted(self):
         membership, csv_rows, fasta = _fixture()
         audit = audit_streams(

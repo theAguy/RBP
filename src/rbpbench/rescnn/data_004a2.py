@@ -418,6 +418,38 @@ def _membership_rows(lines: Iterable[str]) -> Iterator[MembershipRow]:
         yield MembershipRow(*row)
 
 
+def _membership_by_numeric_index(lines: Iterable[str]) -> tuple[MembershipRow, ...]:
+    """Validate and index membership independently of its serialized order."""
+
+    rows: dict[int, MembershipRow] = {}
+    for member in _membership_rows(lines):
+        match = SAMPLE_ID.fullmatch(member.sample_id)
+        if match is None:
+            raise ResCNN004A2DataError(
+                f"noncanonical membership sample ID: {member.sample_id!r}"
+            )
+        index = int(match.group(1))
+        if index in rows:
+            raise ResCNN004A2DataError(
+                f"duplicate membership sample ID: {member.sample_id!r}"
+            )
+        if not member.component_id or member.partition not in PARTITIONS:
+            raise ResCNN004A2DataError(
+                f"invalid membership row for {member.sample_id}"
+            )
+        rows[index] = member
+    if not rows:
+        raise ResCNN004A2DataError("membership contains no rows")
+    missing = [index for index in range(len(rows)) if index not in rows][:5]
+    foreign = sorted(index for index in rows if index >= len(rows))[:5]
+    if missing or foreign:
+        raise ResCNN004A2DataError(
+            "membership canonical ID universe is not contiguous: "
+            f"missing={missing!r}, foreign={foreign!r}"
+        )
+    return tuple(rows[index] for index in range(len(rows)))
+
+
 def _csv_rows(lines: Iterable[str]) -> Iterator[tuple[str, str]]:
     reader = csv.reader(lines)
     try:
@@ -457,8 +489,6 @@ def _validate_join_identity(index: int, member: MembershipRow, fasta_id: str) ->
         raise ResCNN004A2DataError(
             f"lockstep ID mismatch at {index}: {member.sample_id!r}, {fasta_id!r}, expected {expected!r}"
         )
-    if not member.component_id or member.partition not in PARTITIONS:
-        raise ResCNN004A2DataError(f"invalid membership row for {expected}")
 
 
 @dataclass(frozen=True)
@@ -484,21 +514,19 @@ def audit_streams(
     expected_partition_rows: Mapping[str, int] | None = None,
     expected_component_count: int | None = None,
 ) -> AuditResult:
+    membership = _membership_by_numeric_index(membership_lines)
     counters = AccessCounters()
     counts = _CountAccumulator(output_count)
     sampler = CoverageSampler(output_count=output_count, sample_size=sample_size, seed=seed)
     partition_rows = {partition: 0 for partition in PARTITIONS}
     component_partitions: dict[str, str] = {}
     row_count = 0
-    streams = zip_longest(
-        _membership_rows(membership_lines), _csv_rows(csv_lines), _fasta_rows(fasta_lines),
-        fillvalue=_MISSING,
-    )
-    for index, triple in enumerate(streams):
-        member, csv_row, fasta_row = triple
-        if any(value is _MISSING for value in triple):
+    streams = zip_longest(_csv_rows(csv_lines), _fasta_rows(fasta_lines), fillvalue=_MISSING)
+    for index, pair in enumerate(streams):
+        csv_row, fasta_row = pair
+        if any(value is _MISSING for value in pair) or index >= len(membership):
             raise ResCNN004A2DataError("membership/CSV/FASTA row counts differ")
-        assert isinstance(member, MembershipRow)
+        member = membership[index]
         assert isinstance(csv_row, tuple) and isinstance(fasta_row, tuple)
         fasta_id, raw_fasta_sequence = fasta_row
         _validate_join_identity(index, member, fasta_id)
@@ -531,6 +559,8 @@ def audit_streams(
             SampleCandidate(member.sample_id, member.component_id, member.partition, content),
             labels,
         )
+    if row_count != len(membership):
+        raise ResCNN004A2DataError("membership/CSV/FASTA row counts differ")
     counters.require_blind()
     if expected_partition_rows is not None and partition_rows != dict(expected_partition_rows):
         raise ResCNN004A2DataError(
@@ -613,6 +643,7 @@ def build_cache_streams(
     width: int,
     output_count: int,
 ) -> CacheBuildResult:
+    membership = _membership_by_numeric_index(membership_lines)
     expected = {
         candidate.sample_id: candidate
         for partition in DEVELOPMENT_PARTITIONS
@@ -623,18 +654,17 @@ def build_cache_streams(
     counters = AccessCounters()
     counts = _IndependentCountAccumulator(output_count)
     records: list[CacheRecord] = []
-    streams = zip_longest(
-        _membership_rows(membership_lines), _csv_rows(csv_lines), _fasta_rows(fasta_lines),
-        fillvalue=_MISSING,
-    )
-    for index, triple in enumerate(streams):
-        member, csv_row, fasta_row = triple
-        if any(value is _MISSING for value in triple):
+    streams = zip_longest(_csv_rows(csv_lines), _fasta_rows(fasta_lines), fillvalue=_MISSING)
+    row_count = 0
+    for index, pair in enumerate(streams):
+        csv_row, fasta_row = pair
+        if any(value is _MISSING for value in pair) or index >= len(membership):
             raise ResCNN004A2DataError("membership/CSV/FASTA row counts differ on cache pass")
-        assert isinstance(member, MembershipRow)
+        member = membership[index]
         assert isinstance(csv_row, tuple) and isinstance(fasta_row, tuple)
         fasta_id, raw_fasta_sequence = fasta_row
         _validate_join_identity(index, member, fasta_id)
+        row_count += 1
         if member.partition == "test":
             counters.test_rows_seen += 1
             continue
@@ -665,6 +695,8 @@ def build_cache_streams(
             member.sample_id, member.component_id, member.partition,
             tuple(codes), targets, masks, content,
         ))
+    if row_count != len(membership):
+        raise ResCNN004A2DataError("membership/CSV/FASTA row counts differ on cache pass")
     counters.require_blind()
     if {record.sample_id for record in records} != set(expected):
         missing = sorted(set(expected) - {record.sample_id for record in records})[:5]

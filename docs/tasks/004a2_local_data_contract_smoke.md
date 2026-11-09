@@ -5,8 +5,9 @@ schema correction is accepted at `15ef4f0`. The separately authorized final
 004A-2B attempt stopped at the start of Gate A because the accepted membership
 is in lexical ID order while the CSV/FASTA are in numeric row order. All input
 hashes matched, no test field was interpreted, no candidate or selection was
-retained, and no model computation occurred. No retry is authorized. See
-`docs/reviews/004a2b_lockstep_order_stop.md`.
+retained, and no model computation occurred. A bounded ID-indexed join
+correction is implemented and awaiting independent review; no retry is
+authorized. See `docs/reviews/004a2b_lockstep_order_stop.md`.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 
@@ -77,10 +78,11 @@ order. Failure at either gate stops the invocation; it does not patch or retry.
 
 ### Gate A — full-universe streaming audit and sample selection
 
-Gate A reads the accepted membership, CSV and 500-nt FASTA in canonical
-lockstep. It may read raw test-row bytes because the files are sequential, but
-the membership partition is decided before a field supplier may interpret a
-label or sequence.
+Gate A validates and indexes the accepted membership by canonical numeric
+sample ID, then reads the CSV and 500-nt FASTA in numeric lockstep. It may read
+raw test-row bytes because those files are sequential, but the indexed
+membership partition is decided before a field supplier may interpret a label
+or sequence. Membership serialization order is not scientific evidence.
 
 For all 303,582 train/validation rows it must:
 
@@ -369,7 +371,7 @@ including malformed hidden test fields. Do not open or hash real inputs.
 
 Required focused tests include:
 
-- canonical membership/CSV/FASTA lockstep and mismatch failures;
+- canonical membership-ID indexing, CSV/FASTA lockstep and mismatch failures;
 - supplier counters proving malformed test fields remain uninterpreted;
 - no derivation of test class counts from whole-dataset minus development
   totals;

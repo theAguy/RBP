@@ -44,6 +44,9 @@ def command_evidence(argv, *, shell=False, first_line=False):
     }
 
 partition = os.environ["SLURM_JOB_PARTITION"]
+requested_partition = os.environ.get("RBP_SLURM_PARTITION")
+requested_account = os.environ.get("RBP_SLURM_ACCOUNT") or None
+slurm_account = os.environ.get("SLURM_JOB_ACCOUNT") or None
 partition_detail = command_evidence(["scontrol", "show", "partition", partition])
 match = re.search(r"(?:^|\s)MaxTime=([^\s]+)", partition_detail["stdout"])
 raw_limit = None if match is None else match.group(1)
@@ -61,6 +64,9 @@ payload = {
   "allocated_cpus": int(os.environ.get("SLURM_CPUS_PER_TASK", "0")),
   "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
   "slurm_partition": partition,
+  "requested_slurm_partition": requested_partition,
+  "slurm_account": slurm_account,
+  "requested_slurm_account": requested_account,
   "installed_ram_bytes": mem.get("MemTotal"), "available_ram_bytes": mem.get("MemAvailable"),
   "free_disk_bytes": shutil.disk_usage(".").free,
   "quota_available_bytes": int(os.environ["RBP_004A3_QUOTA_AVAILABLE_BYTES"]),

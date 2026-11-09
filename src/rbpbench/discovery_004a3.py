@@ -87,7 +87,8 @@ def require_discovery_payload(payload):
 
     required = {
         "schema_version", "host", "system", "machine", "allocated_cpus",
-        "slurm_job_id", "slurm_partition", "installed_ram_bytes",
+        "slurm_job_id", "slurm_partition", "requested_slurm_partition",
+        "slurm_account", "requested_slurm_account", "installed_ram_bytes",
         "available_ram_bytes", "free_disk_bytes", "quota_available_bytes",
         "operator_quota_available_bytes", "slurm_limit_seconds",
         "slurm_limit_error", "compute_node_required_channels_reachable",
@@ -99,9 +100,24 @@ def require_discovery_payload(payload):
         raise ResCNN004A3RuntimeError("discovery payload is incomplete: {!r}".format(missing))
     if payload["schema_version"] != "task004a3_discovery_v2":
         raise ResCNN004A3RuntimeError("discovery schema mismatch")
-    for key in ("host", "system", "machine", "slurm_job_id", "slurm_partition"):
+    for key in (
+        "host", "system", "machine", "slurm_job_id", "slurm_partition",
+        "requested_slurm_partition",
+    ):
         if not isinstance(payload[key], str) or not payload[key].strip():
             raise ResCNN004A3RuntimeError("discovery identity is empty: " + key)
+    if payload["requested_slurm_partition"] != payload["slurm_partition"]:
+        raise ResCNN004A3RuntimeError("requested and allocated Slurm partitions disagree")
+    for key in ("slurm_account", "requested_slurm_account"):
+        if payload[key] is not None and (
+            not isinstance(payload[key], str) or not payload[key].strip()
+        ):
+            raise ResCNN004A3RuntimeError("discovery account is malformed: " + key)
+    if (
+        payload["requested_slurm_account"] is not None
+        and payload["requested_slurm_account"] != payload["slurm_account"]
+    ):
+        raise ResCNN004A3RuntimeError("requested and allocated Slurm accounts disagree")
     if payload["requires_owner_review_before_lock"] is not True:
         raise ResCNN004A3RuntimeError("discovery does not require owner review before lock")
     for key in DISCOVERY_COMMAND_FIELDS:

@@ -63,6 +63,8 @@ def _complete_discovery_payload():
         "schema_version": "task004a3_discovery_v2",
         "host": "synthetic", "system": "Linux", "machine": "x86_64",
         "allocated_cpus": 4, "slurm_job_id": "1", "slurm_partition": "gpu",
+        "requested_slurm_partition": "gpu", "slurm_account": "synthetic",
+        "requested_slurm_account": None,
         "installed_ram_bytes": 128 * 2**30,
         "available_ram_bytes": 120 * 2**30,
         "free_disk_bytes": 10**12, "quota_available_bytes": 10**12,
@@ -408,6 +410,7 @@ class ProjectionAndResourceTests(unittest.TestCase):
                 "PATH": str(temporary) + os.pathsep + base.get("PATH", ""),
                 "RBP_004A3_INSTALL_LOCATION": "login_node",
                 "RBP_SLURM_MAIL_USER": "synthetic@example.invalid",
+                "RBP_SLURM_PARTITION": "gpu-a100",
                 "HOME": str(temporary), "USER": "synthetic-user",
             })
             cases = (
@@ -425,6 +428,71 @@ class ProjectionAndResourceTests(unittest.TestCase):
                 with self.subTest(case=name):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(marker.exists())
+
+    def test_discovery_submit_requires_and_passes_reviewed_partition_and_account(self):
+        submit = ROOT / "hpc/newton/004a3/00_SUBMIT_DISCOVERY.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            temporary = Path(tmp)
+            marker = temporary / "sbatch-arguments"
+            stub = temporary / "sbatch"
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf '%s\\n' \"$@\" > {marker!s}\n"
+                "printf 'Submitted batch job 1\\n'\n"
+            )
+            stub.chmod(0o755)
+            environment = dict(os.environ)
+            environment.update({
+                "PATH": str(temporary) + os.pathsep + environment.get("PATH", ""),
+                "RBP_004A3_INSTALL_LOCATION": "login_node",
+                "RBP_004A3_QUOTA_AVAILABLE_BYTES": "1000",
+                "RBP_SLURM_MAIL_USER": "synthetic@example.invalid",
+                "HOME": str(temporary), "USER": "synthetic-user",
+            })
+            environment.pop("RBP_SLURM_PARTITION", None)
+            environment.pop("RBP_SLURM_ACCOUNT", None)
+            missing = subprocess.run(
+                ["/bin/bash", str(submit)], env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, check=False,
+            )
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertFalse(marker.exists())
+
+            environment["RBP_SLURM_PARTITION"] = "gpu-a100"
+            accepted = subprocess.run(
+                ["/bin/bash", str(submit)], env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, check=False,
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            arguments = marker.read_text().splitlines()
+            self.assertIn("--partition=gpu-a100", arguments)
+            self.assertFalse(any(value.startswith("--account=") for value in arguments))
+
+            environment["RBP_SLURM_ACCOUNT"] = "research-account"
+            accepted = subprocess.run(
+                ["/bin/bash", str(submit)], env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, check=False,
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            arguments = marker.read_text().splitlines()
+            self.assertIn("--partition=gpu-a100", arguments)
+            self.assertIn("--account=research-account", arguments)
+
+    def test_discovery_validator_binds_requested_scheduler_routing(self):
+        valid = _complete_discovery_payload()
+        self.assertEqual(runtime_004a3.require_discovery_payload(valid), valid)
+        for key, value in (
+            ("requested_slurm_partition", "other-gpu"),
+            ("requested_slurm_account", "other-account"),
+        ):
+            broken = dict(valid); broken[key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(
+                ResCNN004A3RuntimeError, "disagree",
+            ):
+                runtime_004a3.require_discovery_payload(broken)
 
     def test_discovery_heredoc_uses_safe_user_and_home_fallbacks(self):
         script = (ROOT / "hpc/newton/004a3/01_DISCOVERY.sbatch").read_text()

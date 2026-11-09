@@ -1,13 +1,12 @@
 # Task 004A-2 — local bounded data-contract smoke
 
-**Status:** 004A-2A is accepted at commit `16e77e6`, and the prerequisite
-schema correction is accepted at `15ef4f0`. The separately authorized final
-004A-2B attempt stopped at the start of Gate A because the accepted membership
-is in lexical ID order while the CSV/FASTA are in numeric row order. All input
-hashes matched, no test field was interpreted, no candidate or selection was
-retained, and no model computation occurred. A bounded ID-indexed join
-correction is implemented and awaiting independent review; no retry is
-authorized. See `docs/reviews/004a2b_lockstep_order_stop.md`.
+**Status:** 004A-2A and both bounded prerequisite corrections are accepted.
+The separately authorized 004A-2B join-order recovery completed successfully
+once at source commit `666492c`. Independent reconciliation passed every
+data-contract, test-blindness, paired-smoke, inventory and resource gate. A
+sanitized execution manifest is recorded in
+`manifests/task004a2b_local_smoke.json`; 004A-2B awaits independent acceptance
+review. It must not be rerun, and Task 004A-3 has not started.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 

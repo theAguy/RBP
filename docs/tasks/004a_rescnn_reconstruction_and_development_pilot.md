@@ -1,14 +1,17 @@
 # Task 004A — Former ResCNN reconstruction and development pilot
 
 **Status:** checkpoints 004A-1 and 004A-2 are independently accepted and
-closed. Task 004A-3 GPU resource-smoke planning is prepared but neither its
-Newton discovery nor its GPU execution has started. Checkpoints 004A-4 and
-004A-5 have not started. See
+closed. Task 004A-3 GPU resource-smoke bounded planning corrections are
+applied and awaiting independent confirmation; its 004A-3A synthetic
+implementation task is prepared but not authorized. No implementation,
+Newton discovery or GPU execution has started. Checkpoints 004A-4 and 004A-5
+have not started. See
 `docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md` and
 `docs/reviews/004a1_rescnn_acceptance.md`, with Task 004A-2 detailed in
 `docs/tasks/004a2_local_data_contract_smoke.md` and reconciled in
 `docs/reviews/004a2b_execution_acceptance.md`. Task 004A-3 is detailed in
-`docs/tasks/004a3_newton_gpu_resource_smoke.md`.
+`docs/tasks/004a3_newton_gpu_resource_smoke.md`; its synthetic implementation
+boundary is `docs/tasks/004a3a_gpu_resource_smoke_implementation.md`.
 
 **Phase:** 4, first neural-model task
 

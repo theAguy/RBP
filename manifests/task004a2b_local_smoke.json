@@ -1,9 +1,32 @@
 {
   "schema_version": "task004a2b_execution_evidence_v1",
   "task": "004A-2B",
-  "status": "COMPLETED_AWAITING_ACCEPTANCE",
+  "status": "ACCEPTED",
   "source_commit": "666492c4cd102bdcf9d5ae76a42fc47a0f76542e",
   "accepted_join_correction": "554e9c0e5b4a5109f0d749eb5b1705253051f383",
+  "binding": {
+    "selection_fingerprint": "b3414ed3236c9daf270cfe91c5ff14e85665bdbe509315d80501de19e4c42f9c",
+    "source_sha256": "28d20758111fbdb2ec7a7a950d02fe70d4645905f8bf87afc8a017e5e288373c",
+    "environment_sha256": "c4398ac454240b367eb7b8736915b67a038984724427eacffd9d98b19f3ae847"
+  },
+  "input_sha256": {
+    "config": "fb3faeee566b1eb799f4c550f143cf05d90358301bd732e21a4928208e2c498f",
+    "csv": "982c812631ce277ea95e10bd591b6d77b66bf3a8ed71b4120f1d65854107a945",
+    "dataset_audit": "e53e02c665f90021974471bf8972bcf8d6fd384f9439f4d630e68773be856b5c",
+    "proteins": "374e09ea1a32e8bd335ad25b57e189c08a537c4edee8700d533d95e87eaadad9",
+    "decode_manifest": "d9826b471ef3f12539eaf51be5c21ba8be20190f3d7c6042143e839d6bb0a7b3",
+    "partition_manifest": "b6f6f16fab4e6afc23c16a8dc5b3476130719d579f637cd3cf18002cc7fb7419",
+    "phase_a_manifest": "77922d6d906b7a4fd9ba8cae091e93072b0e1b09735a0397cdead2b2dfeed257",
+    "membership": "ca527da4f0c0615bcb9d31c6fc705523238e8fb8f4751473ccc2af3ee0aecddb",
+    "fasta_500": "0849d4f8aceaed37c3dc7fec69056f38ae344338aa4adf321a3e11c4a72df0b0"
+  },
+  "acceptance": {
+    "verdict": "Approve",
+    "review_date": "2026-11-09",
+    "review_document": "docs/reviews/004a2b_execution_acceptance.md",
+    "task004a2_closed": true,
+    "task004a3_authorized": false
+  },
   "execution": {
     "start_utc": "2026-11-09T08:56:04Z",
     "end_utc": "2026-11-09T08:58:21Z",

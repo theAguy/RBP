@@ -1,12 +1,11 @@
 # Task 004A-2 — local bounded data-contract smoke
 
-**Status:** 004A-2A and both bounded prerequisite corrections are accepted.
-The separately authorized 004A-2B join-order recovery completed successfully
-once at source commit `666492c`. Independent reconciliation passed every
-data-contract, test-blindness, paired-smoke, inventory and resource gate. A
-sanitized execution manifest is recorded in
-`manifests/task004a2b_local_smoke.json`; 004A-2B awaits independent acceptance
-review. It must not be rerun, and Task 004A-3 has not started.
+**Status:** accepted and closed. The separately authorized 004A-2B join-order
+recovery completed successfully once at source commit `666492c`. Independent
+reconciliation and independent acceptance passed every data-contract,
+test-blindness, paired-smoke, inventory and resource gate. The self-contained
+accepted record is `manifests/task004a2b_local_smoke.json`. It must not be
+rerun. Task 004A-3 is planned separately and has not started.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 

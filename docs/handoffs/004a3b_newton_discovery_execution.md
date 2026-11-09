@@ -5,7 +5,7 @@ execution. Run it only after an independent reviewer approves the handoff and
 the project owner separately authorizes exactly one discovery submission.
 
 **Exact Newton execution commit:**
-`4dd0815d3eff426a712d9c55cd7ecc4161b497a0`
+`e90a26a9fbfc2ac57a83a3d39753f3b2155a5cea`
 
 The discovery is data-free. It inventories the allocated GPU, scheduler,
 operating system, available environment tooling, package-channel reachability
@@ -20,8 +20,8 @@ examples use `$HOME/rbpbench`; replace that one path consistently if needed.
 ```bash
 cd "$HOME/rbpbench"
 git fetch --all --prune
-git checkout --detach 4dd0815d3eff426a712d9c55cd7ecc4161b497a0
-test "$(git rev-parse HEAD)" = "4dd0815d3eff426a712d9c55cd7ecc4161b497a0"
+git checkout --detach e90a26a9fbfc2ac57a83a3d39753f3b2155a5cea
+test "$(git rev-parse HEAD)" = "e90a26a9fbfc2ac57a83a3d39753f3b2155a5cea"
 test -z "$(git status --porcelain --untracked-files=all)"
 printf 'Repository root: %s\n' "$(pwd -P)"
 test ! -e discovery
@@ -32,7 +32,32 @@ Stop if any command fails. Do not delete, rename or adopt an existing
 
 ## 2. Human decisions required before submission
 
-### 2.1 Approved installation location
+### 2.1 Reviewed Slurm partition and optional account
+
+From Newton documentation or the administrators, identify the GPU partition
+that the later resource smoke and 004A-4 jobs are intended to use. Do not rely
+on the account's default partition. Export its exact scheduler name:
+
+```bash
+export RBP_SLURM_PARTITION='REPLACE_WITH_REVIEWED_GPU_PARTITION'
+```
+
+If Newton requires an account for that partition, export the site-approved
+account. Otherwise explicitly leave it unset:
+
+```bash
+# If required:
+export RBP_SLURM_ACCOUNT='REPLACE_WITH_APPROVED_ACCOUNT'
+# If not required, use this instead:
+# unset RBP_SLURM_ACCOUNT
+```
+
+The wrapper passes these values directly to `sbatch`. Discovery records both
+requested and allocated routing and fails validation if they disagree. The
+same reviewed routing will later be bound into the bundle; the GPU smoke reuse
+is implemented only after 004A-3B review during 004A-3C.
+
+### 2.2 Approved installation location
 
 Ask the Newton administrators/site policy whether the later exact environment
 may be installed from the login node or must be installed in a CPU-only job.
@@ -46,7 +71,7 @@ export RBP_004A3_INSTALL_LOCATION='login_node'
 
 This field records policy only. This discovery job installs nothing.
 
-### 2.2 Current user quota available in bytes
+### 2.3 Current user quota available in bytes
 
 Use the site-supported user-quota command and retain its raw output. For
 example, if Newton supports Lustre quota:
@@ -59,9 +84,11 @@ eval "$QUOTA_EVIDENCE_COMMAND"
 
 If that command is unavailable, use the exact command supplied by the Newton
 administrator. Do not substitute filesystem-wide `df` free space for a user
-quota. Record the command and its raw output, calculate current user quota
-available as `hard_limit_bytes - used_bytes`, and export digits only—no `G`,
-commas, decimals or spaces:
+quota. Record the command and its raw output. Lustre commonly reports KiB, so
+convert those values to bytes by multiplying by 1,024. When both soft and hard
+limits apply, calculate conservatively as
+`min(soft_limit_bytes, hard_limit_bytes) - used_bytes`. Export digits only—no
+`G`, commas, decimals or spaces:
 
 ```bash
 export RBP_004A3_QUOTA_AVAILABLE_BYTES='REPLACE_WITH_POSITIVE_INTEGER_BYTES'
@@ -70,7 +97,7 @@ export RBP_004A3_QUOTA_AVAILABLE_BYTES='REPLACE_WITH_POSITIVE_INTEGER_BYTES'
 
 If no supported user-quota evidence can be obtained, stop before submission.
 
-### 2.3 Notification address
+### 2.4 Notification address
 
 ```bash
 export RBP_SLURM_MAIL_USER='REPLACE_WITH_YOUR_EMAIL'
@@ -80,7 +107,9 @@ Confirm all required values without printing sensitive unrelated environment
 variables:
 
 ```bash
-printf 'install_location=%s\nquota_available_bytes=%s\nmail=%s\n' \
+printf 'partition=%s\naccount=%s\ninstall_location=%s\nquota_available_bytes=%s\nmail=%s\n' \
+  "$RBP_SLURM_PARTITION" \
+  "${RBP_SLURM_ACCOUNT:-<site-default-account>}" \
   "$RBP_004A3_INSTALL_LOCATION" \
   "$RBP_004A3_QUOTA_AVAILABLE_BYTES" \
   "$RBP_SLURM_MAIL_USER"
@@ -153,6 +182,7 @@ The reviewer will authenticate and inspect:
 - GPU model, UUID, total memory and compute capability;
 - NVIDIA driver and exposed CUDA information;
 - partition `MaxTime` and its parsed positive `slurm_limit_seconds`;
+- requested versus allocated partition/account identity;
 - `sinfo` GRES types/features needed to bind the later GPU model request;
 - OS release, kernel and glibc;
 - conda, Python and module availability;

@@ -1,13 +1,12 @@
 # Task 004A-2 — local bounded data-contract smoke
 
-**Status:** 004A-2A is accepted at commit `16e77e6`. Two authorized 004A-2B
-attempts stopped before Gate A: first at the sandboxed host-memory query, then
-at a prerequisite-only Task 003B Phase-A schema-name mismatch. No model
-computation, FASTA resolution or row interpretation occurred. The bounded
-prerequisite correction is implemented but must receive independent review
-before any new 004A-2B execution is separately authorized. See
-`docs/reviews/004a2b_prehash_sandbox_stop.md` and
-`docs/reviews/004a2b_phase_a_schema_stop.md`.
+**Status:** 004A-2A is accepted at commit `16e77e6`, and the prerequisite
+schema correction is accepted at `15ef4f0`. The separately authorized final
+004A-2B attempt stopped at the start of Gate A because the accepted membership
+is in lexical ID order while the CSV/FASTA are in numeric row order. All input
+hashes matched, no test field was interpreted, no candidate or selection was
+retained, and no model computation occurred. No retry is authorized. See
+`docs/reviews/004a2b_lockstep_order_stop.md`.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 

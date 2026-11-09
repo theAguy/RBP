@@ -4,6 +4,7 @@ from dataclasses import replace
 import gzip
 import json
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 import tempfile
@@ -42,8 +43,11 @@ from rbpbench.rescnn.resources_004a2 import (
     require_local_resources,
 )
 from rbpbench.rescnn.runner_004a2 import (
+    EXPECTED_BOUNDS,
     ResCNN004A2RunnerError,
     _bound_source_evidence,
+    _phase_a_bounds_from_payload,
+    _verify_phase_a_bounds,
     build_parser,
     execute,
     resolve_fasta_500,
@@ -287,6 +291,43 @@ class RoleAndSmokeTests(unittest.TestCase):
 
 
 class RunnerBoundaryTests(unittest.TestCase):
+    def test_accepted_phase_a_manifest_schema_maps_to_frozen_bounds(self):
+        path = ROOT / "manifests/task003b_phase_a_003b3.json"
+        payload = json.loads(path.read_text())
+        self.assertEqual(_phase_a_bounds_from_payload(payload), EXPECTED_BOUNDS)
+        evidence = _verify_phase_a_bounds(path, repo_root=ROOT)
+        self.assertEqual(evidence["path"], "manifests/task003b_phase_a_003b3.json")
+        self.assertEqual(
+            evidence["sha256"],
+            "77922d6d906b7a4fd9ba8cae091e93072b0e1b09735a0397cdead2b2dfeed257",
+        )
+
+    def test_phase_a_schema_translation_refuses_scientific_drift(self):
+        path = ROOT / "manifests/task003b_phase_a_003b3.json"
+        payload = json.loads(path.read_text())
+        payload["fitting"]["fitting_sequence_count"] += 1
+        with self.assertRaisesRegex(ResCNN004A2RunnerError, "development bounds drift"):
+            _phase_a_bounds_from_payload(payload)
+
+        payload = json.loads(path.read_text())
+        payload["fitting"]["partitions"] = ["validation", "train"]
+        with self.assertRaisesRegex(ResCNN004A2RunnerError, "partitions drift"):
+            _phase_a_bounds_from_payload(payload)
+
+        payload = json.loads(path.read_text())
+        payload["fitting"]["protein_count"] = 121
+        with self.assertRaisesRegex(ResCNN004A2RunnerError, "protein count drift"):
+            _phase_a_bounds_from_payload(payload)
+
+    def test_recovery_wrapper_is_macos_bash_compatible(self):
+        script = ROOT / "scripts/run_004a2b_local_smoke_recovery.sh"
+        text = script.read_text()
+        self.assertNotIn("declare -A", text)
+        completed = subprocess.run(
+            ["/bin/bash", "-n", str(script)], capture_output=True, text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_source_evidence_includes_loaded_baseline_dependencies(self):
         evidence = _bound_source_evidence(ROOT)
         paths = {row["path"] for row in evidence["files"]}

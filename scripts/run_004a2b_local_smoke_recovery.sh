@@ -23,16 +23,19 @@ git merge-base --is-ancestor "$ACCEPTED_CORRECTION" HEAD \
 [[ ! -e "$OUTPUT_ROOT" ]] || fail "scientific output root already exists"
 [[ ! -e "$LOG_ROOT" ]] || fail "recovery log root already exists"
 
-declare -A original_hashes=(
-  [attempt.txt]="239e3e5da9c1c1e921a25b509f8abc8e90fad430e4f782a15f5291a3f0f48b75"
-  [stderr_time.log]="d961658c4a705fda988a59f7f03d0403b1d07f55d95073d9818db25e0387a0a4"
-  [stdout.log]="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+original_names=(attempt.txt stderr_time.log stdout.log)
+original_digests=(
+  "239e3e5da9c1c1e921a25b509f8abc8e90fad430e4f782a15f5291a3f0f48b75"
+  "d961658c4a705fda988a59f7f03d0403b1d07f55d95073d9818db25e0387a0a4"
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 )
-for name in attempt.txt stderr_time.log stdout.log; do
+for index in 0 1 2; do
+  name="${original_names[$index]}"
+  expected="${original_digests[$index]}"
   path="$ORIGINAL_LOG_ROOT/$name"
   [[ -f "$path" && ! -L "$path" ]] || fail "original log is missing: $path"
   actual="$(shasum -a 256 "$path" | awk '{print $1}')"
-  [[ "$actual" == "${original_hashes[$name]}" ]] \
+  [[ "$actual" == "$expected" ]] \
     || fail "original stop evidence drifted: $name"
 done
 

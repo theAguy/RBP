@@ -1,10 +1,13 @@
 # Task 004A-2 — local bounded data-contract smoke
 
-**Status:** 004A-2A is accepted at commit `16e77e6`. No real input was opened
-or hashed during implementation/review. The separate one-shot 004A-2B local
-execution is prepared but not yet authorized or started. See
-`docs/reviews/004a2a_bounded_correction_acceptance.md` and
-`docs/handoffs/004a2b_local_real_smoke_execution.md`.
+**Status:** 004A-2A is accepted at commit `16e77e6`. Two authorized 004A-2B
+attempts stopped before Gate A: first at the sandboxed host-memory query, then
+at a prerequisite-only Task 003B Phase-A schema-name mismatch. No model
+computation, FASTA resolution or row interpretation occurred. The bounded
+prerequisite correction is implemented but must receive independent review
+before any new 004A-2B execution is separately authorized. See
+`docs/reviews/004a2b_prehash_sandbox_stop.md` and
+`docs/reviews/004a2b_phase_a_schema_stop.md`.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 

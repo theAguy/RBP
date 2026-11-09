@@ -208,17 +208,41 @@ def _fingerprint(value: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
+def _phase_a_bounds_from_payload(payload: object) -> dict[str, int]:
+    """Translate the accepted Task 003B Phase-A schema to 004A-2 names."""
+
+    if not isinstance(payload, dict):
+        raise ResCNN004A2RunnerError("Task 003B Phase A manifest is not an object")
+    fitting = payload.get("fitting")
+    if not isinstance(fitting, dict):
+        raise ResCNN004A2RunnerError("Task 003B Phase A fitting evidence is missing")
+    if fitting.get("partitions") != ["train", "validation"]:
+        raise ResCNN004A2RunnerError("Task 003B Phase A development partitions drift")
+    if fitting.get("protein_count") != 122:
+        raise ResCNN004A2RunnerError("Task 003B Phase A protein count drift")
+
+    # Task 003B calls this aggregate ``fitting_sequence_count``.  Task 004A-2
+    # uses the more explicit internal name ``train_plus_validation_rows``.
+    # The translation is deliberate; it must not be inferred by matching
+    # values or by accepting either field name interchangeably.
+    observed = {
+        "train_plus_validation_rows": fitting.get("fitting_sequence_count"),
+        "known_labels_per_protein_min": fitting.get("known_labels_per_protein_min"),
+        "known_labels_per_protein_max": fitting.get("known_labels_per_protein_max"),
+        "positive_labels_per_protein_min": fitting.get("positive_labels_per_protein_min"),
+        "negative_labels_per_protein_min": fitting.get("negative_labels_per_protein_min"),
+    }
+    if observed != EXPECTED_BOUNDS:
+        raise ResCNN004A2RunnerError("Task 003B Phase A development bounds drift")
+    return observed
+
+
 def _verify_phase_a_bounds(path: Path, *, repo_root: Path) -> dict[str, object]:
     evidence = _input_evidence(
         path, PHASE_A_MANIFEST_SHA256, "Task 003B Phase A manifest", repo_root=repo_root,
     )
     payload = json.loads(Path(path).read_text())
-    fitting = payload.get("fitting")
-    if not isinstance(fitting, dict):
-        raise ResCNN004A2RunnerError("Task 003B Phase A fitting evidence is missing")
-    observed = {key: fitting.get(key) for key in EXPECTED_BOUNDS}
-    if observed != EXPECTED_BOUNDS:
-        raise ResCNN004A2RunnerError("Task 003B Phase A development bounds drift")
+    _phase_a_bounds_from_payload(payload)
     return evidence
 
 

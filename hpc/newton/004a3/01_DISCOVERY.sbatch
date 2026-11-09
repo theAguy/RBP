@@ -21,27 +21,91 @@ for url in https://conda.anaconda.org/pytorch/ https://conda.anaconda.org/nvidia
 done
 export CHANNELS_REACHABLE
 python3 - <<'PY'
-import json, os, platform, shutil, subprocess
+import json, os, platform, re, shutil, subprocess
 from pathlib import Path
+
+def command_evidence(argv, *, shell=False, first_line=False):
+    executable = argv if shell else argv[0]
+    available = True if shell else shutil.which(executable) is not None
+    if not available:
+        return {"available": False, "returncode": None, "stdout": "", "stderr": ""}
+    result = subprocess.run(
+        argv, shell=shell, text=True, capture_output=True, check=False,
+        executable="/bin/bash" if shell else None,
+    )
+    stdout = result.stdout
+    if first_line:
+        stdout = stdout.splitlines()[0] if stdout.splitlines() else ""
+    return {
+        "available": True, "returncode": result.returncode,
+        "stdout": stdout, "stderr": result.stderr,
+    }
+
+partition = os.environ["SLURM_JOB_PARTITION"]
+partition_detail = command_evidence(["scontrol", "show", "partition", partition])
+match = re.search(r"(?:^|\s)MaxTime=([^\s]+)", partition_detail["stdout"])
+if match is None:
+    raise SystemExit("scontrol partition output lacks MaxTime")
+raw_limit = match.group(1)
+def slurm_seconds(value):
+    if value in {"UNLIMITED", "INFINITE"}:
+        raise ValueError("partition MaxTime is not a finite reviewed limit")
+    days = 0
+    if "-" in value:
+        day_text, value = value.split("-", 1); days = int(day_text)
+    fields = [int(part) for part in value.split(":")]
+    if len(fields) == 3:
+        hours, minutes, seconds = fields
+    elif len(fields) == 2:
+        hours, minutes, seconds = 0, fields[0], fields[1]
+    else:
+        raise ValueError(f"unsupported Slurm MaxTime: {raw_limit}")
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
 mem={}
 for line in Path('/proc/meminfo').read_text().splitlines():
     key, value = line.split(':',1); mem[key]=int(value.strip().split()[0])*1024
+conda_path = shutil.which("conda")
 payload = {
-  "schema_version": "task004a3_discovery_v1",
+  "schema_version": "task004a3_discovery_v2",
   "host": platform.node(), "system": platform.system(), "machine": platform.machine(),
   "allocated_cpus": int(os.environ.get("SLURM_CPUS_PER_TASK", "0")),
   "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
-  "slurm_partition": os.environ.get("SLURM_JOB_PARTITION"),
+  "slurm_partition": partition,
   "installed_ram_bytes": mem.get("MemTotal"), "available_ram_bytes": mem.get("MemAvailable"),
   "free_disk_bytes": shutil.disk_usage(".").free,
   "quota_available_bytes": int(os.environ["RBP_004A3_QUOTA_AVAILABLE_BYTES"]),
+  "operator_quota_available_bytes": int(os.environ["RBP_004A3_QUOTA_AVAILABLE_BYTES"]),
+  "slurm_limit_seconds": slurm_seconds(raw_limit),
   "compute_node_required_channels_reachable": os.environ["CHANNELS_REACHABLE"] == "true",
   "site_approved_install_location": os.environ["RBP_004A3_INSTALL_LOCATION"],
   "gpu_csv": Path("discovery/gpu.csv").read_text().strip(),
   "nvidia_smi": subprocess.run(["nvidia-smi"], text=True, capture_output=True, check=True).stdout,
+  "slurm_partition_detail": partition_detail,
+  "sinfo_gpu_inventory": command_evidence(["sinfo", "-h", "-o", "%P|%l|%G|%f"]),
+  "os_release": command_evidence(["cat", "/etc/os-release"]),
+  "uname_kernel": command_evidence(["uname", "-r"]),
+  "glibc_version": command_evidence(["ldd", "--version"], first_line=True),
+  "conda_command": {
+      "available": conda_path is not None, "returncode": 0 if conda_path else None,
+      "stdout": "" if conda_path is None else conda_path + "\n", "stderr": "",
+  },
+  "conda_version": command_evidence(["conda", "--version"]),
+  "conda_info": command_evidence(["conda", "info", "--json"]),
+  "module_avail": command_evidence("module avail", shell=True),
+  "python3_version": command_evidence(["python3", "--version"]),
+  "quota_s": command_evidence(["quota", "-s"]),
+  "lfs_quota": command_evidence(["lfs", "quota", "-u", os.environ["USER"], os.environ["HOME"]]),
+  "df_home": command_evidence(["df", "-B1", os.environ["HOME"]]),
   "requires_owner_review_before_lock": True,
 }
 Path("discovery/DISCOVERY.json").write_text(json.dumps(payload, indent=2, sort_keys=True)+"\n")
+PY
+PYTHONPATH=src python3 - <<'PY'
+import json
+from pathlib import Path
+from rbpbench.rescnn.runtime_004a3 import require_discovery_payload
+require_discovery_payload(json.loads(Path("discovery/DISCOVERY.json").read_text()))
 PY
 python3 - <<'PY'
 import hashlib, zipfile

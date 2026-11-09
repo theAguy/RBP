@@ -2,10 +2,11 @@
 
 ## Status and boundary
 
-The corrected C1–C4/D1–D4 contract is implemented with synthetic fixtures
-only. No real CSV, membership, FASTA, ignored 004A artifact or checkpoint was
-opened. No Newton query, network call, package installation, CUDA execution or
-Slurm submission occurred.
+The corrected C1–C4/D1–D4 contract and the independent review's bounded E1–E6
+correction are implemented with synthetic fixtures only. No real CSV,
+membership, FASTA, ignored 004A artifact or checkpoint was opened. No Newton
+query, network call, package installation, CUDA execution or Slurm submission
+occurred.
 
 004A-3B discovery, 004A-3C environment/subset freeze and 004A-3D GPU execution
 remain separately gated.
@@ -46,6 +47,21 @@ remain separately gated.
   runtime digest mismatch, pre-Python CUDA/thread variables, and evidence
   hashing outside batch timing.
 
+The final bounded correction adds:
+
+- **E1:** a complete raw discovery-evidence schema, partition-limit parsing,
+  command evidence and fail-closed validator used by the bundle builder;
+- **E2:** full-validation counts authenticated by the accepted 004A-2 summary
+  hash, plus the reviewed two-pass real-data cache builder (code only);
+- **E3:** reviewed GRES/constraint submission and GPU name/UUID checks before
+  any cache open;
+- **E4:** every tracked ROOT-relative dependency used by the five in-bundle
+  focused suites;
+- **E5:** role directories with identical checkpoint basenames and recursive
+  projection discovery; and
+- **E6:** the positive discovery-derived 004A-4 Slurm limit in bundle config,
+  replacing the smoke allocation's hard-coded four-hour value.
+
 The package records validation known counts as aggregate evidence, so the
 worst-case metric benchmark runs before the cache is opened. Primary and
 repeat are separate Python invocations; repeat cannot launch after primary
@@ -65,15 +81,29 @@ pytest -q
   tests/test_rescnn_004a3.py
 ```
 
-Run 1: **83 passed, 20 subtests passed** in 64.32 s.
+Original implementation run 1: **83 passed, 20 subtests passed** in 64.32 s.
 
-Run 2: **83 passed, 20 subtests passed** in 67.20 s.
+Original implementation run 2: **83 passed, 20 subtests passed** in 67.20 s.
 
-Both runs reported the same two non-failing existing warnings: PyTorch's
-TypedStorage deprecation and the fidelity test's intra-op thread-setting
-warning. The new 004A-3A file alone has 19 passing tests. All Newton shell
-files pass `/bin/bash -n`; Python sources pass compilation; `git diff --check`
-is clean.
+After E1–E6, the complete focused suite was rerun twice with all four thread
+variables fixed at four:
+
+- correction run 1: **91 passed, 54 subtests passed** in 67.01 s;
+- correction run 2: **91 passed, 54 subtests passed** in 64.54 s.
+
+There were no skips. Both correction runs reported the same two existing,
+non-failing warnings: PyTorch's TypedStorage deprecation and the fidelity
+test's intra-op thread-setting warning. The corrected 004A-3A file alone has
+27 passing tests.
+
+Nine targeted corrected regressions were copied onto a disposable archive of
+`d13179a`; all failed there. The failures were specific: missing streaming
+builder, checkpoint-path helper, discovery schema/commands, GPU-policy
+arguments, reviewed-limit resolver, full-count extraction and focused-suite
+bundle dependencies. The same regressions pass on the correction.
+
+All Newton shell files pass `/bin/bash -n`; Python sources pass compilation;
+`git diff --check` is clean.
 
 ## Remaining gates
 

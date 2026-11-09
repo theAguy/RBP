@@ -16,6 +16,7 @@ except ModuleNotFoundError as exc:
     raise unittest.SkipTest("Task 004A-3 tests require NumPy and PyTorch") from exc
 
 from rbpbench.rescnn.adam_004a3 import ADAM_FLAGS, build_gpu_adam, run_three_step_oracle
+from rbpbench.rescnn import cache_004a3, projection_004a3, runtime_004a3
 from rbpbench.rescnn.cache_004a3 import (
     CacheRow, open_cache, select_development_rows, write_cache,
 )
@@ -34,6 +35,7 @@ from rbpbench.rescnn.projection_004a3 import (
     StorageInputs, TimeInputs, project_storage_bytes, project_wall_seconds,
     require_projection_limits, ResCNN004A3ProjectionError,
 )
+from rbpbench.rescnn import runner_004a3
 from rbpbench.rescnn.runner_004a3 import THREAD_ENV, require_pre_python_environment
 from rbpbench.rescnn.runtime_004a3 import (
     LiveResourceMonitor,
@@ -45,6 +47,35 @@ from rbpbench.rescnn.timing_004a3 import measure_batches, worst_case_metric_arra
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/models/task004a_v1.toml"
+
+
+def _command_evidence(*, available=True, returncode=0, stdout="ok\n", stderr=""):
+    return {
+        "available": available, "returncode": returncode,
+        "stdout": stdout, "stderr": stderr,
+    }
+
+
+def _complete_discovery_payload():
+    payload = {
+        "schema_version": "task004a3_discovery_v2",
+        "host": "synthetic", "system": "Linux", "machine": "x86_64",
+        "allocated_cpus": 4, "slurm_job_id": "1", "slurm_partition": "gpu",
+        "installed_ram_bytes": 128 * 2**30,
+        "available_ram_bytes": 120 * 2**30,
+        "free_disk_bytes": 10**12, "quota_available_bytes": 10**12,
+        "operator_quota_available_bytes": 10**12,
+        "slurm_limit_seconds": 172800,
+        "compute_node_required_channels_reachable": False,
+        "site_approved_install_location": "login_node",
+        "gpu_csv": "NVIDIA A100, GPU-1, 81920 MiB, 8.0, 550",
+        "nvidia_smi": "synthetic nvidia-smi evidence",
+        "requires_owner_review_before_lock": True,
+    }
+    payload.update({
+        key: _command_evidence() for key in runtime_004a3.DISCOVERY_COMMAND_FIELDS
+    })
+    return payload
 
 
 def _cache_rows(size=3):
@@ -106,6 +137,47 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(forward, reverse)
         self.assertEqual({k: len(v) for k, v in forward.items()}, {"train": 7, "validation": 7})
 
+    def test_reviewed_streaming_builder_reconciles_and_never_interprets_test_fields(self):
+        membership = ["sample_id\tcomponent_id\tpartition\n"]
+        csv_rows = ["sequence,labels\n"]
+        fasta = []
+        row_index = 0
+        for partition in ("train", "validation"):
+            for protein_id in range(1, 123):
+                for label in (1, 0):
+                    sample_id = f"row_{row_index}"
+                    membership.append(f"{sample_id}\tc-{row_index}\t{partition}\n")
+                    token = str(protein_id) if label == 1 else f"-{protein_id}"
+                    csv_rows.append(f"10001000,{token}\n")
+                    fasta.extend((f">{sample_id}\n", "AA\n"))
+                    row_index += 1
+        test_id = f"row_{row_index}"
+        membership.append(f"{test_id}\tc-{row_index}\ttest\n")
+        csv_rows.append("BROKEN,BAD-LABEL\n")
+        fasta.extend((f">{test_id}\n", "NOT-ACGT\n"))
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = cache_004a3._build_development_cache_from_streams(
+                Path(tmp) / "cache",
+                membership_factory=lambda: iter(membership),
+                csv_factory=lambda: iter(csv_rows),
+                fasta_factory=lambda: iter(fasta), seed=17,
+                sample_size=244, width=2, output_count=122,
+                expected_partition_rows={"train": 244, "validation": 244, "test": 1},
+                expected_component_count=489,
+            )
+            self.assertEqual(evidence.cache_metadata["partition_counts"], {
+                "train": 244, "validation": 244,
+            })
+            self.assertEqual(evidence.cache_metadata["validation_known_counts"], [2] * 122)
+            self.assertFalse(evidence.gate_a_access["test_accessed"])
+            self.assertFalse(evidence.gate_b_access["test_accessed"])
+            self.assertEqual(evidence.gate_a_access["test_rows_seen"], 1)
+            self.assertEqual(evidence.gate_b_access["test_rows_seen"], 1)
+            self.assertEqual(
+                evidence.development_count_matrix["validation"]["positive"],
+                (1,) * 122,
+            )
+
 
 class AdamTests(unittest.TestCase):
     def test_frozen_flags_and_three_step_state_oracle(self):
@@ -145,6 +217,32 @@ class AdamTests(unittest.TestCase):
                     Path(tmp) / "bad.pt", model=model, optimizer=optimizer,
                     scheduler=scheduler, identity=identity, training_steps=1,
                 )
+
+    def test_role_directories_keep_checkpoint_basenames_and_bytes_identical(self):
+        config = load_config(CONFIG)
+        model = torch.nn.Linear(3, 2)
+        optimizer = build_gpu_adam(model, config)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
+        identity = {
+            "source_sha256": "a" * 64, "config_sha256": "b" * 64,
+            "environment_sha256": "c" * 64, "seed": 20261029,
+            "config_id": "submitted",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "candidate" / "primary.json"
+            primary = runner_004a3.resource_checkpoint_path(output, "primary", "submitted")
+            repeat = runner_004a3.resource_checkpoint_path(output, "repeat", "submitted")
+            primary.parent.mkdir(parents=True); repeat.parent.mkdir(parents=True)
+            atomic_save_resource_smoke_checkpoint(
+                primary, model=model, optimizer=optimizer, scheduler=scheduler,
+                identity=identity, training_steps=32,
+            )
+            atomic_save_resource_smoke_checkpoint(
+                repeat, model=model, optimizer=optimizer, scheduler=scheduler,
+                identity=identity, training_steps=32,
+            )
+            self.assertEqual(primary.name, repeat.name)
+            self.assertEqual(primary.read_bytes(), repeat.read_bytes())
 
 
 class TimingTests(unittest.TestCase):
@@ -239,8 +337,89 @@ class ProjectionAndResourceTests(unittest.TestCase):
         with self.assertRaises(ResCNN004A3RuntimeError):
             require_discovery_install_policy({})
 
+    def test_discovery_validator_rejects_each_missing_evidence_field(self):
+        valid = _complete_discovery_payload()
+        self.assertEqual(runtime_004a3.require_discovery_payload(valid), valid)
+        required = set(valid) | set(runtime_004a3.DISCOVERY_COMMAND_FIELDS)
+        for key in sorted(required):
+            broken = dict(valid); broken.pop(key)
+            with self.subTest(key=key), self.assertRaises(ResCNN004A3RuntimeError):
+                runtime_004a3.require_discovery_payload(broken)
+
+    def test_discovery_script_captures_every_frozen_command(self):
+        script = (ROOT / "hpc/newton/004a3/01_DISCOVERY.sbatch").read_text()
+        for fragment in (
+            '"scontrol", "show", "partition"',
+            '"sinfo", "-h", "-o", "%P|%l|%G|%f"',
+            '"cat", "/etc/os-release"', '"uname", "-r"',
+            '"ldd", "--version"', 'shutil.which("conda")',
+            '"conda", "--version"', '"conda", "info", "--json"',
+            'command_evidence("module avail", shell=True)',
+            '"python3", "--version"', '"quota", "-s"',
+            '"lfs", "quota", "-u"', '"df", "-B1"',
+        ):
+            self.assertIn(fragment, script)
+
+    def test_gpu_policy_mismatch_precedes_cache_open(self):
+        properties = type("Properties", (), {"uuid": "GPU-1"})()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.dict(os.environ, THREAD_ENV, clear=False), \
+             mock.patch.object(runner_004a3, "configure_strict_float32"), \
+             mock.patch.object(torch.cuda, "is_available", return_value=True), \
+             mock.patch.object(torch.cuda, "current_device", return_value=0), \
+             mock.patch.object(torch.cuda, "get_device_properties", return_value=properties), \
+             mock.patch.object(torch.cuda, "get_device_name", return_value="Wrong GPU"), \
+             mock.patch.object(runner_004a3, "open_cache") as cache_open:
+            with self.assertRaisesRegex(runner_004a3.ResCNN004A3RunnerError, "model"):
+                runner_004a3.run_process(
+                    role="primary", config_path=CONFIG,
+                    cache_path=Path(tmp) / "never-opened",
+                    output_path=Path(tmp) / "primary.json",
+                    runtime_manifest_sha256="a" * 64, source_sha256="b" * 64,
+                    requested_ram_bytes=100, physical_gpu_bytes=100,
+                    minimum_free_disk_bytes=1, deadline_monotonic=1,
+                    required_gpu_name="NVIDIA A100", allocated_gpu_uuid="GPU-1",
+                )
+            cache_open.assert_not_called()
+
+    def test_project_requires_positive_bundle_slurm_limit_before_other_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "bundle.json"
+            common = [
+                "project", "--bundle-root", str(root), "--bundle-config", str(config),
+                "--primary", str(root / "missing-primary"),
+                "--repeat", str(root / "missing-repeat"),
+                "--metric-benchmark", str(root / "missing-metric"),
+                "--comparison", str(root / "missing-comparison"),
+                "--output", str(root / "out"),
+            ]
+            for payload in ({}, {"slurm_limit_seconds": 0}, {"slurm_limit_seconds": -1}):
+                config.write_text(json.dumps(payload))
+                with self.subTest(payload=payload), self.assertRaises(ResCNN004A3ProjectionError):
+                    runner_004a3.main(common)
+        self.assertEqual(
+            projection_004a3.reviewed_slurm_limit_seconds({"slurm_limit_seconds": 99}), 99,
+        )
+
 
 class EnvironmentPortableAndScriptTests(unittest.TestCase):
+    def test_builder_declares_all_focused_suite_root_dependencies(self):
+        spec = importlib.util.spec_from_file_location(
+            "build_004a3_bundle_dependencies",
+            ROOT / "scripts/build_004a3_portable_bundle.py",
+        )
+        builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+        required = {
+            "intRBP ResCNN - for students.ipynb",
+            "manifests/task003b_phase_a_003b3.json",
+            "manifests/task004a2b_local_smoke.json",
+            "scripts/run_004a2b_local_smoke_recovery.sh",
+            "scripts/build_004a3_portable_bundle.py",
+            "hpc/newton/004a3/00_SUBMIT_DISCOVERY.sh",
+        }
+        self.assertTrue(required.issubset(set(builder.OTHER_FILES)))
+
     def test_complete_runtime_manifest_and_lock_are_bound(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -282,6 +461,15 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
         self.assertNotIn("RBP_004A3_RUNTIME_SHA256", script)
         self.assertIn('c["runtime_manifest_sha256"]', script)
         self.assertIn('c["source_sha256"]', script)
+        self.assertNotIn("--slurm-limit-seconds 14400", script)
+        self.assertIn("RBP_ALLOCATED_GPU_UUID", script)
+        self.assertIn('--required-gpu-name "$REQUIRED_GPU_NAME"', script)
+        ordered = [
+            "bundle_verification", "environment_verification", "focused_tests",
+            "predata_probe", "full_metric_benchmark", 'STAGE="primary"',
+        ]
+        positions = [script.index(value) for value in ordered]
+        self.assertEqual(positions, sorted(positions))
         for path in (ROOT / "hpc/newton/004a3").iterdir():
             if path.suffix in (".sh", ".sbatch"):
                 import subprocess
@@ -356,30 +544,83 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             temporary = Path(tmp)
             cache = temporary / "cache"; write_cache(cache, rows())
             discovery = temporary / "discovery.json"
-            discovery.write_text(json.dumps({
-                "compute_node_required_channels_reachable": False,
-                "site_approved_install_location": "login_node",
-                "quota_available_bytes": 10**12,
-            }))
+            discovery.write_text(json.dumps(_complete_discovery_payload()))
             lock = temporary / "lock"; lock.write_text("@EXPLICIT\n")
             runtime = temporary / "runtime.json"; runtime.write_text(json.dumps({
                 "entries": [{"path": "bin/python", "type": "file", "byte_size": 10}],
             }))
-            bundle = builder.build_bundle(
-                repo=ROOT, destination=temporary / "bundle", cache=cache,
-                discovery=discovery, environment_lock=lock, runtime_manifest=runtime,
-                expected_lock_sha256=sha256_file(lock),
-                expected_runtime_sha256=sha256_file(runtime),
-            )
+            summary = temporary / "summary.json"; summary.write_text("{}")
+            with mock.patch.object(
+                builder, "_full_validation_known_counts", return_value=[8193] * 122,
+            ), self.assertRaisesRegex(RuntimeError, "subset-derived"):
+                builder.build_bundle(
+                    repo=ROOT, destination=temporary / "rejected-bundle", cache=cache,
+                    discovery=discovery, environment_lock=lock, runtime_manifest=runtime,
+                    task004a2_summary=summary,
+                    expected_lock_sha256=sha256_file(lock),
+                    expected_runtime_sha256=sha256_file(runtime),
+                    required_gpu_name="NVIDIA A100", gpu_gres="gpu:a100:1",
+                    gpu_constraint="a100",
+                )
+            with mock.patch.object(
+                builder, "_full_validation_known_counts", return_value=[10000] * 122,
+            ):
+                bundle = builder.build_bundle(
+                    repo=ROOT, destination=temporary / "bundle", cache=cache,
+                    discovery=discovery, environment_lock=lock, runtime_manifest=runtime,
+                    task004a2_summary=summary,
+                    expected_lock_sha256=sha256_file(lock),
+                    expected_runtime_sha256=sha256_file(runtime),
+                    required_gpu_name="NVIDIA A100", gpu_gres="gpu:a100:1",
+                    gpu_constraint="a100",
+                )
             verify_bundle(bundle)
             bundled_config = json.loads((bundle / "BUNDLE_CONFIG.json").read_text())
             self.assertEqual(len(bundled_config["source_sha256"]), 64)
             self.assertEqual(
                 bundled_config["source_sha256"], builder._source_digest(ROOT),
             )
+            self.assertEqual(bundled_config["validation_known_counts"], [10000] * 122)
+            self.assertEqual(bundled_config["slurm_limit_seconds"], 172800)
+            self.assertEqual(bundled_config["required_gpu_name"], "NVIDIA A100")
+            for relative in (
+                "intRBP ResCNN - for students.ipynb",
+                "manifests/task003b_phase_a_003b3.json",
+                "manifests/task004a2b_local_smoke.json",
+                "scripts/run_004a2b_local_smoke_recovery.sh",
+                "scripts/build_004a3_portable_bundle.py",
+                "hpc/newton/004a3/00_SUBMIT_DISCOVERY.sh",
+            ):
+                self.assertTrue((bundle / relative).is_file(), relative)
             archive = builder.archive_bundle(bundle)
             self.assertEqual(len(archive["sha256"]), 64)
             self.assertTrue(Path(str(archive["path"]) + ".sha256").is_file())
+
+    def test_full_validation_counts_refuse_subset_derived_or_unbound_evidence(self):
+        spec = importlib.util.spec_from_file_location(
+            "build_004a3_bundle_counts", ROOT / "scripts/build_004a3_portable_bundle.py",
+        )
+        builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+        def payload(positive, negative):
+            return {"audit": {"development_counts": {"validation": {
+                "positive": positive, "negative": negative,
+            }}}}
+        with self.assertRaisesRegex(RuntimeError, "strictly larger"):
+            builder._extract_full_validation_known_counts(
+                payload=payload([4] * 122, [6] * 122), subset_counts=[10] * 122,
+            )
+        with self.assertRaisesRegex(RuntimeError, "length 122"):
+            builder._extract_full_validation_known_counts(
+                payload=payload([5] * 121, [6] * 121), subset_counts=[1] * 122,
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong = Path(tmp) / "summary.json"; wrong.write_text(json.dumps(
+                payload([5000] * 122, [5000] * 122),
+            ))
+            with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
+                builder._full_validation_known_counts(
+                    repo=ROOT, summary=wrong, subset_counts=[10] * 122,
+                )
 
 
 if __name__ == "__main__":

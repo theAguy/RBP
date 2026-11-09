@@ -19,6 +19,15 @@ class ResCNN004A3ProjectionError(RuntimeError):
     pass
 
 
+def reviewed_slurm_limit_seconds(bundle_config: dict) -> int:
+    value = bundle_config.get("slurm_limit_seconds")
+    if not isinstance(value, int) or value <= 0:
+        raise ResCNN004A3ProjectionError(
+            "bundle lacks a positive reviewed 004A-4 Slurm limit"
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class TimeInputs:
     train_batch_p95_seconds: float
@@ -101,6 +110,8 @@ def require_projection_limits(
     free_bytes: int,
     quota_available_bytes: int | None,
 ) -> None:
+    if not isinstance(slurm_limit_seconds, int) or slurm_limit_seconds <= 0:
+        raise ResCNN004A3ProjectionError("reviewed Slurm limit must be positive")
     if quota_available_bytes is None:
         raise ResCNN004A3ProjectionError("machine-readable quota evidence is required")
     if projected_wall_seconds > slurm_limit_seconds:

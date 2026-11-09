@@ -6,14 +6,17 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
 from rbpbench.rescnn.data_004a2 import (
     CoverageSampler,
     SampleCandidate,
+    audit_streams,
+    build_cache_streams,
     canonical_content_sha256,
+    require_count_reconciliation,
 )
 from rbpbench.rescnn.output import atomic_write, canonical_json, file_evidence
 
@@ -54,6 +57,15 @@ class MMapCache:
         return np.flatnonzero(self.partition_codes == code)
 
 
+@dataclass(frozen=True)
+class DevelopmentCacheEvidence:
+    cache_metadata: Mapping[str, object]
+    development_count_matrix: Mapping[str, object]
+    selected_content_sha256: str
+    gate_a_access: Mapping[str, int | bool]
+    gate_b_access: Mapping[str, int | bool]
+
+
 def _sha256_arrays(*arrays: np.ndarray) -> str:
     digest = hashlib.sha256()
     for array in arrays:
@@ -79,6 +91,82 @@ def select_development_rows(
     for candidate, labels in rows:
         sampler.observe(candidate, labels)
     return sampler.finalize()
+
+
+def _build_development_cache_from_streams(
+    root: Path,
+    *,
+    membership_factory: Callable[[], Iterable[str]],
+    csv_factory: Callable[[], Iterable[str]],
+    fasta_factory: Callable[[], Iterable[str]],
+    seed: int,
+    sample_size: int,
+    width: int,
+    output_count: int,
+    expected_partition_rows: Mapping[str, int] | None = None,
+    expected_component_count: int | None = None,
+) -> DevelopmentCacheEvidence:
+    """Run the accepted independent two-pass boundary and materialize mmap rows."""
+
+    audit = audit_streams(
+        membership_factory(), csv_factory(), fasta_factory(), width=width,
+        output_count=output_count, sample_size=sample_size, seed=seed,
+        expected_partition_rows=expected_partition_rows,
+        expected_component_count=expected_component_count,
+    )
+    gate_b = build_cache_streams(
+        membership_factory(), csv_factory(), fasta_factory(),
+        selected=audit.selected, width=width, output_count=output_count,
+    )
+    require_count_reconciliation(audit.counts, gate_b.counts)
+    if audit.selected_content_sha256 != gate_b.selected_content_sha256:
+        raise ResCNN004A3CacheError("Gate A/Gate B selected-content digest mismatch")
+    for access in (audit.access, gate_b.access):
+        if access.get("test_accessed") is not False:
+            raise ResCNN004A3CacheError("test fields were accessed during cache construction")
+    cache_rows = (
+        CacheRow(
+            sample_id=gate_b.cache.sample_ids[index],
+            component_id=gate_b.cache.component_ids[index],
+            partition=gate_b.cache.partitions[index],
+            base_codes=tuple(int(value) for value in gate_b.cache.base_codes[index].tolist()),
+            targets=tuple(int(value) for value in gate_b.cache.targets[index].tolist()),
+            masks=tuple(int(value) for value in gate_b.cache.masks[index].tolist()),
+        )
+        for index in range(len(gate_b.cache))
+    )
+    metadata = write_cache(
+        root, cache_rows, expected_partition_size=sample_size,
+        width=width, output_count=output_count,
+    )
+    return DevelopmentCacheEvidence(
+        cache_metadata=metadata,
+        development_count_matrix=audit.counts.matrix(),
+        selected_content_sha256=audit.selected_content_sha256,
+        gate_a_access=dict(audit.access), gate_b_access=dict(gate_b.access),
+    )
+
+
+def build_production_development_cache(
+    root: Path,
+    *,
+    membership_factory: Callable[[], Iterable[str]],
+    csv_factory: Callable[[], Iterable[str]],
+    fasta_factory: Callable[[], Iterable[str]],
+    seed: int,
+    expected_partition_rows: Mapping[str, int],
+    expected_component_count: int,
+) -> DevelopmentCacheEvidence:
+    """Reviewed real-data builder; dimensions cannot be caller-overridden."""
+
+    return _build_development_cache_from_streams(
+        root, membership_factory=membership_factory, csv_factory=csv_factory,
+        fasta_factory=fasta_factory, seed=seed,
+        sample_size=PRODUCTION_PARTITION_SIZE, width=WINDOW,
+        output_count=OUTPUT_COUNT,
+        expected_partition_rows=expected_partition_rows,
+        expected_component_count=expected_component_count,
+    )
 
 
 def write_cache(

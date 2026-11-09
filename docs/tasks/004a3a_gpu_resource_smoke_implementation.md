@@ -1,9 +1,9 @@
 # Task 004A-3A — GPU resource-smoke implementation and synthetic validation
 
-**Status:** synthetic-only implementation complete and locally verified;
-independent implementation review pending. No real-input read, Newton query,
-environment installation, GPU use or remote submission has occurred or is
-authorized by this document.
+**Status:** synthetic-only implementation and bounded E1–E6 correction are
+complete and locally verified; independent correction review is pending. No
+real-input read, Newton query, environment installation, GPU use or remote
+submission has occurred or is authorized by this document.
 
 **Parent:** `docs/tasks/004a3_newton_gpu_resource_smoke.md`
 

@@ -29,11 +29,13 @@ from rbpbench.rescnn.output import atomic_write, canonical_json
 from rbpbench.rescnn.portable_004a3 import compare_process_records
 from rbpbench.rescnn.projection_004a3 import (
     StorageInputs, TimeInputs, project_storage_bytes, project_wall_seconds,
-    require_projection_limits,
+    require_projection_limits, reviewed_slurm_limit_seconds,
 )
 from rbpbench.rescnn.environment_004a3 import sha256_file
 from rbpbench.rescnn.reproducibility import configure_strict_float32, epoch_order, initialize_paired_model
-from rbpbench.rescnn.runtime_004a3 import LiveResourceMonitor, linux_peak_rss_bytes
+from rbpbench.rescnn.runtime_004a3 import (
+    LiveResourceMonitor, linux_peak_rss_bytes, require_allocated_gpu,
+)
 from rbpbench.rescnn.timing_004a3 import benchmark_full_validation_metrics, measure_batches
 
 
@@ -62,29 +64,47 @@ def _tensor_digest(tensor: torch.Tensor) -> str:
     return digest.hexdigest()
 
 
-def _runtime_identity(runtime_manifest_sha256: str) -> dict[str, str]:
+def _runtime_identity(
+    runtime_manifest_sha256: str,
+    *,
+    required_gpu_name: str,
+    allocated_gpu_uuid: str,
+) -> dict[str, str]:
     if not torch.cuda.is_available():
         raise ResCNN004A3RunnerError("Task 004A-3 requires real CUDA")
     index = torch.cuda.current_device()
     properties = torch.cuda.get_device_properties(index)
-    uuid = getattr(properties, "uuid", None)
-    if uuid is None:
-        # nvidia-smi UUID must be injected by the reviewed launcher on versions
-        # where PyTorch does not expose it.
-        uuid = os.environ.get("RBP_ALLOCATED_GPU_UUID")
-    if not uuid:
-        raise ResCNN004A3RunnerError("GPU UUID is unavailable")
+    actual_name = torch.cuda.get_device_name(index)
+    torch_uuid = getattr(properties, "uuid", None)
+    try:
+        actual_name, uuid = require_allocated_gpu(
+            required_gpu_name=required_gpu_name,
+            allocated_gpu_uuid=allocated_gpu_uuid,
+            actual_gpu_name=actual_name,
+            torch_gpu_uuid=None if torch_uuid is None else str(torch_uuid),
+        )
+    except Exception as exc:
+        raise ResCNN004A3RunnerError(str(exc)) from exc
     return {
-        "gpu_name": torch.cuda.get_device_name(index), "gpu_uuid": str(uuid),
+        "gpu_name": actual_name, "gpu_uuid": uuid,
         "runtime_manifest_sha256": runtime_manifest_sha256,
     }
 
 
-def synthetic_cuda_probe(config_path: Path) -> dict[str, object]:
+def synthetic_cuda_probe(
+    config_path: Path,
+    *,
+    required_gpu_name: str,
+    allocated_gpu_uuid: str,
+) -> dict[str, object]:
     """Data-free real-CNN/loss/Adam probe, repeated from fresh models."""
 
     require_pre_python_environment()
     configure_strict_float32(require_cuda=True)
+    gpu = _runtime_identity(
+        "0" * 64, required_gpu_name=required_gpu_name,
+        allocated_gpu_uuid=allocated_gpu_uuid,
+    )
     config = load_config(config_path)
     oracle = run_three_step_oracle(config, device="cuda")
     signatures = []
@@ -118,7 +138,17 @@ def synthetic_cuda_probe(config_path: Path) -> dict[str, object]:
         signatures.append(by_config)
     if signatures[0] != signatures[1]:
         raise ResCNN004A3RunnerError("twice-repeated CUDA probe is not bitwise reproducible")
-    return {"oracle": oracle.__dict__, "signature": signatures[0], "repeats_equal": True}
+    return {
+        "gpu_name": gpu["gpu_name"], "gpu_uuid": gpu["gpu_uuid"],
+        "oracle": oracle.__dict__, "signature": signatures[0],
+        "repeats_equal": True,
+    }
+
+
+def resource_checkpoint_path(output_path: Path, role: str, config_id: str) -> Path:
+    if role not in ("primary", "repeat") or not config_id:
+        raise ResCNN004A3RunnerError("invalid resource-checkpoint identity")
+    return output_path.parent / role / f"{config_id}.pt"
 
 
 def _batch_from_cache(cache, indices: tuple[int, ...], device: torch.device):
@@ -142,6 +172,8 @@ def run_process(
     physical_gpu_bytes: int,
     minimum_free_disk_bytes: int,
     deadline_monotonic: float,
+    required_gpu_name: str,
+    allocated_gpu_uuid: str,
 ) -> dict[str, object]:
     process_started = time.perf_counter()
     if role not in ("primary", "repeat"):
@@ -154,7 +186,11 @@ def run_process(
     config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
     if len(source_sha256) != 64 or set(source_sha256) - set("0123456789abcdef"):
         raise ResCNN004A3RunnerError("source SHA-256 is malformed")
-    identity = _runtime_identity(runtime_manifest_sha256)
+    identity = _runtime_identity(
+        runtime_manifest_sha256, required_gpu_name=required_gpu_name,
+        allocated_gpu_uuid=allocated_gpu_uuid,
+    )
+    # Identity is checked before the first cache metadata or array read.
     cache = open_cache(cache_path)
     monitor = LiveResourceMonitor(
         physical_gpu_bytes=physical_gpu_bytes,
@@ -250,7 +286,8 @@ def run_process(
         scheduler_started = time.perf_counter()
         scheduler.step(float(metric_summary["macro_auroc"]))
         scheduler_seconds = time.perf_counter() - scheduler_started
-        checkpoint_path = output_path.with_name(f"{output_path.stem}.{loss_config.config_id}.pt")
+        checkpoint_path = resource_checkpoint_path(output_path, role, loss_config.config_id)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         checkpoint_identity = {
             "source_sha256": source_sha256, "config_sha256": config_sha256,
             "environment_sha256": runtime_manifest_sha256,
@@ -308,6 +345,8 @@ def main(argv=None) -> int:
     probe = sub.add_parser("predata-probe")
     probe.add_argument("--config", type=Path, required=True)
     probe.add_argument("--output", type=Path, required=True)
+    probe.add_argument("--required-gpu-name", required=True)
+    probe.add_argument("--allocated-gpu-uuid", required=True)
     metric = sub.add_parser("metric-benchmark")
     metric.add_argument("--bundle-config", type=Path, required=True)
     metric.add_argument("--output", type=Path, required=True)
@@ -322,6 +361,8 @@ def main(argv=None) -> int:
     run.add_argument("--physical-gpu-bytes", type=int, required=True)
     run.add_argument("--minimum-free-disk-bytes", type=int, required=True)
     run.add_argument("--deadline-monotonic", type=float, required=True)
+    run.add_argument("--required-gpu-name", required=True)
+    run.add_argument("--allocated-gpu-uuid", required=True)
     compare = sub.add_parser("compare")
     compare.add_argument("--primary", type=Path, required=True)
     compare.add_argument("--repeat", type=Path, required=True)
@@ -333,11 +374,13 @@ def main(argv=None) -> int:
     project.add_argument("--repeat", type=Path, required=True)
     project.add_argument("--metric-benchmark", type=Path, required=True)
     project.add_argument("--comparison", type=Path, required=True)
-    project.add_argument("--slurm-limit-seconds", type=int, required=True)
     project.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "predata-probe":
-        atomic_write(args.output, canonical_json(synthetic_cuda_probe(args.config)))
+        atomic_write(args.output, canonical_json(synthetic_cuda_probe(
+            args.config, required_gpu_name=args.required_gpu_name,
+            allocated_gpu_uuid=args.allocated_gpu_uuid,
+        )))
     elif args.command == "metric-benchmark":
         bundle = json.loads(args.bundle_config.read_text())
         summary = benchmark_full_validation_metrics(bundle["validation_known_counts"])
@@ -352,6 +395,8 @@ def main(argv=None) -> int:
             physical_gpu_bytes=args.physical_gpu_bytes,
             minimum_free_disk_bytes=args.minimum_free_disk_bytes,
             deadline_monotonic=args.deadline_monotonic,
+            required_gpu_name=args.required_gpu_name,
+            allocated_gpu_uuid=args.allocated_gpu_uuid,
         )
     elif args.command == "compare":
         payload = compare_process_records(
@@ -359,14 +404,22 @@ def main(argv=None) -> int:
         )
         atomic_write(args.output, canonical_json(payload))
     else:
+        bundle = json.loads(args.bundle_config.read_text())
+        slurm_limit = reviewed_slurm_limit_seconds(bundle)
         primary = json.loads(args.primary.read_text())
         repeat = json.loads(args.repeat.read_text())
         metric = json.loads(args.metric_benchmark.read_text())
-        bundle = json.loads(args.bundle_config.read_text())
         records = [primary, repeat]
         configs = [record for process in records for record in process["config_records"].values()]
-        checkpoint_paths = sorted(args.primary.parent.glob("*.pt"))
-        if len(checkpoint_paths) != 6:
+        config_ids = set(primary["config_records"])
+        if config_ids != set(repeat["config_records"]):
+            raise ResCNN004A3RunnerError("projection config identities differ")
+        expected_checkpoints = {
+            args.primary.parent / role / f"{config_id}.pt"
+            for role in ("primary", "repeat") for config_id in config_ids
+        }
+        checkpoint_paths = sorted(args.primary.parent.glob("*/*.pt"))
+        if set(checkpoint_paths) != expected_checkpoints or len(checkpoint_paths) != 6:
             raise ResCNN004A3RunnerError("projection requires six resource-smoke checkpoints")
         hash_started = time.perf_counter()
         hashed_bytes = 0
@@ -406,7 +459,7 @@ def main(argv=None) -> int:
         free = shutil.disk_usage(args.bundle_root).free
         require_projection_limits(
             projected_wall_seconds=float(wall["projected_seconds"]),
-            slurm_limit_seconds=args.slurm_limit_seconds,
+            slurm_limit_seconds=slurm_limit,
             projected_storage_bytes=int(storage["projected_bytes"]), free_bytes=free,
             quota_available_bytes=int(bundle["quota_available_bytes"]),
         )

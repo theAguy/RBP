@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=rbp-004a3-smoke
-#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
@@ -21,10 +20,11 @@ export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 VECLIB_MAXIMUM
 }
 CANDIDATE="run/.candidate-${SLURM_JOB_ID}"
 mkdir -p "$CANDIDATE"
+STAGE="initialization"
 on_failure() {
   status=$?
   rm -rf -- "$CANDIDATE"
-  printf '{"schema_version":"task004a3_stopped_v1","status":"STOPPED","exit_status":%d,"retry_authorized":false}\n' "$status" > run/STOPPED.json
+  printf '{"schema_version":"task004a3_stopped_v1","status":"STOPPED","stage":"%s","exit_status":%d,"retry_authorized":false}\n' "$STAGE" "$status" > run/STOPPED.json
   mkdir -p return
   "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.portable_004a3 package-return \
     --root run --payload run/STOPPED.json \
@@ -33,53 +33,67 @@ on_failure() {
 }
 trap on_failure ERR INT TERM
 PHYSICAL_GPU_BYTES=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | awk 'NR==1 {printf "%.0f", $1*1024*1024}')
+RBP_ALLOCATED_GPU_UUID=$(nvidia-smi --query-gpu=uuid --format=csv,noheader | awk 'NR==1 {print $1}')
+export RBP_ALLOCATED_GPU_UUID
 REQUESTED_RAM_BYTES=$((32 * 1024 * 1024 * 1024))
 MINIMUM_FREE_DISK_BYTES=$((20 * 1024 * 1024 * 1024))
 DEADLINE_MONOTONIC=$("$RBP_004A3_ENV_PREFIX/bin/python" -c 'import time; print(time.monotonic()+13800)')
 
+STAGE="bundle_verification"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.portable_004a3 \
   verify --bundle "$RBP_004A3_ROOT"
-read -r RUNTIME_SHA256 SOURCE_SHA256 < <(
+read -r RUNTIME_SHA256 SOURCE_SHA256 REQUIRED_GPU_NAME < <(
   "$RBP_004A3_ENV_PREFIX/bin/python" -c \
-    'import json; c=json.load(open("BUNDLE_CONFIG.json")); print(c["runtime_manifest_sha256"], c["source_sha256"])'
+    'import json; c=json.load(open("BUNDLE_CONFIG.json")); print(c["runtime_manifest_sha256"], c["source_sha256"], c["required_gpu_name"])'
 )
+STAGE="environment_verification"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.environment_004a3 \
   --prefix "$RBP_004A3_ENV_PREFIX" --manifest manifests/runtime_manifest.json \
   --lock manifests/environment.lock --bundle-config BUNDLE_CONFIG.json
 
 # The accepted suites and data-free probe are hard pre-data gates.
+STAGE="focused_tests"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m pytest -q \
   tests/test_rescnn_004a_contract.py tests/test_rescnn_004a_fidelity.py \
   tests/test_rescnn_004a2_data.py tests/test_rescnn_004a2_runtime.py \
   tests/test_rescnn_004a3.py
+STAGE="predata_probe"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.runner_004a3 predata-probe \
-  --config configs/models/task004a_v1.toml --output "$CANDIDATE/predata_probe.json"
+  --config configs/models/task004a_v1.toml --output "$CANDIDATE/predata_probe.json" \
+  --required-gpu-name "$REQUIRED_GPU_NAME" --allocated-gpu-uuid "$RBP_ALLOCATED_GPU_UUID"
+STAGE="full_metric_benchmark"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.runner_004a3 metric-benchmark \
   --bundle-config BUNDLE_CONFIG.json --output "$CANDIDATE/full_metric_benchmark.json"
 
 # Separate Python processes: a failed primary prevents repeat.
+STAGE="primary"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.runner_004a3 run \
   --role primary --config configs/models/task004a_v1.toml --cache data/cache \
   --runtime-manifest-sha256 "$RUNTIME_SHA256" \
   --source-sha256 "$SOURCE_SHA256" \
   --requested-ram-bytes "$REQUESTED_RAM_BYTES" --physical-gpu-bytes "$PHYSICAL_GPU_BYTES" \
   --minimum-free-disk-bytes "$MINIMUM_FREE_DISK_BYTES" --deadline-monotonic "$DEADLINE_MONOTONIC" \
+  --required-gpu-name "$REQUIRED_GPU_NAME" --allocated-gpu-uuid "$RBP_ALLOCATED_GPU_UUID" \
   --output "$CANDIDATE/primary.json"
+STAGE="repeat"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.runner_004a3 run \
   --role repeat --config configs/models/task004a_v1.toml --cache data/cache \
   --runtime-manifest-sha256 "$RUNTIME_SHA256" \
   --source-sha256 "$SOURCE_SHA256" \
   --requested-ram-bytes "$REQUESTED_RAM_BYTES" --physical-gpu-bytes "$PHYSICAL_GPU_BYTES" \
   --minimum-free-disk-bytes "$MINIMUM_FREE_DISK_BYTES" --deadline-monotonic "$DEADLINE_MONOTONIC" \
+  --required-gpu-name "$REQUIRED_GPU_NAME" --allocated-gpu-uuid "$RBP_ALLOCATED_GPU_UUID" \
   --output "$CANDIDATE/repeat.json"
+STAGE="comparison"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.runner_004a3 compare \
   --primary "$CANDIDATE/primary.json" --repeat "$CANDIDATE/repeat.json" \
   --output "$CANDIDATE/comparison.json"
+STAGE="projection"
 "$RBP_004A3_ENV_PREFIX/bin/python" -m rbpbench.rescnn.runner_004a3 project \
   --bundle-root "$RBP_004A3_ROOT" --bundle-config BUNDLE_CONFIG.json \
   --primary "$CANDIDATE/primary.json" --repeat "$CANDIDATE/repeat.json" \
   --metric-benchmark "$CANDIDATE/full_metric_benchmark.json" \
-  --comparison "$CANDIDATE/comparison.json" --slurm-limit-seconds 14400 \
+  --comparison "$CANDIDATE/comparison.json" \
   --output "$CANDIDATE/FINAL_REPORT.json"
 trap - ERR INT TERM
 mv "$CANDIDATE" run/accepted

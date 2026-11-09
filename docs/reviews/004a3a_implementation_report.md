@@ -62,6 +62,19 @@ The final bounded correction adds:
 - **E6:** the positive discovery-derived 004A-4 Slurm limit in bundle config,
   replacing the smoke allocation's hard-coded four-hour value.
 
+The second bounded correction adds:
+
+- **F1:** discovery parsing and validation now live in the standard-library-
+  only `rbpbench.discovery_004a3` module. The discovery job writes
+  `DISCOVERY.json`, its return ZIP and checksum before invoking validation.
+  Missing, unlimited or malformed partition `MaxTime` becomes preserved null
+  evidence plus an error reason, which the validator then refuses. Discovery
+  subprocess capture is compatible with Python 3.6 and never imports the
+  PyTorch-loading `rbpbench.rescnn` package.
+- **F2:** allocated and PyTorch GPU UUIDs are stripped, lowercased and compared
+  without an optional `GPU-` prefix. The normalized UUID is recorded by both
+  processes; malformed or genuinely different UUIDs remain hard failures.
+
 The package records validation known counts as aggregate evidence, so the
 worst-case metric benchmark runs before the cache is opened. Primary and
 repeat are separate Python invocations; repeat cannot launch after primary
@@ -101,6 +114,20 @@ Nine targeted corrected regressions were copied onto a disposable archive of
 builder, checkpoint-path helper, discovery schema/commands, GPU-policy
 arguments, reviewed-limit resolver, full-count extraction and focused-suite
 bundle dependencies. The same regressions pass on the correction.
+
+After F1–F2, the complete focused suite was again run twice with all four
+thread variables fixed at four:
+
+- F1–F2 run 1: **95 passed, 62 subtests passed**, no skips, in 71.36 s;
+- F1–F2 run 2: **95 passed, 62 subtests passed**, no skips, in 71.60 s.
+
+Both runs reported the same two known non-failing warnings above. The 004A-3A
+file alone has **31 passing tests and 42 passing subtests**. Four targeted
+F1/F2 regressions were copied onto a disposable archive of exact parent
+`e658161`; all four failed for the expected reasons: the standard-library
+module and MaxTime parser were absent, the validator still preceded archive
+creation and entered `rbpbench.rescnn`, and UUID comparison remained literal.
+The same four pass after the correction.
 
 All Newton shell files pass `/bin/bash -n`; Python sources pass compilation;
 `git diff --check` is clean.

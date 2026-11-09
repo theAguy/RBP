@@ -5,6 +5,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -66,6 +68,7 @@ def _complete_discovery_payload():
         "free_disk_bytes": 10**12, "quota_available_bytes": 10**12,
         "operator_quota_available_bytes": 10**12,
         "slurm_limit_seconds": 172800,
+        "slurm_limit_error": None,
         "compute_node_required_channels_reachable": False,
         "site_approved_install_location": "login_node",
         "gpu_csv": "NVIDIA A100, GPU-1, 81920 MiB, 8.0, 550",
@@ -360,8 +363,77 @@ class ProjectionAndResourceTests(unittest.TestCase):
         ):
             self.assertIn(fragment, script)
 
+    def test_discovery_validator_import_and_execution_do_not_require_torch(self):
+        payload = _complete_discovery_payload()
+        with tempfile.TemporaryDirectory() as tmp:
+            discovery = Path(tmp) / "DISCOVERY.json"
+            discovery.write_text(json.dumps(payload))
+            code = (
+                "import json, pathlib, sys; "
+                "sys.modules['torch'] = None; "
+                "from rbpbench.discovery_004a3 import require_discovery_payload; "
+                "require_discovery_payload(json.loads(pathlib.Path(sys.argv[1]).read_text()))"
+            )
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(ROOT / "src")
+            result = subprocess.run(
+                [sys.executable, "-c", code, str(discovery)], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_discovery_return_precedes_stdlib_validation_and_is_python36_compatible(self):
+        script = (ROOT / "hpc/newton/004a3/01_DISCOVERY.sbatch").read_text()
+        checksum_write = script.index("Path(str(destination)+'.sha256')")
+        validator = script.index("python3 -m rbpbench.discovery_004a3")
+        self.assertLess(checksum_write, validator)
+        self.assertNotIn("capture_output=", script)
+        self.assertNotIn("text=", script)
+        self.assertNotIn("rbpbench.rescnn", script)
+
+    def test_discovery_limit_evidence_survives_unlimited_but_validator_refuses_it(self):
+        from rbpbench.discovery_004a3 import parse_slurm_max_time
+
+        seconds, reason = parse_slurm_max_time("UNLIMITED")
+        self.assertIsNone(seconds)
+        self.assertIn("not a finite", reason)
+        for value in (None, 0, -1):
+            payload = _complete_discovery_payload()
+            payload["slurm_limit_seconds"] = value
+            payload["slurm_limit_error"] = reason if value is None else None
+            with self.subTest(value=value), self.assertRaises(ResCNN004A3RuntimeError):
+                runtime_004a3.require_discovery_payload(payload)
+
+    def test_gpu_uuid_normalization_accepts_prefix_case_only_and_rejects_drift(self):
+        bare = "58a8c3e2-1234-4abc-8def-1234567890ab"
+        actual_name, normalized = runtime_004a3.require_allocated_gpu(
+            required_gpu_name="NVIDIA A100", actual_gpu_name="NVIDIA A100",
+            allocated_gpu_uuid=" GPU-58A8C3E2-1234-4ABC-8DEF-1234567890AB ",
+            torch_gpu_uuid=bare,
+        )
+        self.assertEqual(actual_name, "NVIDIA A100")
+        self.assertEqual(normalized, bare)
+        with self.assertRaisesRegex(ResCNN004A3RuntimeError, "does not match"):
+            runtime_004a3.require_allocated_gpu(
+                required_gpu_name="NVIDIA A100", actual_gpu_name="NVIDIA A100",
+                allocated_gpu_uuid="GPU-58A8C3E2-1234-4ABC-8DEF-1234567890AB",
+                torch_gpu_uuid="68a8c3e2-1234-4abc-8def-1234567890ab",
+            )
+        for malformed in ("", "GPU-", "GPU-1", "not-a-uuid"):
+            with self.subTest(malformed=malformed), self.assertRaisesRegex(
+                ResCNN004A3RuntimeError, "malformed",
+            ):
+                runtime_004a3.require_allocated_gpu(
+                    required_gpu_name="NVIDIA A100", actual_gpu_name="NVIDIA A100",
+                    allocated_gpu_uuid=malformed, torch_gpu_uuid=bare,
+                )
+
     def test_gpu_policy_mismatch_precedes_cache_open(self):
-        properties = type("Properties", (), {"uuid": "GPU-1"})()
+        allocated_uuid = "GPU-58A8C3E2-1234-4ABC-8DEF-1234567890AB"
+        properties = type("Properties", (), {
+            "uuid": "58a8c3e2-1234-4abc-8def-1234567890ab",
+        })()
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.dict(os.environ, THREAD_ENV, clear=False), \
              mock.patch.object(runner_004a3, "configure_strict_float32"), \
@@ -378,7 +450,7 @@ class ProjectionAndResourceTests(unittest.TestCase):
                     runtime_manifest_sha256="a" * 64, source_sha256="b" * 64,
                     requested_ram_bytes=100, physical_gpu_bytes=100,
                     minimum_free_disk_bytes=1, deadline_monotonic=1,
-                    required_gpu_name="NVIDIA A100", allocated_gpu_uuid="GPU-1",
+                    required_gpu_name="NVIDIA A100", allocated_gpu_uuid=allocated_uuid,
                 )
             cache_open.assert_not_called()
 

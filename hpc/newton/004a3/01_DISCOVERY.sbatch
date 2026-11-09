@@ -13,16 +13,17 @@ set -Eeuo pipefail
 [[ "$RBP_004A3_INSTALL_LOCATION" == login_node || "$RBP_004A3_INSTALL_LOCATION" == cpu_job ]] || exit 2
 cd "$RBP_004A3_ROOT"
 mkdir -p discovery
-command -v nvidia-smi >/dev/null
-nvidia-smi --query-gpu=name,uuid,memory.total,compute_cap,driver_version --format=csv,noheader > discovery/gpu.csv
+nvidia-smi --query-gpu=name,uuid,memory.total,compute_cap,driver_version \
+  --format=csv,noheader > discovery/gpu.csv 2> discovery/gpu_query.stderr || true
 CHANNELS_REACHABLE=true
 for url in https://conda.anaconda.org/pytorch/ https://conda.anaconda.org/nvidia/ https://conda.anaconda.org/conda-forge/; do
   curl --fail --head --location --max-time 20 "$url" >/dev/null 2>&1 || CHANNELS_REACHABLE=false
 done
 export CHANNELS_REACHABLE
-python3 - <<'PY'
+PYTHONPATH=src python3 - <<'PY'
 import json, os, platform, re, shutil, subprocess
 from pathlib import Path
+from rbpbench.discovery_004a3 import parse_slurm_max_time
 
 def command_evidence(argv, *, shell=False, first_line=False):
     executable = argv if shell else argv[0]
@@ -30,7 +31,8 @@ def command_evidence(argv, *, shell=False, first_line=False):
     if not available:
         return {"available": False, "returncode": None, "stdout": "", "stderr": ""}
     result = subprocess.run(
-        argv, shell=shell, text=True, capture_output=True, check=False,
+        argv, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True, check=False,
         executable="/bin/bash" if shell else None,
     )
     stdout = result.stdout
@@ -44,23 +46,8 @@ def command_evidence(argv, *, shell=False, first_line=False):
 partition = os.environ["SLURM_JOB_PARTITION"]
 partition_detail = command_evidence(["scontrol", "show", "partition", partition])
 match = re.search(r"(?:^|\s)MaxTime=([^\s]+)", partition_detail["stdout"])
-if match is None:
-    raise SystemExit("scontrol partition output lacks MaxTime")
-raw_limit = match.group(1)
-def slurm_seconds(value):
-    if value in {"UNLIMITED", "INFINITE"}:
-        raise ValueError("partition MaxTime is not a finite reviewed limit")
-    days = 0
-    if "-" in value:
-        day_text, value = value.split("-", 1); days = int(day_text)
-    fields = [int(part) for part in value.split(":")]
-    if len(fields) == 3:
-        hours, minutes, seconds = fields
-    elif len(fields) == 2:
-        hours, minutes, seconds = 0, fields[0], fields[1]
-    else:
-        raise ValueError(f"unsupported Slurm MaxTime: {raw_limit}")
-    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+raw_limit = None if match is None else match.group(1)
+slurm_limit_seconds, slurm_limit_error = parse_slurm_max_time(raw_limit)
 
 mem={}
 for line in Path('/proc/meminfo').read_text().splitlines():
@@ -76,11 +63,12 @@ payload = {
   "free_disk_bytes": shutil.disk_usage(".").free,
   "quota_available_bytes": int(os.environ["RBP_004A3_QUOTA_AVAILABLE_BYTES"]),
   "operator_quota_available_bytes": int(os.environ["RBP_004A3_QUOTA_AVAILABLE_BYTES"]),
-  "slurm_limit_seconds": slurm_seconds(raw_limit),
+  "slurm_limit_seconds": slurm_limit_seconds,
+  "slurm_limit_error": slurm_limit_error,
   "compute_node_required_channels_reachable": os.environ["CHANNELS_REACHABLE"] == "true",
   "site_approved_install_location": os.environ["RBP_004A3_INSTALL_LOCATION"],
   "gpu_csv": Path("discovery/gpu.csv").read_text().strip(),
-  "nvidia_smi": subprocess.run(["nvidia-smi"], text=True, capture_output=True, check=True).stdout,
+  "nvidia_smi": command_evidence(["nvidia-smi"])["stdout"],
   "slurm_partition_detail": partition_detail,
   "sinfo_gpu_inventory": command_evidence(["sinfo", "-h", "-o", "%P|%l|%G|%f"]),
   "os_release": command_evidence(["cat", "/etc/os-release"]),
@@ -101,12 +89,6 @@ payload = {
 }
 Path("discovery/DISCOVERY.json").write_text(json.dumps(payload, indent=2, sort_keys=True)+"\n")
 PY
-PYTHONPATH=src python3 - <<'PY'
-import json
-from pathlib import Path
-from rbpbench.rescnn.runtime_004a3 import require_discovery_payload
-require_discovery_payload(json.loads(Path("discovery/DISCOVERY.json").read_text()))
-PY
 python3 - <<'PY'
 import hashlib, zipfile
 from pathlib import Path
@@ -117,4 +99,6 @@ with zipfile.ZipFile(destination,'x',compression=zipfile.ZIP_DEFLATED) as z:
 digest=hashlib.sha256(destination.read_bytes()).hexdigest()
 Path(str(destination)+'.sha256').write_text(f'{digest}  {destination.name}\n')
 PY
+PYTHONPATH=src python3 -m rbpbench.discovery_004a3 \
+  --validate discovery/DISCOVERY.json
 printf 'Discovery requires reviewed channel-reachability and install-location fields.\n'

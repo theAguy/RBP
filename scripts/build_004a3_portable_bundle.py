@@ -19,6 +19,7 @@ from rbpbench.rescnn.runtime_004a3 import require_discovery_payload
 
 SOURCE_FILES = (
     "src/rbpbench/__init__.py",
+    "src/rbpbench/discovery_004a3.py",
     "src/rbpbench/baselines/__init__.py",
     "src/rbpbench/baselines/data.py",
     "src/rbpbench/baselines/metrics.py",

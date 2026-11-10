@@ -101,6 +101,19 @@ def _reviewed_scheduler_policy(discovery: dict) -> dict[str, object]:
     }
 
 
+def _reviewed_routing_policy(
+    discovery: dict, *, slurm_partition: str, slurm_account: str,
+) -> dict[str, str]:
+    for label, value in (("Slurm partition", slurm_partition), ("Slurm account", slurm_account)):
+        if not value or any(character in value for character in ("\n", "\r", "|")):
+            raise RuntimeError(f"{label} is empty or malformed")
+    if slurm_partition != discovery.get("slurm_partition"):
+        raise RuntimeError("reviewed Slurm partition differs from discovery")
+    if slurm_account != discovery.get("slurm_account"):
+        raise RuntimeError("reviewed Slurm account differs from discovery")
+    return {"slurm_partition": slurm_partition, "slurm_account": slurm_account}
+
+
 def _copy(repo: Path, destination: Path, relative: str) -> None:
     source = repo / relative
     if source.is_symlink() or not source.is_file():
@@ -185,6 +198,7 @@ def build_bundle(
     environment_lock: Path, runtime_manifest: Path, task004a2_summary: Path,
     expected_lock_sha256: str, expected_runtime_sha256: str,
     required_gpu_name: str, gpu_gres: str, gpu_constraint: str, gpu_nodelist: str,
+    slurm_partition: str, slurm_account: str,
 ) -> Path:
     repo = repo.resolve()
     destination = destination.resolve()
@@ -193,6 +207,9 @@ def build_bundle(
     parsed_discovery = require_discovery_payload(json.loads(discovery.read_text()))
     install_location = require_discovery_install_policy(parsed_discovery)
     scheduler_policy = _reviewed_scheduler_policy(parsed_discovery)
+    routing_policy = _reviewed_routing_policy(
+        parsed_discovery, slurm_partition=slurm_partition, slurm_account=slurm_account,
+    )
     _validate_gpu_policy(required_gpu_name, gpu_gres, gpu_constraint, gpu_nodelist)
     if sha256_file(environment_lock) != expected_lock_sha256:
         raise RuntimeError("environment lock hash mismatch")
@@ -239,6 +256,7 @@ def build_bundle(
             "site_approved_install_location": install_location,
             "quota_available_bytes": int(parsed_discovery["quota_available_bytes"]),
             **scheduler_policy,
+            **routing_policy,
             "required_gpu_name": required_gpu_name,
             "gpu_gres": gpu_gres,
             "gpu_constraint": gpu_constraint,
@@ -295,6 +313,8 @@ def main(argv=None) -> int:
     parser.add_argument("--gpu-gres", required=True)
     parser.add_argument("--gpu-constraint", default="")
     parser.add_argument("--gpu-nodelist", required=True)
+    parser.add_argument("--slurm-partition", required=True)
+    parser.add_argument("--slurm-account", required=True)
     parser.add_argument("--archive", action="store_true")
     args = parser.parse_args(argv)
     bundle = build_bundle(
@@ -306,6 +326,7 @@ def main(argv=None) -> int:
         expected_runtime_sha256=args.runtime_manifest_sha256,
         required_gpu_name=args.required_gpu_name, gpu_gres=args.gpu_gres,
         gpu_constraint=args.gpu_constraint, gpu_nodelist=args.gpu_nodelist,
+        slurm_partition=args.slurm_partition, slurm_account=args.slurm_account,
     )
     if args.archive:
         print(json.dumps(archive_bundle(bundle), sort_keys=True))

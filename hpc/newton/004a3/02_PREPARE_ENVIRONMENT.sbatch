@@ -13,10 +13,10 @@ ROOT=$(cd "$RBP_004A3_ROOT" && pwd -P)
 cd "$ROOT"
 WORK="$ROOT/environment_work/job_${SLURM_JOB_ID:-unknown}"
 RETURN="$ROOT/environment_return"
-STAGING="$WORK/solve_prefix"
+STAGING="$ROOT/environment_staging/job_${SLURM_JOB_ID:-unknown}/solve_prefix"
 FINAL=""
 START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-mkdir -p "$WORK" "$RETURN"
+mkdir -p "$WORK" "$RETURN" "$(dirname "$STAGING")"
 
 package_return() {
   local status=$1
@@ -157,5 +157,6 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(rows,indent=2,sort_keys=True)+'\
 PY
 
 rm -rf "$STAGING"
+rmdir "$(dirname "$STAGING")"
 package_return COMPLETED
 trap - ERR INT TERM

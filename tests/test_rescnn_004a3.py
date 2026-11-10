@@ -23,7 +23,7 @@ from rbpbench.rescnn.cache_004a3 import (
     CacheRow, open_cache, require_accepted_count_matrix,
     select_development_rows, write_cache,
 )
-from rbpbench.rescnn.data_004a2 import SampleCandidate
+from rbpbench.rescnn.data_004a2 import DevelopmentCounts, SampleCandidate
 from rbpbench.rescnn.checkpoint import (
     atomic_save_resource_smoke_checkpoint, load_resource_smoke_model_checkpoint,
     ResCNNCheckpointError,
@@ -120,13 +120,18 @@ class CacheTests(unittest.TestCase):
             self.assertFalse(cache.metadata["test_accessed"])
 
     def test_gate_a_matrix_must_equal_accepted_004a2_matrix(self):
-        matrix = {"train": {"positive": [1], "negative": [2]}}
-        require_accepted_count_matrix(matrix, {"audit": {"development_counts": matrix}})
+        counts = DevelopmentCounts(
+            rows={"train": 3, "validation": 4},
+            positive={"train": (1, 2), "validation": (2, 1)},
+            negative={"train": (1, 0), "validation": (1, 2)},
+        )
+        matrix = counts.matrix()
+        accepted = json.loads(json.dumps(matrix))
+        require_accepted_count_matrix(matrix, {"audit": {"development_counts": accepted}})
+        changed = json.loads(json.dumps(accepted))
+        changed["train"]["positive"][0] += 1
         with self.assertRaisesRegex(Exception, "accepted Task 004A-2"):
-            require_accepted_count_matrix(
-                {"train": {"positive": [2], "negative": [2]}},
-                {"audit": {"development_counts": matrix}},
-            )
+            require_accepted_count_matrix(matrix, {"audit": {"development_counts": changed}})
 
     def test_cache_failure_is_transactional(self):
         bad = list(_cache_rows())
@@ -727,9 +732,16 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
         submit = (ROOT / "hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh").read_text()
         self.assertIn("RBP_004A3_CPU_PARTITION", submit)
         self.assertIn("RBP_004A3_CPU_ACCOUNT", submit)
+        staging_assignment = next(
+            line for line in job.splitlines() if line.startswith('STAGING=')
+        )
+        self.assertNotIn('$WORK/', staging_assignment)
+        self.assertIn('environment_staging', staging_assignment)
         smoke_submit = (ROOT / "hpc/newton/004a3/03_SUBMIT_SMOKE.sh").read_text()
         self.assertIn('c["gpu_nodelist"]', smoke_submit)
         self.assertIn('--nodelist="$GPU_NODELIST"', smoke_submit)
+        self.assertIn('--partition="$SLURM_PARTITION"', smoke_submit)
+        self.assertIn('--account="$SLURM_ACCOUNT"', smoke_submit)
 
     def test_launcher_exports_before_separate_python_processes(self):
         script = (ROOT / "hpc/newton/004a3/RUN_004A3_SMOKE.sbatch").read_text()
@@ -847,6 +859,7 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
                     expected_runtime_sha256=sha256_file(runtime),
                     required_gpu_name="NVIDIA A100", gpu_gres="gpu:a100:1",
                     gpu_constraint="a100", gpu_nodelist="synthetic-a100",
+                    slurm_partition="gpu", slurm_account="synthetic",
                 )
             with mock.patch.object(
                 builder, "_full_validation_known_counts", return_value=[10000] * 122,
@@ -859,6 +872,7 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
                     expected_runtime_sha256=sha256_file(runtime),
                     required_gpu_name="NVIDIA A100", gpu_gres="gpu:a100:1",
                     gpu_constraint="a100", gpu_nodelist="synthetic-a100",
+                    slurm_partition="gpu", slurm_account="synthetic",
                 )
             verify_bundle(bundle)
             bundled_config = json.loads((bundle / "BUNDLE_CONFIG.json").read_text())
@@ -878,6 +892,8 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             self.assertEqual(bundled_config["smoke_requeue_policy"], "disabled_fail_closed")
             self.assertEqual(bundled_config["required_gpu_name"], "NVIDIA A100")
             self.assertEqual(bundled_config["gpu_nodelist"], "synthetic-a100")
+            self.assertEqual(bundled_config["slurm_partition"], "gpu")
+            self.assertEqual(bundled_config["slurm_account"], "synthetic")
             for relative in (
                 "intRBP ResCNN - for students.ipynb",
                 "manifests/task003b_phase_a_003b3.json",
@@ -923,6 +939,23 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
         builder._validate_gpu_policy("NVIDIA L40S", "gpu:L40:1", "", "nlp-l40-2")
         with self.assertRaisesRegex(RuntimeError, "nlp-l40-2"):
             builder._validate_gpu_policy("NVIDIA L40S", "gpu:L40:1", "", "other-node")
+
+    def test_bundle_routing_must_match_discovery(self):
+        spec = importlib.util.spec_from_file_location(
+            "build_004a3_bundle_routing", ROOT / "scripts/build_004a3_portable_bundle.py",
+        )
+        builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+        discovery = _complete_discovery_payload()
+        self.assertEqual(
+            builder._reviewed_routing_policy(
+                discovery, slurm_partition="gpu", slurm_account="synthetic",
+            ),
+            {"slurm_partition": "gpu", "slurm_account": "synthetic"},
+        )
+        with self.assertRaisesRegex(RuntimeError, "partition"):
+            builder._reviewed_routing_policy(
+                discovery, slurm_partition="other", slurm_account="synthetic",
+            )
 
     def test_project_limit_must_fit_a_finite_partition_limit(self):
         spec = importlib.util.spec_from_file_location(

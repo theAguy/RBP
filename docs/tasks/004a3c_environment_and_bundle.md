@@ -150,6 +150,8 @@ The bundle freezes:
 
 - scheduler request `gpu:L40:1`;
 - required runtime name `NVIDIA L40S`;
+- scheduler partition `public` and account `cs`, exactly matching accepted
+  discovery;
 - node binding `nlp-l40-2`, the discovery allocation that directly proved the
   scheduler's `L40` resource was an `NVIDIA L40S` (the discovery evidence did
   not prove that every public `L40` node has the same model);

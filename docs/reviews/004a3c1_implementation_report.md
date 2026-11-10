@@ -39,8 +39,10 @@ query Newton, submit Slurm, use CUDA or build a production cache/bundle.
 The accepted five-file local CPU suite was run twice with all four numerical
 thread variables set to four:
 
-- run 1: 108 passed, 73 subtests passed, 2 warnings, 99.71 seconds;
-- run 2: 108 passed, 73 subtests passed, 2 warnings, 84.04 seconds.
+- final corrected run 1: 109 passed, 73 subtests passed, 2 warnings,
+  81.60 seconds;
+- final corrected run 2: 109 passed, 73 subtests passed, 2 warnings,
+  79.76 seconds.
 
 The warnings are the pre-existing PyTorch TypedStorage deprecation and the
 thread-reset warning in the notebook-fidelity test. Every new shell script
@@ -56,3 +58,23 @@ same regressions pass at the corrected head.
 
 The CPU environment job (004A-3C-2), real local cache/bundle build (004A-3C-3)
 and GPU smoke (004A-3D) remain unauthorized.
+
+## Bounded review corrections C1-C3
+
+The independent implementation review found three pre-execution defects, now
+corrected without changing scientific constants:
+
+- C1: the multi-gigabyte solve prefix is now outside the returned evidence
+  tree. A failed job records its location but packages only the small evidence
+  directory.
+- C2: the accepted-matrix verifier canonicalizes the observed tuple-based
+  `DevelopmentCounts.matrix()` through JSON before strict comparison with the
+  list-based accepted JSON. A real `DevelopmentCounts` regression proves both
+  equality and one-count drift refusal.
+- C3: the bundle requires its Slurm partition/account to equal discovery, and
+  the smoke submit wrapper passes both. The frozen production values are
+  `public` and `cs`.
+
+All three corrected regressions were copied to a disposable archive of
+`def1c35`; C1, C2 and C3 each failed there for the intended reason and pass at
+the corrected head.

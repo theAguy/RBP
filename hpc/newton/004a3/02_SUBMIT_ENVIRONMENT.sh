@@ -9,7 +9,7 @@ if [[ -n "${RBP_004A3_CPU_ACCOUNT:-}" && ! "$RBP_004A3_CPU_ACCOUNT" =~ ^[A-Za-z0
 fi
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd -P)
 cd "$ROOT"
-[[ ! -e environment_return && ! -e environment_work ]] || {
+[[ ! -e environment_return && ! -e environment_work && ! -e environment_staging ]] || {
   echo "Refusing pre-existing environment evidence/work root" >&2; exit 1;
 }
 SBATCH_ARGS=(--partition="$RBP_004A3_CPU_PARTITION")

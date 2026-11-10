@@ -173,7 +173,8 @@ def require_accepted_count_matrix(
     observed: Mapping[str, object], accepted_summary: Mapping[str, object],
 ) -> None:
     expected = accepted_summary.get("audit", {}).get("development_counts")
-    if not isinstance(expected, dict) or observed != expected:
+    normalized = json.loads(json.dumps(observed, sort_keys=True))
+    if not isinstance(expected, dict) or normalized != expected:
         raise ResCNN004A3CacheError(
             "Gate-A development matrix differs from accepted Task 004A-2 evidence"
         )

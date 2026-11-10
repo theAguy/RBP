@@ -1,4 +1,4 @@
-# Claude handoff — Task 004A-3C-2 handoff corrections D1-D3
+# Claude handoff — Task 004A-3C-2 handoff corrections D1-D3 and E1
 
 Review the handoff correction using:
 

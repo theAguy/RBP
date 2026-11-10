@@ -27,3 +27,30 @@ Reported verification:
 
 Static review only. Do not connect, install, submit, access data or authorize
 execution.
+
+## E1 follow-up
+
+The first D1-D3 review approved those corrections but found that enabling
+`set -Eeuo pipefail` in the operator's live SSH shell could disconnect the
+session and lose the validated variables. The handoff now:
+
+- does not enable strict mode in the interactive shell;
+- sets `PREFLIGHT_OK` only after rechecking every prerequisite, the newly
+  created checkout and Newton visibility;
+- chains the actual submit command behind a fresh absolute/executable Conda
+  guard, the evidence file and `PREFLIGHT_OK`;
+- instructs the operator to repeat the complete preflight after any disconnect;
+- verifies that saved `sacct` evidence contains the requested job row.
+
+Please include E1 in the same static correction verdict.
+
+E1 verification:
+
+- the extended regression fails on parent `7d03b0d` because strict mode is
+  still present there;
+- corrected `test_rescnn_004a3.py` run 1: 46 passed, 53 subtests, one
+  pre-existing warning, 6.73 seconds;
+- corrected run 2: 46 passed, 53 subtests, one pre-existing warning,
+  6.11 seconds;
+- the earlier post-D1-D3 complete five-file runs remain 110 passed and 73
+  subtests twice.

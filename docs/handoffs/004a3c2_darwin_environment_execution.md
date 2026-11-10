@@ -23,22 +23,17 @@ Resolve an existing Conda installation to an absolute executable path. Do not
 install a new package manager in this checkpoint:
 
 ```bash
-set -Eeuo pipefail
 RBP_004A3_CONDA_EXE=${CONDA_EXE:-$(type -P conda || true)}
 if [ -z "$RBP_004A3_CONDA_EXE" ]; then
   for candidate in "$HOME/miniconda3/bin/conda" "$HOME/anaconda3/bin/conda" "$HOME/.conda/bin/conda"; do
     if [ -x "$candidate" ]; then RBP_004A3_CONDA_EXE=$candidate; break; fi
   done
 fi
-case "$RBP_004A3_CONDA_EXE" in /*) ;; *) echo 'Conda path is not absolute'; false;; esac
-test -x "$RBP_004A3_CONDA_EXE"
-"$RBP_004A3_CONDA_EXE" --version
-python3 --version
 export RBP_004A3_CONDA_EXE
 ```
 
-If this prints no executable path, stop and report that fact. Do not submit.
-Save the printed path for `RBP_004A3_CONDA_EXE` below.
+The final preflight gate below validates this path. If the gate does not print
+`PREFLIGHT_OK`, stop and report the output. Do not submit.
 
 Confirm that the CPU partition exists and its listing is non-empty:
 
@@ -69,8 +64,13 @@ The directory must not already exist:
 
 ```bash
 cd "$HOME"
-test ! -e "$HOME/rbp_004a3_env_d11dad1"
-git clone --branch issue-003b-simple-baselines https://github.com/theAguy/RBP.git rbp_004a3_env_d11dad1
+unset RBP_004A3_CHECKOUT_WAS_ABSENT
+if test ! -e "$HOME/rbp_004a3_env_d11dad1"; then
+  export RBP_004A3_CHECKOUT_WAS_ABSENT=1
+  git clone --branch issue-003b-simple-baselines https://github.com/theAguy/RBP.git rbp_004a3_env_d11dad1
+else
+  echo 'STOP: execution checkout already exists'
+fi
 cd "$HOME/rbp_004a3_env_d11dad1"
 git checkout --detach d11dad131d4a964a24bdd0a2dc46f6a76ba7686b
 test "$(git rev-parse HEAD)" = "d11dad131d4a964a24bdd0a2dc46f6a76ba7686b"
@@ -91,32 +91,57 @@ This is a read-only check and must pass before submission:
 
 ```bash
 NEWTON_HOME=$(ssh guy.assa@newton 'cd "$HOME" && pwd -P')
-test "$NEWTON_HOME" = "$DARWIN_HOME"
-ssh guy.assa@newton \
-  "test -d '$DARWIN_HOME/rbp_004a3_env_d11dad1' && stat '$DARWIN_HOME/rbp_004a3_env_d11dad1'"
+unset RBP_004A3_NEWTON_CHECKOUT_VISIBLE
+if [ "$NEWTON_HOME" = "$DARWIN_HOME" ]; then
+  if ssh guy.assa@newton \
+    "test -d '$DARWIN_HOME/rbp_004a3_env_d11dad1' && stat '$DARWIN_HOME/rbp_004a3_env_d11dad1'"; then
+    export RBP_004A3_NEWTON_CHECKOUT_VISIBLE=1
+  fi
+else
+  echo 'STOP: Darwin and Newton HOME paths differ'
+fi
 ```
 
-Save the pre-submission evidence outside the clean checkout:
+If `ssh guy.assa@newton` does not resolve or authenticate, stop and report it.
+Do not try another hostname in this checkpoint.
+
+Run the final preflight gate. It saves evidence outside the clean checkout and
+prints `PREFLIGHT_OK` only when every prerequisite still passes:
 
 ```bash
-{
+unset RBP_004A3_PREFLIGHT_OK
+if case "$RBP_004A3_CONDA_EXE" in /*) true;; *) false;; esac \
+  && test -x "$RBP_004A3_CONDA_EXE" \
+  && "$RBP_004A3_CONDA_EXE" --version \
+  && python3 --version \
+  && test -n "$PUBLIC_PARTITION" \
+  && case "$DARWIN_HOME" in /*) true;; *) false;; esac \
+  && case "$FREE_HOME_KIB" in ''|*[!0-9]*) false;; *) true;; esac \
+  && test "$FREE_HOME_KIB" -ge 52428800 \
+  && test "$NEWTON_HOME" = "$DARWIN_HOME" \
+  && test "${RBP_004A3_CHECKOUT_WAS_ABSENT:-}" = 1 \
+  && test "${RBP_004A3_NEWTON_CHECKOUT_VISIBLE:-}" = 1 \
+  && test "$(git rev-parse HEAD)" = "d11dad131d4a964a24bdd0a2dc46f6a76ba7686b" \
+  && test -z "$(git status --porcelain --untracked-files=all)" \
+  && test ! -e environment_return \
+  && test ! -e environment_work \
+  && test ! -e environment_staging; then
+  {
+    printf 'darwin_home=%s\n' "$DARWIN_HOME"
+    printf 'newton_home=%s\n' "$NEWTON_HOME"
+    printf 'free_home_kib=%s\n' "$FREE_HOME_KIB"
+    df -P "$HOME"
+    printf 'conda_executable=%s\n' "$RBP_004A3_CONDA_EXE"
+    "$RBP_004A3_CONDA_EXE" --version
+    python3 --version
+    printf 'public_partition=%s\n' "$PUBLIC_PARTITION"
+  } > "$HOME/rbp_004a3_env_d11dad1_pre_submission.txt"
+  export RBP_004A3_PREFLIGHT_OK=1
   printf 'darwin_home=%s\n' "$DARWIN_HOME"
-  printf 'newton_home=%s\n' "$NEWTON_HOME"
-  printf 'free_home_kib=%s\n' "$FREE_HOME_KIB"
-  df -P "$HOME"
-  printf 'conda_executable=%s\n' "$RBP_004A3_CONDA_EXE"
-  "$RBP_004A3_CONDA_EXE" --version
-  python3 --version
-  printf 'public_partition=%s\n' "$PUBLIC_PARTITION"
-} > "$HOME/rbp_004a3_env_d11dad1_pre_submission.txt"
-```
-
-Confirm all job-owned output roots are absent:
-
-```bash
-test ! -e environment_return
-test ! -e environment_work
-test ! -e environment_staging
+  echo PREFLIGHT_OK
+else
+  echo 'PREFLIGHT_FAILED: stop and report; do not submit'
+fi
 ```
 
 ## Submit once
@@ -124,12 +149,20 @@ test ! -e environment_staging
 Use the already validated and exported Conda path:
 
 ```bash
-export RBP_004A3_CPU_PARTITION=public
-unset RBP_004A3_CPU_ACCOUNT
-export RBP_SLURM_MAIL_USER=guyassa@gmail.com
-
-bash hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh
+: "${RBP_004A3_CONDA_EXE:?re-run preflight}" \
+  && case "$RBP_004A3_CONDA_EXE" in /*) true;; *) false;; esac \
+  && test -x "$RBP_004A3_CONDA_EXE" \
+  && test -s "$HOME/rbp_004a3_env_d11dad1_pre_submission.txt" \
+  && test "${RBP_004A3_PREFLIGHT_OK:-}" = 1 \
+  && export RBP_004A3_CPU_PARTITION=public \
+  && unset RBP_004A3_CPU_ACCOUNT \
+  && export RBP_SLURM_MAIL_USER=guyassa@gmail.com \
+  && bash hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh
 ```
+
+If the SSH session drops at any point before submission, log in again and
+repeat the full preflight from the Conda-resolution block. Do not run only the
+submit block.
 
 Record the job number printed by `sbatch`:
 
@@ -160,9 +193,11 @@ than only printing it:
 sacct -j "$JOB_ID" -P \
   --format=JobID,State,ExitCode,Partition,Account,NodeList,ReqTRES,AllocTRES,AllocCPUS,ReqMem,Elapsed,MaxRSS \
   > "$HOME/rbp_004a3_env_d11dad1/sacct-004a3-env-${JOB_ID}.txt"
+grep -q "^${JOB_ID}|" "$HOME/rbp_004a3_env_d11dad1/sacct-004a3-env-${JOB_ID}.txt"
 ```
 
-Do not proceed if this file is empty. The return reviewer will require that
+If the `grep` check fails, wait briefly and run the two accounting commands
+again; this is evidence collection, not a job retry. The return reviewer will require that
 `AllocTRES` contains no `gres/gpu` allocation.
 
 ## Verify the return on Darwin

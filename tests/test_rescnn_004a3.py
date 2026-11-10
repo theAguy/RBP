@@ -672,6 +672,10 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             "guy.assa@132.68.38.100:/home/guy.assa/rbp_004a3_env_d11dad1",
             handoff,
         )
+        self.assertNotIn("set -Eeuo pipefail", handoff)
+        self.assertIn('${RBP_004A3_CONDA_EXE:?', handoff)
+        self.assertIn("PREFLIGHT_OK", handoff)
+        self.assertIn('grep -q "^${JOB_ID}|"', handoff)
 
     def test_builder_declares_all_focused_suite_root_dependencies(self):
         spec = importlib.util.spec_from_file_location(

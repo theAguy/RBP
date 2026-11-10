@@ -652,6 +652,27 @@ class ProjectionAndResourceTests(unittest.TestCase):
 
 
 class EnvironmentPortableAndScriptTests(unittest.TestCase):
+    def test_darwin_environment_handoff_preflights_single_shot_dependencies(self):
+        handoff = (
+            ROOT / "docs/handoffs/004a3c2_darwin_environment_execution.md"
+        ).read_text()
+        for fragment in (
+            "type -P conda", 'case "$RBP_004A3_CONDA_EXE" in /*)',
+            'test -x "$RBP_004A3_CONDA_EXE"', "python3 --version",
+            'test -n "$PUBLIC_PARTITION"', 'df -P "$HOME"',
+            'test "$FREE_HOME_KIB" -ge 52428800',
+            "NEWTON_HOME=$(ssh guy.assa@newton",
+            'test "$NEWTON_HOME" = "$DARWIN_HOME"',
+            "AllocTRES,AllocCPUS,ReqMem,Elapsed,MaxRSS",
+            'sacct-004a3-env-${JOB_ID}.txt',
+            "rbp_004a3_env_d11dad1_pre_submission.txt",
+        ):
+            self.assertIn(fragment, handoff)
+        self.assertNotIn(
+            "guy.assa@132.68.38.100:/home/guy.assa/rbp_004a3_env_d11dad1",
+            handoff,
+        )
+
     def test_builder_declares_all_focused_suite_root_dependencies(self):
         spec = importlib.util.spec_from_file_location(
             "build_004a3_bundle_dependencies",

@@ -16,3 +16,7 @@ Return Approve, Approve with bounded corrections, or Stop. Check:
 
 Static review only. Do not connect to Darwin/Newton, install anything, submit a
 job, read ignored data or authorize execution.
+
+The first review returned Approve with bounded corrections D1-D3. Those
+corrections are tracked separately in
+`docs/reviews/004a3c2_handoff_correction_review_request.md`.

@@ -1,0 +1,92 @@
+{
+  "schema_version": "task004a3b_newton_discovery_acceptance_v1",
+  "status": "ACCEPTED",
+  "scope": "data-free Newton hardware, scheduler, storage and installation-policy discovery",
+  "execution": {
+    "source_commit": "e90a26a9fbfc2ac57a83a3d39753f3b2155a5cea",
+    "slurm_job_id": "1492772",
+    "slurm_state": "FAILED",
+    "slurm_exit_code": "1:0",
+    "scientific_interpretation": "discovery completed; the post-package validator stopped because the partition MaxTime is UNLIMITED"
+  },
+  "returned_evidence": {
+    "return_zip": {
+      "path": "artifacts/teammate_run_results/004a3b_newton_discovery_20261110/RBP_004A3_DISCOVERY_RETURN.zip",
+      "byte_size": 2675,
+      "sha256": "c59c40931fb7fbb8de3c2982b2f9a0e59b39f8f294237ef660682d4b46f03370"
+    },
+    "return_checksum": {
+      "path": "artifacts/teammate_run_results/004a3b_newton_discovery_20261110/RBP_004A3_DISCOVERY_RETURN.zip.sha256",
+      "byte_size": 97,
+      "sha256": "ff58d7f755909f193e1e591acf1565b492af76e9a189d85bec4b48f038fbe569"
+    },
+    "slurm_stdout": {
+      "path": "artifacts/teammate_run_results/004a3b_newton_discovery_20261110/slurm-1492772.out",
+      "byte_size": 817,
+      "sha256": "7f38d32edad25e1643daa57cafd08fcdf845fd3f70a32ef49af48bf45737d64b"
+    },
+    "discovery_json": {
+      "archive_member": "RBP_004A3_DISCOVERY_RETURN/DISCOVERY.json",
+      "byte_size": 7967,
+      "sha256": "006debcfc92d301b0ebdc9b259e9ea14ebd6ee9a2143b99c67a51013d3aa22ea"
+    },
+    "gpu_csv": {
+      "archive_member": "RBP_004A3_DISCOVERY_RETURN/gpu.csv",
+      "byte_size": 81,
+      "sha256": "44f53808cb7a01681d17ecdc30b6494a5411ee3c5db16b74a9160643916b7afc"
+    }
+  },
+  "allocation": {
+    "host": "nlp-l40-2",
+    "partition": "public",
+    "account": "cs",
+    "allocated_cpus": 4,
+    "gpu_scheduler_request_type": "L40",
+    "gpu_runtime_name": "NVIDIA L40S",
+    "gpu_uuid": "GPU-50f2754c-4ec8-5ab1-0135-615e216bb550",
+    "gpu_memory_mib": 49140,
+    "compute_capability": "8.9",
+    "driver_version": "595.91.07",
+    "exposed_cuda_version": "13.2"
+  },
+  "host": {
+    "architecture": "x86_64",
+    "operating_system": "Ubuntu 22.04.5 LTS",
+    "kernel": "5.15.0-191-generic",
+    "glibc": "2.35",
+    "system_python": "3.10.12",
+    "installed_ram_bytes": 1081819856896,
+    "available_ram_bytes": 1040247779328
+  },
+  "storage": {
+    "filesystem_free_bytes": 45768425603072,
+    "user_quota_available_bytes": 880554195025,
+    "user_quota_source": "operator-supplied SMonitor user-quota evidence",
+    "quota_commands_available": false
+  },
+  "environment_policy": {
+    "compute_node_required_channels_reachable": true,
+    "site_approved_install_location": "cpu_job",
+    "conda_available_in_discovery_job": false,
+    "module_system_usable": false
+  },
+  "scheduler_policy": {
+    "partition_max_time_raw": "UNLIMITED",
+    "partition_limit_seconds": null,
+    "project_owned_limit_seconds": 43200,
+    "project_owned_limit_hours": 12,
+    "project_limit_purpose": "finite stop ceiling for the later single-seed Task 004A-4 projection and job",
+    "partition_preempt_mode": "REQUEUE",
+    "task004a3d_smoke_policy": "no automatic requeue; interruption returns STOPPED evidence",
+    "task004a4_requirement": "implement and review epoch-checkpoint restart safety before full training"
+  },
+  "boundaries": {
+    "environment_installed": false,
+    "real_subset_built": false,
+    "cuda_smoke_run": false,
+    "task004a3c_started": false,
+    "task004a3d_started": false,
+    "task004a4_started": false,
+    "discovery_retry_authorized": false
+  }
+}

@@ -1,9 +1,10 @@
 # Task 004A-3 — Newton GPU environment and resource smoke
 
 **Status:** planning accepted after C1–C4 and D1–D4; 004A-3A is independently
-accepted and closed. The data-free 004A-3B discovery handoff is prepared and
-awaiting review and explicit owner authorization. No Newton job, GPU
-environment, real-data subset or training run is authorized by this document.
+accepted and closed. The single data-free 004A-3B discovery ran and its
+returned hardware/storage/scheduler evidence is accepted. The bounded
+UNLIMITED-partition correction awaits static review. No environment install,
+real-data subset, CUDA smoke or training run is authorized by this document.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 
@@ -71,6 +72,15 @@ Run one short, data-free GPU job. It records at minimum:
 
 No version is invented before this return. Discovery failure stops; it does
 not trigger an automatic alternative installation.
+
+The accepted return is recorded in
+`manifests/task004a3b_newton_discovery.json`. Newton's `public` partition
+reported `MaxTime=UNLIMITED` and `PreemptMode=REQUEUE`. The raw scheduler value
+remains unchanged in the evidence. Because an unbounded scheduler setting is
+not an experiment limit, this project uses a separate finite 12-hour
+(43,200-second) ceiling for the later single-seed 004A-4 projection and job.
+If a future finite partition limit is smaller, the bundle must stop rather
+than exceed it.
 
 ### 004A-3C — freeze environment and build development-only bundle
 
@@ -152,6 +162,12 @@ state while remaining bound to the same allocated GPU:
 The launcher compares same-config checkpoint, prediction, per-step loss and
 gradient digests across the two processes. It never imports the runner once
 and calls it twice in one Python process.
+
+The accepted public partition is preemptible. This bounded smoke keeps
+`--no-requeue`: interruption produces sanitized STOPPED evidence and never
+silently resumes or repeats. The later 30-epoch Task 004A-4 must implement and
+independently review epoch-checkpoint restart safety before it can run on this
+partition.
 
 ### 004A-3D.1 — frozen measurement method
 

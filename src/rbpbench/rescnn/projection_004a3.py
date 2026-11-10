@@ -13,6 +13,10 @@ CONFIGS = 3
 CHECKPOINT_COUNT = EPOCHS * CONFIGS
 FULL_RUN_PROCESSES = 1
 SAFETY_FACTOR = 1.5
+# The public Newton partition reports MaxTime=UNLIMITED.  The project keeps a
+# finite ceiling of its own for the later single-seed 004A-4 job.  This is an
+# operational stop limit, not an estimate of expected runtime.
+PROJECT_004A4_SLURM_LIMIT_SECONDS = 12 * 60 * 60
 
 
 class ResCNN004A3ProjectionError(RuntimeError):

@@ -13,8 +13,12 @@ import tarfile
 from rbpbench.rescnn.cache_004a3 import PRODUCTION_PARTITION_SIZE, open_cache
 from rbpbench.rescnn.environment_004a3 import sha256_file
 from rbpbench.rescnn.portable_004a3 import build_inventory, verify_bundle
+from rbpbench.rescnn.projection_004a3 import PROJECT_004A4_SLURM_LIMIT_SECONDS
 from rbpbench.rescnn.runtime_004a3 import require_discovery_install_policy
 from rbpbench.rescnn.runtime_004a3 import require_discovery_payload
+from rbpbench.discovery_004a3 import (
+    require_partition_preempt_mode, require_partition_time_evidence,
+)
 
 
 SOURCE_FILES = (
@@ -71,6 +75,26 @@ OTHER_FILES = (
 )
 
 TASK004A2_SUMMARY_SHA256 = "27e78cd924eddce6799ad388d46235687cb2ce916648bc15c2b6a28569f6d805"
+
+
+def _reviewed_scheduler_policy(discovery: dict) -> dict[str, object]:
+    time_evidence = require_partition_time_evidence(discovery)
+    if (
+        time_evidence["kind"] == "finite"
+        and PROJECT_004A4_SLURM_LIMIT_SECONDS > int(time_evidence["seconds"])
+    ):
+        raise RuntimeError("project Slurm limit exceeds the finite partition limit")
+    preempt_mode = require_partition_preempt_mode(discovery)
+    return {
+        "partition_slurm_limit_kind": time_evidence["kind"],
+        "partition_slurm_limit_seconds": time_evidence["seconds"],
+        "partition_slurm_limit_raw_value": time_evidence["raw_value"],
+        "slurm_limit_seconds": PROJECT_004A4_SLURM_LIMIT_SECONDS,
+        "slurm_limit_source": "project_owned_reviewed_ceiling",
+        "partition_preempt_mode": preempt_mode,
+        "smoke_requeue_policy": "disabled_fail_closed",
+        "full_run_preemption_requirement": "restart_safe_before_004a4",
+    }
 
 
 def _copy(repo: Path, destination: Path, relative: str) -> None:
@@ -160,6 +184,7 @@ def build_bundle(
         raise RuntimeError("bundle destination already exists")
     parsed_discovery = require_discovery_payload(json.loads(discovery.read_text()))
     install_location = require_discovery_install_policy(parsed_discovery)
+    scheduler_policy = _reviewed_scheduler_policy(parsed_discovery)
     _validate_gpu_policy(required_gpu_name, gpu_gres, gpu_constraint)
     if sha256_file(environment_lock) != expected_lock_sha256:
         raise RuntimeError("environment lock hash mismatch")
@@ -198,14 +223,14 @@ def build_bundle(
         shutil.copy2(environment_lock, manifest_dir / "environment.lock")
         shutil.copy2(runtime_manifest, manifest_dir / "runtime_manifest.json")
         config = {
-            "schema_version": "task004a3_bundle_v1",
+            "schema_version": "task004a3_bundle_v2",
             "environment_lock_sha256": expected_lock_sha256,
             "runtime_manifest_sha256": expected_runtime_sha256,
             "source_sha256": source_sha256,
             "task004a2_summary_sha256": TASK004A2_SUMMARY_SHA256,
             "site_approved_install_location": install_location,
             "quota_available_bytes": int(parsed_discovery["quota_available_bytes"]),
-            "slurm_limit_seconds": int(parsed_discovery["slurm_limit_seconds"]),
+            **scheduler_policy,
             "required_gpu_name": required_gpu_name,
             "gpu_gres": gpu_gres,
             "gpu_constraint": gpu_constraint,

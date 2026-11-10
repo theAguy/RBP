@@ -8,6 +8,7 @@ system Python without importing NumPy, PyTorch, or the ResCNN package.
 import argparse
 import json
 from pathlib import Path
+import re
 
 
 class ResCNN004A3RuntimeError(RuntimeError):
@@ -21,6 +22,8 @@ DISCOVERY_COMMAND_FIELDS = (
     "lfs_quota", "df_home",
 )
 
+UNBOUNDED_SLURM_LIMITS = ("UNLIMITED", "INFINITE")
+
 
 def parse_slurm_max_time(raw_value):
     """Return ``(seconds, error)`` for a Slurm ``MaxTime`` value.
@@ -32,7 +35,7 @@ def parse_slurm_max_time(raw_value):
     if not isinstance(raw_value, str) or not raw_value.strip():
         return None, "partition MaxTime is missing"
     value = raw_value.strip()
-    if value.upper() in {"UNLIMITED", "INFINITE"}:
+    if value.upper() in UNBOUNDED_SLURM_LIMITS:
         return None, "partition MaxTime is not a finite reviewed limit: " + value
     try:
         days = 0
@@ -80,6 +83,58 @@ def require_discovery_install_policy(payload):
     if location not in ("login_node", "cpu_job"):
         raise ResCNN004A3RuntimeError("discovery lacks an approved install location")
     return str(location)
+
+
+def require_partition_preempt_mode(payload):
+    """Return the scheduler's raw preemption policy from bound evidence."""
+
+    evidence = payload.get("slurm_partition_detail")
+    if not isinstance(evidence, dict) or not isinstance(evidence.get("stdout"), str):
+        raise ResCNN004A3RuntimeError("discovery lacks partition preemption evidence")
+    matches = re.findall(r"(?:^|\s)PreemptMode=([^\s]+)", evidence["stdout"])
+    if len(matches) != 1 or not matches[0].strip():
+        raise ResCNN004A3RuntimeError("partition PreemptMode is missing or ambiguous")
+    return matches[0].strip()
+
+
+def require_partition_time_evidence(payload):
+    """Validate and return the raw finite-or-unbounded partition time evidence.
+
+    An unbounded scheduler partition is valid discovery evidence.  It is not a
+    usable experiment limit: the later bundle must bind a separate positive,
+    project-owned limit.
+    """
+
+    seconds = payload.get("slurm_limit_seconds")
+    error = payload.get("slurm_limit_error")
+    partition = payload.get("slurm_partition_detail")
+    stdout = partition.get("stdout", "") if isinstance(partition, dict) else ""
+    raw_matches = re.findall(r"(?:^|\s)MaxTime=([^\s]+)", stdout)
+    if len(raw_matches) != 1:
+        raise ResCNN004A3RuntimeError("partition MaxTime is missing or ambiguous")
+    raw_limit = raw_matches[0]
+    if isinstance(seconds, int) and not isinstance(seconds, bool) and seconds > 0:
+        if error is not None:
+            raise ResCNN004A3RuntimeError(
+                "finite partition limit must not carry a limit error"
+            )
+        parsed_seconds, parsed_error = parse_slurm_max_time(raw_limit)
+        if parsed_error is not None or parsed_seconds != seconds:
+            raise ResCNN004A3RuntimeError(
+                "finite partition limit disagrees with raw MaxTime evidence"
+            )
+        return {"kind": "finite", "seconds": seconds, "raw_value": raw_limit}
+    if seconds is not None:
+        raise ResCNN004A3RuntimeError(
+            "partition Slurm limit must be positive or explicitly unbounded"
+        )
+    for raw_value in UNBOUNDED_SLURM_LIMITS:
+        expected = "partition MaxTime is not a finite reviewed limit: " + raw_value
+        if error == expected and raw_limit == raw_value:
+            return {"kind": "unbounded", "seconds": None, "raw_value": raw_value}
+    raise ResCNN004A3RuntimeError(
+        "unbounded partition limit is not bound to raw MaxTime evidence"
+    )
 
 
 def require_discovery_payload(payload):
@@ -138,12 +193,12 @@ def require_discovery_payload(payload):
     for key in (
         "allocated_cpus", "installed_ram_bytes", "available_ram_bytes",
         "free_disk_bytes", "quota_available_bytes",
-        "operator_quota_available_bytes", "slurm_limit_seconds",
+        "operator_quota_available_bytes",
     ):
         if not isinstance(payload[key], int) or isinstance(payload[key], bool) or payload[key] <= 0:
             raise ResCNN004A3RuntimeError("discovery value must be positive: " + key)
-    if payload["slurm_limit_error"] is not None:
-        raise ResCNN004A3RuntimeError("discovery partition limit is not usable")
+    require_partition_time_evidence(payload)
+    require_partition_preempt_mode(payload)
     if payload["quota_available_bytes"] != payload["operator_quota_available_bytes"]:
         raise ResCNN004A3RuntimeError("discovery quota fields disagree")
     if not isinstance(payload["gpu_csv"], str) or not payload["gpu_csv"].strip():

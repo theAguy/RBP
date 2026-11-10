@@ -1,8 +1,7 @@
 # Task 004A-3B — Newton discovery operator runbook
 
-**Status:** prepared for static review only. This document does not authorize
-execution. Run it only after an independent reviewer approves the handoff and
-the project owner separately authorizes exactly one discovery submission.
+**Status:** executed exactly once and closed. Job `1492772` returned the
+reviewed data-free evidence. Do not use this historical runbook to resubmit.
 
 **Exact Newton execution commit:**
 `e90a26a9fbfc2ac57a83a3d39753f3b2155a5cea`
@@ -181,7 +180,8 @@ The reviewer will authenticate and inspect:
 
 - GPU model, UUID, total memory and compute capability;
 - NVIDIA driver and exposed CUDA information;
-- partition `MaxTime` and its parsed positive `slurm_limit_seconds`;
+- partition `MaxTime`; if it is unbounded, the separately reviewed finite
+  project-owned limit and its binding;
 - requested versus allocated partition/account identity;
 - `sinfo` GRES types/features needed to bind the later GPU model request;
 - OS release, kernel and glibc;

@@ -1,10 +1,10 @@
 # Task 004A-3A — GPU resource-smoke implementation and synthetic validation
 
 **Status:** synthetic-only implementation plus bounded E1–E6 and F1–F2
-corrections are independently accepted; Task 004A-3A is closed. The 004A-3B
-handoff is prepared and awaits review and explicit owner authorization. No
-real-input read, Newton query, environment installation, GPU use or remote
-submission has occurred or is authorized by this document.
+corrections are independently accepted; Task 004A-3A is closed. The one
+data-free 004A-3B discovery is complete and accepted. Its bounded
+UNLIMITED-partition correction awaits static review. No environment install,
+real-input subset build, CUDA smoke or training run is authorized here.
 
 **Parent:** `docs/tasks/004a3_newton_gpu_resource_smoke.md`
 

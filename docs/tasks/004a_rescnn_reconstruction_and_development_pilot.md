@@ -1,9 +1,11 @@
 # Task 004A — Former ResCNN reconstruction and development pilot
 
 **Status:** checkpoints 004A-1, 004A-2 and 004A-3A are independently accepted
-and closed. The data-free 004A-3B discovery handoff is prepared and awaiting
-review and explicit owner authorization. No Newton discovery, real-data subset
-construction or GPU execution has started.
+and closed. The one data-free 004A-3B Newton discovery is complete and its
+evidence is accepted. A bounded correction for the public partition's
+`MaxTime=UNLIMITED` and `PreemptMode=REQUEUE` findings awaits static review.
+No environment installation, real-data subset construction or CUDA execution
+has started.
 Checkpoints 004A-4 and 004A-5 have not started. See
 `docs/reviews/004a_rescnn_reconstruction_planning_reconciliation.md` and
 `docs/reviews/004a1_rescnn_acceptance.md`, with Task 004A-2 detailed in

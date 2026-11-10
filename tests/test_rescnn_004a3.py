@@ -34,6 +34,7 @@ from rbpbench.rescnn.portable_004a3 import (
     package_sanitized_return, verify_bundle,
 )
 from rbpbench.rescnn.projection_004a3 import (
+    PROJECT_004A4_SLURM_LIMIT_SECONDS,
     StorageInputs, TimeInputs, project_storage_bytes, project_wall_seconds,
     require_projection_limits, ResCNN004A3ProjectionError,
 )
@@ -80,6 +81,9 @@ def _complete_discovery_payload():
     payload.update({
         key: _command_evidence() for key in runtime_004a3.DISCOVERY_COMMAND_FIELDS
     })
+    payload["slurm_partition_detail"] = _command_evidence(
+        stdout="PartitionName=gpu MaxTime=2-00:00:00 PreemptMode=OFF\n",
+    )
     return payload
 
 
@@ -501,18 +505,63 @@ class ProjectionAndResourceTests(unittest.TestCase):
         self.assertIn('os.environ.get("USER") or getpass.getuser()', script)
         self.assertIn('os.environ.get("HOME") or str(Path.home())', script)
 
-    def test_discovery_limit_evidence_survives_unlimited_but_validator_refuses_it(self):
-        from rbpbench.discovery_004a3 import parse_slurm_max_time
+    def test_discovery_accepts_bound_unlimited_partition_as_raw_evidence(self):
+        from rbpbench.discovery_004a3 import (
+            parse_slurm_max_time, require_partition_time_evidence,
+        )
 
         seconds, reason = parse_slurm_max_time("UNLIMITED")
         self.assertIsNone(seconds)
         self.assertIn("not a finite", reason)
-        for value in (None, 0, -1):
+        payload = _complete_discovery_payload()
+        payload["slurm_limit_seconds"] = None
+        payload["slurm_limit_error"] = reason
+        payload["slurm_partition_detail"] = _command_evidence(
+            stdout="PartitionName=public MaxTime=UNLIMITED PreemptMode=REQUEUE\n",
+        )
+        self.assertEqual(runtime_004a3.require_discovery_payload(payload), payload)
+        self.assertEqual(require_partition_time_evidence(payload), {
+            "kind": "unbounded", "seconds": None, "raw_value": "UNLIMITED",
+        })
+
+    def test_discovery_refuses_unbound_or_malformed_partition_limits(self):
+        unlimited_error = "partition MaxTime is not a finite reviewed limit: UNLIMITED"
+        cases = []
+        for value in (0, -1):
             payload = _complete_discovery_payload()
             payload["slurm_limit_seconds"] = value
-            payload["slurm_limit_error"] = reason if value is None else None
-            with self.subTest(value=value), self.assertRaises(ResCNN004A3RuntimeError):
+            cases.append(payload)
+        payload = _complete_discovery_payload()
+        payload["slurm_limit_seconds"] = None
+        payload["slurm_limit_error"] = unlimited_error
+        cases.append(payload)  # raw evidence still says a finite limit
+        payload = _complete_discovery_payload()
+        payload["slurm_limit_seconds"] = None
+        payload["slurm_limit_error"] = "invented"
+        payload["slurm_partition_detail"] = _command_evidence(
+            stdout="PartitionName=public MaxTime=UNLIMITED PreemptMode=REQUEUE\n",
+        )
+        cases.append(payload)
+        payload = _complete_discovery_payload()
+        payload["slurm_limit_seconds"] = 86400  # raw evidence still says two days
+        cases.append(payload)
+        for payload in cases:
+            with self.subTest(payload=payload), self.assertRaises(ResCNN004A3RuntimeError):
                 runtime_004a3.require_discovery_payload(payload)
+
+    def test_partition_preemption_evidence_is_required_and_unambiguous(self):
+        from rbpbench.discovery_004a3 import require_partition_preempt_mode
+
+        payload = _complete_discovery_payload()
+        self.assertEqual(require_partition_preempt_mode(payload), "OFF")
+        for stdout in (
+            "PartitionName=gpu MaxTime=2-00:00:00\n",
+            "MaxTime=2-00:00:00 PreemptMode=OFF PreemptMode=REQUEUE\n",
+        ):
+            broken = _complete_discovery_payload()
+            broken["slurm_partition_detail"] = _command_evidence(stdout=stdout)
+            with self.subTest(stdout=stdout), self.assertRaises(ResCNN004A3RuntimeError):
+                runtime_004a3.require_discovery_payload(broken)
 
     def test_gpu_uuid_normalization_accepts_prefix_case_only_and_rejects_drift(self):
         bare = "58a8c3e2-1234-4abc-8def-1234567890ab"
@@ -762,7 +811,15 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
                 bundled_config["source_sha256"], builder._source_digest(ROOT),
             )
             self.assertEqual(bundled_config["validation_known_counts"], [10000] * 122)
-            self.assertEqual(bundled_config["slurm_limit_seconds"], 172800)
+            self.assertEqual(
+                bundled_config["slurm_limit_seconds"],
+                PROJECT_004A4_SLURM_LIMIT_SECONDS,
+            )
+            self.assertEqual(bundled_config["slurm_limit_source"], "project_owned_reviewed_ceiling")
+            self.assertEqual(bundled_config["partition_slurm_limit_kind"], "finite")
+            self.assertEqual(bundled_config["partition_slurm_limit_seconds"], 172800)
+            self.assertEqual(bundled_config["partition_preempt_mode"], "OFF")
+            self.assertEqual(bundled_config["smoke_requeue_policy"], "disabled_fail_closed")
             self.assertEqual(bundled_config["required_gpu_name"], "NVIDIA A100")
             for relative in (
                 "intRBP ResCNN - for students.ipynb",
@@ -776,6 +833,46 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             archive = builder.archive_bundle(bundle)
             self.assertEqual(len(archive["sha256"]), 64)
             self.assertTrue(Path(str(archive["path"]) + ".sha256").is_file())
+
+    def test_bundle_binds_unlimited_partition_to_finite_project_limit(self):
+        spec = importlib.util.spec_from_file_location(
+            "build_004a3_bundle_scheduler", ROOT / "scripts/build_004a3_portable_bundle.py",
+        )
+        builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+        payload = _complete_discovery_payload()
+        payload["slurm_limit_seconds"] = None
+        payload["slurm_limit_error"] = (
+            "partition MaxTime is not a finite reviewed limit: UNLIMITED"
+        )
+        payload["slurm_partition_detail"] = _command_evidence(
+            stdout="PartitionName=public MaxTime=UNLIMITED PreemptMode=REQUEUE\n",
+        )
+        runtime_004a3.require_discovery_payload(payload)
+        policy = builder._reviewed_scheduler_policy(payload)
+        self.assertEqual(policy["partition_slurm_limit_kind"], "unbounded")
+        self.assertIsNone(policy["partition_slurm_limit_seconds"])
+        self.assertEqual(policy["partition_slurm_limit_raw_value"], "UNLIMITED")
+        self.assertEqual(policy["slurm_limit_seconds"], 12 * 60 * 60)
+        self.assertEqual(policy["partition_preempt_mode"], "REQUEUE")
+        self.assertEqual(policy["full_run_preemption_requirement"], "restart_safe_before_004a4")
+
+    def test_project_limit_must_fit_a_finite_partition_limit(self):
+        spec = importlib.util.spec_from_file_location(
+            "build_004a3_bundle_limit", ROOT / "scripts/build_004a3_portable_bundle.py",
+        )
+        builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+        payload = _complete_discovery_payload()
+        payload["slurm_limit_seconds"] = PROJECT_004A4_SLURM_LIMIT_SECONDS - 1
+        payload["slurm_partition_detail"] = _command_evidence(
+            stdout="PartitionName=gpu MaxTime=11:59:59 PreemptMode=OFF\n",
+        )
+        with self.assertRaisesRegex(RuntimeError, "exceeds"):
+            builder._reviewed_scheduler_policy(payload)
+
+    def test_smoke_is_fail_closed_on_public_partition_preemption(self):
+        script = (ROOT / "hpc/newton/004a3/RUN_004A3_SMOKE.sbatch").read_text()
+        self.assertIn("#SBATCH --no-requeue", script)
+        self.assertIn("trap on_failure ERR INT TERM", script)
 
     def test_full_validation_counts_refuse_subset_derived_or_unbound_evidence(self):
         spec = importlib.util.spec_from_file_location(

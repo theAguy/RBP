@@ -46,3 +46,6 @@ papers/
 .env
 .idea/
 .vscode/
+
+# Temporary Microsoft Word lock files; completed reports under docs/ remain tracked.
+~$*.docx

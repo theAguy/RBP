@@ -1,0 +1,439 @@
+{
+  "scope": "independent local follow-up on accepted Task 002C evidence",
+  "universe_size": 361180,
+  "widths": [
+    500,
+    251,
+    101
+  ],
+  "mmseqs_rule": {
+    "minimum_sequence_identity": 0.9,
+    "coverage": {
+      "500": 0.8,
+      "251": 0.95,
+      "101": 0.95
+    },
+    "both_strands": true
+  },
+  "important_limit": "The sanitized return retains normalized endpoints but not raw per-edge MMseqs2 identity, coverage, alignment coordinates, or strand. Exact identity/coverage/strand distributions require the raw TSVs or a rerun.",
+  "components": {
+    "component_count": 169699,
+    "singleton_count": 118943,
+    "largest_component_size": 708,
+    "largest_component_fraction": 0.001960241430865496,
+    "top20_component_fraction": 0.018085165291544383,
+    "size_bins": [
+      {
+        "size_bin": "1",
+        "component_count": 118943,
+        "row_count": 118943,
+        "row_fraction": 0.32931779168281744
+      },
+      {
+        "size_bin": "2",
+        "component_count": 23723,
+        "row_count": 47446,
+        "row_fraction": 0.13136386289384794
+      },
+      {
+        "size_bin": "3-5",
+        "component_count": 17580,
+        "row_count": 63875,
+        "row_fraction": 0.17685087767871976
+      },
+      {
+        "size_bin": "6-10",
+        "component_count": 5816,
+        "row_count": 43241,
+        "row_fraction": 0.1197214685198516
+      },
+      {
+        "size_bin": "11-25",
+        "component_count": 2798,
+        "row_count": 43447,
+        "row_fraction": 0.12029182125256105
+      },
+      {
+        "size_bin": "26-100",
+        "component_count": 779,
+        "row_count": 32505,
+        "row_fraction": 0.08999667755689683
+      },
+      {
+        "size_bin": ">100",
+        "component_count": 60,
+        "row_count": 11723,
+        "row_fraction": 0.03245750041530539
+      }
+    ]
+  },
+  "by_width": {
+    "500": {
+      "exact_uniqueness": {
+        "unique_forward_sequences": 361180,
+        "forward_duplicate_pair_count": 0,
+        "forward_duplicate_pairs": [],
+        "exact_reverse_complement_pair_count": 0,
+        "exact_reverse_complement_pairs": []
+      },
+      "edges": {
+        "width": 500,
+        "minimum_coverage": 0.8,
+        "minimum_exact_overlap_bases": 400,
+        "edge_count": 943435,
+        "rows_with_at_least_one_edge": 241905,
+        "rows_without_edges": 119275,
+        "degree_among_connected_rows": {
+          "median": 4,
+          "p95": 27,
+          "p99": 58,
+          "max": 128
+        },
+        "relationship_categories": {
+          "exact_shift_forward": 923037,
+          "requires_mismatch_gap_or_other_mmseqs_alignment": 20398
+        },
+        "exact_shift_distance_bases": {
+          "1": 20785,
+          "2": 19896,
+          "3": 19606,
+          "4": 18897,
+          "5": 18605,
+          "6": 17919,
+          "7": 17514,
+          "8": 16769,
+          "9": 16475,
+          "10": 15882,
+          "11": 15450,
+          "12": 15043,
+          "13": 14566,
+          "14": 14261,
+          "15": 13861,
+          "16": 13522,
+          "17": 13280,
+          "18": 12855,
+          "19": 12495,
+          "20": 12227,
+          "21": 11785,
+          "22": 11805,
+          "23": 11582,
+          "24": 11324,
+          "25": 10934,
+          "26": 10804,
+          "27": 10483,
+          "28": 10138,
+          "29": 9904,
+          "30": 9683,
+          "31": 9555,
+          "32": 9217,
+          "33": 9110,
+          "34": 8957,
+          "35": 8826,
+          "36": 8716,
+          "37": 8455,
+          "38": 8417,
+          "39": 8170,
+          "40": 8283,
+          "41": 8044,
+          "42": 8054,
+          "43": 7903,
+          "44": 7892,
+          "45": 7688,
+          "46": 7890,
+          "47": 7583,
+          "48": 7659,
+          "49": 7609,
+          "50": 7588,
+          "51": 7497,
+          "52": 7367,
+          "53": 7434,
+          "54": 7438,
+          "55": 7382,
+          "56": 7290,
+          "57": 7230,
+          "58": 7150,
+          "59": 7132,
+          "60": 7210,
+          "61": 7193,
+          "62": 7124,
+          "63": 7220,
+          "64": 7007,
+          "65": 7077,
+          "66": 6929,
+          "67": 6783,
+          "68": 6877,
+          "69": 6815,
+          "70": 6822,
+          "71": 6794,
+          "72": 6595,
+          "73": 6716,
+          "74": 6653,
+          "75": 6534,
+          "76": 6451,
+          "77": 6487,
+          "78": 6478,
+          "79": 6394,
+          "80": 6355,
+          "81": 6423,
+          "82": 6327,
+          "83": 6311,
+          "84": 6199,
+          "85": 6118,
+          "86": 6154,
+          "87": 6016,
+          "88": 6109,
+          "89": 6234,
+          "90": 5948,
+          "91": 6124,
+          "92": 5945,
+          "93": 5946,
+          "94": 5860,
+          "95": 5929,
+          "96": 5935,
+          "97": 5842,
+          "98": 5726,
+          "99": 5780,
+          "100": 5711
+        },
+        "examples": {
+          "exact_shift_forward": [
+            {
+              "left": "row_0",
+              "right": "row_142347"
+            },
+            {
+              "left": "row_0",
+              "right": "row_204689"
+            },
+            {
+              "left": "row_10",
+              "right": "row_287959"
+            }
+          ],
+          "requires_mismatch_gap_or_other_mmseqs_alignment": [
+            {
+              "left": "row_10",
+              "right": "row_143237"
+            },
+            {
+              "left": "row_10",
+              "right": "row_205793"
+            },
+            {
+              "left": "row_100079",
+              "right": "row_266761"
+            }
+          ]
+        },
+        "diagnostic_limit": "Exact-shift categories are rigorous lower bounds. The remaining category requires the retained raw MMseqs2 alignment columns to separate mismatches, indels, orientation, identity, and coverage."
+      }
+    },
+    "251": {
+      "exact_uniqueness": {
+        "unique_forward_sequences": 361180,
+        "forward_duplicate_pair_count": 0,
+        "forward_duplicate_pairs": [],
+        "exact_reverse_complement_pair_count": 0,
+        "exact_reverse_complement_pairs": []
+      },
+      "edges": {
+        "width": 251,
+        "minimum_coverage": 0.95,
+        "minimum_exact_overlap_bases": 239,
+        "edge_count": 217571,
+        "rows_with_at_least_one_edge": 151134,
+        "rows_without_edges": 210046,
+        "degree_among_connected_rows": {
+          "median": 2,
+          "p95": 8,
+          "p99": 13,
+          "max": 43
+        },
+        "relationship_categories": {
+          "exact_shift_forward": 212841,
+          "requires_mismatch_gap_or_other_mmseqs_alignment": 4730
+        },
+        "exact_shift_distance_bases": {
+          "1": 20785,
+          "2": 19896,
+          "3": 19606,
+          "4": 18897,
+          "5": 18605,
+          "6": 17919,
+          "7": 17514,
+          "8": 16769,
+          "9": 16475,
+          "10": 15882,
+          "11": 15450,
+          "12": 15043
+        },
+        "examples": {
+          "exact_shift_forward": [
+            {
+              "left": "row_0",
+              "right": "row_142347"
+            },
+            {
+              "left": "row_0",
+              "right": "row_204689"
+            },
+            {
+              "left": "row_10",
+              "right": "row_287959"
+            }
+          ],
+          "requires_mismatch_gap_or_other_mmseqs_alignment": [
+            {
+              "left": "row_100153",
+              "right": "row_111077"
+            },
+            {
+              "left": "row_100153",
+              "right": "row_121351"
+            },
+            {
+              "left": "row_100153",
+              "right": "row_25278"
+            }
+          ]
+        },
+        "diagnostic_limit": "Exact-shift categories are rigorous lower bounds. The remaining category requires the retained raw MMseqs2 alignment columns to separate mismatches, indels, orientation, identity, and coverage."
+      }
+    },
+    "101": {
+      "exact_uniqueness": {
+        "unique_forward_sequences": 361180,
+        "forward_duplicate_pair_count": 0,
+        "forward_duplicate_pairs": [],
+        "exact_reverse_complement_pair_count": 2,
+        "exact_reverse_complement_pairs": [
+          [
+            "row_85204",
+            "row_123985"
+          ],
+          [
+            "row_248981",
+            "row_263506"
+          ]
+        ]
+      },
+      "edges": {
+        "width": 101,
+        "minimum_coverage": 0.95,
+        "minimum_exact_overlap_bases": 96,
+        "edge_count": 102759,
+        "rows_with_at_least_one_edge": 104772,
+        "rows_without_edges": 256408,
+        "degree_among_connected_rows": {
+          "median": 1,
+          "p95": 5,
+          "p99": 7,
+          "max": 25
+        },
+        "relationship_categories": {
+          "exact_reverse_complement": 2,
+          "exact_shift_forward": 97808,
+          "exact_shift_reverse_complement": 17,
+          "requires_mismatch_gap_or_other_mmseqs_alignment": 4932
+        },
+        "exact_shift_distance_bases": {
+          "0": 1,
+          "1": 20793,
+          "2": 19904,
+          "3": 19616,
+          "4": 18901,
+          "5": 18610
+        },
+        "examples": {
+          "exact_shift_forward": [
+            {
+              "left": "row_0",
+              "right": "row_142347"
+            },
+            {
+              "left": "row_100",
+              "right": "row_14024"
+            },
+            {
+              "left": "row_100001",
+              "right": "row_108252"
+            }
+          ],
+          "requires_mismatch_gap_or_other_mmseqs_alignment": [
+            {
+              "left": "row_10002",
+              "right": "row_315266"
+            },
+            {
+              "left": "row_10002",
+              "right": "row_351460"
+            },
+            {
+              "left": "row_100153",
+              "right": "row_111077"
+            }
+          ],
+          "exact_shift_reverse_complement": [
+            {
+              "left": "row_104627",
+              "right": "row_248981"
+            },
+            {
+              "left": "row_114762",
+              "right": "row_123985"
+            },
+            {
+              "left": "row_123985",
+              "right": "row_244751"
+            }
+          ],
+          "exact_reverse_complement": [
+            {
+              "left": "row_123985",
+              "right": "row_85204"
+            },
+            {
+              "left": "row_248981",
+              "right": "row_263506"
+            }
+          ]
+        },
+        "diagnostic_limit": "Exact-shift categories are rigorous lower bounds. The remaining category requires the retained raw MMseqs2 alignment columns to separate mismatches, indels, orientation, identity, and coverage."
+      }
+    }
+  },
+  "edge_set_overlap": {
+    "500_and_251": 216353,
+    "500_and_101": 99558,
+    "251_and_101": 99816,
+    "all_three": 99336,
+    "500_only": 726860,
+    "251_only": 738,
+    "101_only": 2721
+  },
+  "worked_example": {
+    "component_members": [
+      "row_0",
+      "row_142347",
+      "row_204689"
+    ],
+    "explanation": "A concrete three-row component. The sequences are shifted windows of the same underlying stretch, not full-length duplicates.",
+    "by_width": {
+      "500": {
+        "row_0": "TTGCTCCACTGCACTTCAGCCTGGGCGACAGAGCAAGACTCCGTCTCAAAGAAAGAAAGAAAAAAAAAACAGGGTTGGGAAGAGCTGGGCAAGTCTCTTACCTCCTGAGTGGCTGTTTCACATTCACTAAATGGGGGTGATGATGCCTATCTCAGAGATTTGAGAAAATGATTAAATTATATAAGACATGGTAAACCCTACACTTATGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTATGATACTAGTGACTCCACTATCCACTTCATGCCAGATGCCCCAGACCACGAGAGCCTCAAGCTTCTCCAGAGAGGTGGGGATGGAACCATGAATTCCTCTGCTCTCTGGGATTGCAGATGTGTTACACACACACACACACACACACACACACACACACACACACACACACATATTTTTTTTTTCTAGACAGAGTCTTGCTC",
+        "row_142347": "TGCTCCACTGCACTTCAGCCTGGGCGACAGAGCAAGACTCCGTCTCAAAGAAAGAAAGAAAAAAAAAACAGGGTTGGGAAGAGCTGGGCAAGTCTCTTACCTCCTGAGTGGCTGTTTCACATTCACTAAATGGGGGTGATGATGCCTATCTCAGAGATTTGAGAAAATGATTAAATTATATAAGACATGGTAAACCCTACACTTATGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTATGATACTAGTGACTCCACTATCCACTTCATGCCAGATGCCCCAGACCACGAGAGCCTCAAGCTTCTCCAGAGAGGTGGGGATGGAACCATGAATTCCTCTGCTCTCTGGGATTGCAGATGTGTTACACACACACACACACACACACACACACACACACACACACACACACATATTTTTTTTTTCTAGACAGAGTCTTGCTCT",
+        "row_204689": "ACTGCACTTCAGCCTGGGCGACAGAGCAAGACTCCGTCTCAAAGAAAGAAAGAAAAAAAAAACAGGGTTGGGAAGAGCTGGGCAAGTCTCTTACCTCCTGAGTGGCTGTTTCACATTCACTAAATGGGGGTGATGATGCCTATCTCAGAGATTTGAGAAAATGATTAAATTATATAAGACATGGTAAACCCTACACTTATGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTATGATACTAGTGACTCCACTATCCACTTCATGCCAGATGCCCCAGACCACGAGAGCCTCAAGCTTCTCCAGAGAGGTGGGGATGGAACCATGAATTCCTCTGCTCTCTGGGATTGCAGATGTGTTACACACACACACACACACACACACACACACACACACACACACACACATATTTTTTTTTTCTAGACAGAGTCTTGCTCTGTTACC"
+      },
+      "251": {
+        "row_0": "CACTAAATGGGGGTGATGATGCCTATCTCAGAGATTTGAGAAAATGATTAAATTATATAAGACATGGTAAACCCTACACTTATGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTATGATACTAGTGACTCCACTATCCACTTCATGCCAGATGCCCCAGACCACGAGAGCCTCAAGCTTCTCCAGAGAGGT",
+        "row_142347": "ACTAAATGGGGGTGATGATGCCTATCTCAGAGATTTGAGAAAATGATTAAATTATATAAGACATGGTAAACCCTACACTTATGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTATGATACTAGTGACTCCACTATCCACTTCATGCCAGATGCCCCAGACCACGAGAGCCTCAAGCTTCTCCAGAGAGGTG",
+        "row_204689": "TGGGGGTGATGATGCCTATCTCAGAGATTTGAGAAAATGATTAAATTATATAAGACATGGTAAACCCTACACTTATGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTATGATACTAGTGACTCCACTATCCACTTCATGCCAGATGCCCCAGACCACGAGAGCCTCAAGCTTCTCCAGAGAGGTGGGGATG"
+      },
+      "101": {
+        "row_0": "ACACTTATGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTAT",
+        "row_142347": "CACTTATGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTATG",
+        "row_204689": "TGAGTGATTCTAATAGTGATTTCCTTTCTTCCTTGCTGGACAGATCCATCTGTGTGTGCTGTGGAATTCAGGATACTTGGGCATTGCCTACTATGATACTA"
+      }
+    }
+  }
+}

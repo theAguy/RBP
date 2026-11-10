@@ -64,9 +64,13 @@ OTHER_FILES = (
     "manifests/task004a2b_local_smoke.json",
     "scripts/run_004a2b_local_smoke_recovery.sh",
     "scripts/build_004a3_portable_bundle.py",
+    "scripts/build_004a3_runtime_manifest.py",
+    "scripts/build_004a3_development_cache.py",
     "hpc/newton/004a3/00_SUBMIT_DISCOVERY.sh",
     "hpc/newton/004a3/01_DISCOVERY.sbatch",
     "hpc/newton/004a3/02_INSTALL_EXACT_ENVIRONMENT.sh",
+    "hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh",
+    "hpc/newton/004a3/02_PREPARE_ENVIRONMENT.sbatch",
     "hpc/newton/004a3/03_SUBMIT_SMOKE.sh",
     "hpc/newton/004a3/04_CHECK_STATUS.sh",
     "hpc/newton/004a3/05_VERIFY_RETURN.sh",
@@ -157,7 +161,7 @@ def _extract_full_validation_known_counts(
 
 
 def _validate_gpu_policy(
-    required_gpu_name: str, gpu_gres: str, gpu_constraint: str,
+    required_gpu_name: str, gpu_gres: str, gpu_constraint: str, gpu_nodelist: str,
 ) -> None:
     for label, value in (
         ("required GPU name", required_gpu_name), ("GPU GRES", gpu_gres),
@@ -170,13 +174,17 @@ def _validate_gpu_policy(
         raise RuntimeError("reviewed GPU GRES must start with 'gpu:'")
     if any(character in gpu_constraint for character in ("\n", "\r", "|")):
         raise RuntimeError("GPU constraint is malformed")
+    if not gpu_nodelist or any(character in gpu_nodelist for character in ("\n", "\r", "|", ",")):
+        raise RuntimeError("GPU node binding is empty or malformed")
+    if required_gpu_name == "NVIDIA L40S" and gpu_gres == "gpu:L40:1" and gpu_nodelist != "nlp-l40-2":
+        raise RuntimeError("accepted L40S policy must bind the observed nlp-l40-2 node")
 
 
 def build_bundle(
     *, repo: Path, destination: Path, cache: Path, discovery: Path,
     environment_lock: Path, runtime_manifest: Path, task004a2_summary: Path,
     expected_lock_sha256: str, expected_runtime_sha256: str,
-    required_gpu_name: str, gpu_gres: str, gpu_constraint: str,
+    required_gpu_name: str, gpu_gres: str, gpu_constraint: str, gpu_nodelist: str,
 ) -> Path:
     repo = repo.resolve()
     destination = destination.resolve()
@@ -185,7 +193,7 @@ def build_bundle(
     parsed_discovery = require_discovery_payload(json.loads(discovery.read_text()))
     install_location = require_discovery_install_policy(parsed_discovery)
     scheduler_policy = _reviewed_scheduler_policy(parsed_discovery)
-    _validate_gpu_policy(required_gpu_name, gpu_gres, gpu_constraint)
+    _validate_gpu_policy(required_gpu_name, gpu_gres, gpu_constraint, gpu_nodelist)
     if sha256_file(environment_lock) != expected_lock_sha256:
         raise RuntimeError("environment lock hash mismatch")
     if sha256_file(runtime_manifest) != expected_runtime_sha256:
@@ -234,6 +242,7 @@ def build_bundle(
             "required_gpu_name": required_gpu_name,
             "gpu_gres": gpu_gres,
             "gpu_constraint": gpu_constraint,
+            "gpu_nodelist": gpu_nodelist,
             "environment_bytes": environment_bytes,
             "train_rows": PRODUCTION_PARTITION_SIZE,
             "validation_rows": PRODUCTION_PARTITION_SIZE,
@@ -285,6 +294,7 @@ def main(argv=None) -> int:
     parser.add_argument("--required-gpu-name", required=True)
     parser.add_argument("--gpu-gres", required=True)
     parser.add_argument("--gpu-constraint", default="")
+    parser.add_argument("--gpu-nodelist", required=True)
     parser.add_argument("--archive", action="store_true")
     args = parser.parse_args(argv)
     bundle = build_bundle(
@@ -295,7 +305,7 @@ def main(argv=None) -> int:
         expected_lock_sha256=args.environment_lock_sha256,
         expected_runtime_sha256=args.runtime_manifest_sha256,
         required_gpu_name=args.required_gpu_name, gpu_gres=args.gpu_gres,
-        gpu_constraint=args.gpu_constraint,
+        gpu_constraint=args.gpu_constraint, gpu_nodelist=args.gpu_nodelist,
     )
     if args.archive:
         print(json.dumps(archive_bundle(bundle), sort_keys=True))

@@ -9,9 +9,9 @@ cd "$ROOT"
 }
 export RBP_004A3_ROOT="$ROOT"
 GPU_REQUEST=$("$RBP_004A3_ENV_PREFIX/bin/python" -c \
-  'import json; c=json.load(open("BUNDLE_CONFIG.json")); print(c["gpu_gres"]+"|"+c["gpu_constraint"])')
-IFS='|' read -r GPU_GRES GPU_CONSTRAINT <<< "$GPU_REQUEST"
-SBATCH_ARGS=(--gres="$GPU_GRES")
+  'import json; c=json.load(open("BUNDLE_CONFIG.json")); print(c["gpu_gres"]+"|"+c["gpu_constraint"]+"|"+c["gpu_nodelist"])')
+IFS='|' read -r GPU_GRES GPU_CONSTRAINT GPU_NODELIST <<< "$GPU_REQUEST"
+SBATCH_ARGS=(--gres="$GPU_GRES" --nodelist="$GPU_NODELIST")
 if [[ -n "$GPU_CONSTRAINT" ]]; then SBATCH_ARGS+=(--constraint="$GPU_CONSTRAINT"); fi
 sbatch "${SBATCH_ARGS[@]}" --mail-user="$RBP_SLURM_MAIL_USER" --mail-type=BEGIN,END,FAIL \
   --export=ALL "$ROOT/hpc/newton/004a3/RUN_004A3_SMOKE.sbatch"

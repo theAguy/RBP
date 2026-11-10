@@ -20,7 +20,8 @@ except ModuleNotFoundError as exc:
 from rbpbench.rescnn.adam_004a3 import ADAM_FLAGS, build_gpu_adam, run_three_step_oracle
 from rbpbench.rescnn import cache_004a3, projection_004a3, runtime_004a3
 from rbpbench.rescnn.cache_004a3 import (
-    CacheRow, open_cache, select_development_rows, write_cache,
+    CacheRow, open_cache, require_accepted_count_matrix,
+    select_development_rows, write_cache,
 )
 from rbpbench.rescnn.data_004a2 import SampleCandidate
 from rbpbench.rescnn.checkpoint import (
@@ -28,7 +29,10 @@ from rbpbench.rescnn.checkpoint import (
     ResCNNCheckpointError,
 )
 from rbpbench.rescnn.config import load_config
-from rbpbench.rescnn.environment_004a3 import sha256_file, verify_runtime, ResCNN004A3EnvironmentError
+from rbpbench.rescnn.environment_004a3 import (
+    build_runtime_manifest, sha256_file, verify_runtime,
+    ResCNN004A3EnvironmentError,
+)
 from rbpbench.rescnn.portable_004a3 import (
     ResCNN004A3PortableError, build_inventory, compare_process_records,
     package_sanitized_return, verify_bundle,
@@ -114,6 +118,15 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(len(cache.indices("train")), 3)
             self.assertEqual(metadata["validation_known_counts"], [3, 3, 3, 3])
             self.assertFalse(cache.metadata["test_accessed"])
+
+    def test_gate_a_matrix_must_equal_accepted_004a2_matrix(self):
+        matrix = {"train": {"positive": [1], "negative": [2]}}
+        require_accepted_count_matrix(matrix, {"audit": {"development_counts": matrix}})
+        with self.assertRaisesRegex(Exception, "accepted Task 004A-2"):
+            require_accepted_count_matrix(
+                {"train": {"positive": [2], "negative": [2]}},
+                {"audit": {"development_counts": matrix}},
+            )
 
     def test_cache_failure_is_transactional(self):
         bad = list(_cache_rows())
@@ -675,6 +688,49 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
                     lock_path=lock, lock_sha256=sha256_file(lock),
                 )
 
+    def test_runtime_manifest_builder_refuses_drift_and_escaping_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); prefix = root / "env"; (prefix / "bin").mkdir(parents=True)
+            (prefix / "bin/python").write_bytes(b"python")
+            lock = root / "lock"; lock.write_text("@EXPLICIT\n")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps(build_runtime_manifest(prefix)))
+            verify_runtime(
+                prefix, manifest_path=manifest, manifest_sha256=sha256_file(manifest),
+                lock_path=lock, lock_sha256=sha256_file(lock),
+            )
+            (prefix / "lib/__pycache__").mkdir(parents=True)
+            (prefix / "lib/__pycache__/late.pyc").write_bytes(b"late")
+            with self.assertRaisesRegex(ResCNN004A3EnvironmentError, "extra"):
+                verify_runtime(
+                    prefix, manifest_path=manifest, manifest_sha256=sha256_file(manifest),
+                    lock_path=lock, lock_sha256=sha256_file(lock),
+                )
+            (prefix / "lib/__pycache__/late.pyc").unlink()
+            (prefix / "lib/__pycache__").rmdir()
+            (prefix / "escape").symlink_to(root / "outside")
+            with self.assertRaisesRegex(ResCNN004A3EnvironmentError, "escapes"):
+                build_runtime_manifest(prefix)
+
+    def test_environment_job_freezes_solve_host_and_immutability_contract(self):
+        job = (ROOT / "hpc/newton/004a3/02_PREPARE_ENVIRONMENT.sbatch").read_text()
+        for fragment in (
+            "pytorch::pytorch=2.5.1", "pytorch::pytorch-cuda=12.4",
+            "numpy=1.26.4", "mkl<2024.1", "--strict-channel-priority",
+            "--explicit --md5", "--copy", "PYTHONDONTWRITEBYTECODE=1",
+            "PYTHONNOUSERSITE=1", "chmod -R a-w", "platform.libc_ver",
+        ):
+            self.assertIn(fragment, job)
+        self.assertLess(job.index("repodata.json"), job.index('"$CONDA_EXE" create'))
+        self.assertLess(job.index("build_004a3_runtime_manifest.py"), job.index("pytest -q"))
+        self.assertGreater(job.rindex("environment_004a3"), job.index("pytest -q"))
+        submit = (ROOT / "hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh").read_text()
+        self.assertIn("RBP_004A3_CPU_PARTITION", submit)
+        self.assertIn("RBP_004A3_CPU_ACCOUNT", submit)
+        smoke_submit = (ROOT / "hpc/newton/004a3/03_SUBMIT_SMOKE.sh").read_text()
+        self.assertIn('c["gpu_nodelist"]', smoke_submit)
+        self.assertIn('--nodelist="$GPU_NODELIST"', smoke_submit)
+
     def test_launcher_exports_before_separate_python_processes(self):
         script = (ROOT / "hpc/newton/004a3/RUN_004A3_SMOKE.sbatch").read_text()
         first_python = script.index('"$RBP_004A3_ENV_PREFIX/bin/python"')
@@ -790,7 +846,7 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
                     expected_lock_sha256=sha256_file(lock),
                     expected_runtime_sha256=sha256_file(runtime),
                     required_gpu_name="NVIDIA A100", gpu_gres="gpu:a100:1",
-                    gpu_constraint="a100",
+                    gpu_constraint="a100", gpu_nodelist="synthetic-a100",
                 )
             with mock.patch.object(
                 builder, "_full_validation_known_counts", return_value=[10000] * 122,
@@ -802,7 +858,7 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
                     expected_lock_sha256=sha256_file(lock),
                     expected_runtime_sha256=sha256_file(runtime),
                     required_gpu_name="NVIDIA A100", gpu_gres="gpu:a100:1",
-                    gpu_constraint="a100",
+                    gpu_constraint="a100", gpu_nodelist="synthetic-a100",
                 )
             verify_bundle(bundle)
             bundled_config = json.loads((bundle / "BUNDLE_CONFIG.json").read_text())
@@ -821,12 +877,15 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             self.assertEqual(bundled_config["partition_preempt_mode"], "OFF")
             self.assertEqual(bundled_config["smoke_requeue_policy"], "disabled_fail_closed")
             self.assertEqual(bundled_config["required_gpu_name"], "NVIDIA A100")
+            self.assertEqual(bundled_config["gpu_nodelist"], "synthetic-a100")
             for relative in (
                 "intRBP ResCNN - for students.ipynb",
                 "manifests/task003b_phase_a_003b3.json",
                 "manifests/task004a2b_local_smoke.json",
                 "scripts/run_004a2b_local_smoke_recovery.sh",
                 "scripts/build_004a3_portable_bundle.py",
+                "scripts/build_004a3_runtime_manifest.py",
+                "scripts/build_004a3_development_cache.py",
                 "hpc/newton/004a3/00_SUBMIT_DISCOVERY.sh",
             ):
                 self.assertTrue((bundle / relative).is_file(), relative)
@@ -855,6 +914,15 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
         self.assertEqual(policy["slurm_limit_seconds"], 12 * 60 * 60)
         self.assertEqual(policy["partition_preempt_mode"], "REQUEUE")
         self.assertEqual(policy["full_run_preemption_requirement"], "restart_safe_before_004a4")
+
+    def test_l40s_policy_requires_the_discovery_proven_node(self):
+        spec = importlib.util.spec_from_file_location(
+            "build_004a3_bundle_gpu", ROOT / "scripts/build_004a3_portable_bundle.py",
+        )
+        builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+        builder._validate_gpu_policy("NVIDIA L40S", "gpu:L40:1", "", "nlp-l40-2")
+        with self.assertRaisesRegex(RuntimeError, "nlp-l40-2"):
+            builder._validate_gpu_policy("NVIDIA L40S", "gpu:L40:1", "", "other-node")
 
     def test_project_limit_must_fit_a_finite_partition_limit(self):
         spec = importlib.util.spec_from_file_location(

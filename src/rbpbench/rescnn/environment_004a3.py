@@ -21,6 +21,67 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _inside_prefix(path: Path, prefix: Path) -> bool:
+    try:
+        path.resolve().relative_to(prefix)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def build_runtime_manifest(prefix: Path) -> dict[str, object]:
+    """Inventory a complete immutable prefix without following symlinked dirs."""
+
+    prefix = Path(prefix).resolve()
+    if not prefix.is_dir():
+        raise ResCNN004A3EnvironmentError("runtime prefix is not a directory")
+    entries: list[dict[str, object]] = []
+    for directory, dirnames, filenames in os.walk(prefix, followlinks=False):
+        directory_path = Path(directory)
+        for name in sorted(list(dirnames)):
+            path = directory_path / name
+            if path.is_symlink():
+                dirnames.remove(name)
+                if not _inside_prefix(path, prefix):
+                    raise ResCNN004A3EnvironmentError(
+                        f"runtime symlink escapes prefix: {path.relative_to(prefix)}"
+                    )
+                entries.append({
+                    "path": path.relative_to(prefix).as_posix(),
+                    "type": "symlink", "target": os.readlink(path),
+                })
+        for name in sorted(filenames):
+            path = directory_path / name
+            relative = path.relative_to(prefix).as_posix()
+            if path.is_symlink():
+                if not _inside_prefix(path, prefix):
+                    raise ResCNN004A3EnvironmentError(
+                        f"runtime symlink escapes prefix: {relative}"
+                    )
+                entries.append({"path": relative, "type": "symlink", "target": os.readlink(path)})
+            elif path.is_file():
+                entries.append({
+                    "path": relative, "type": "file",
+                    "byte_size": path.stat().st_size, "sha256": sha256_file(path),
+                })
+            else:
+                raise ResCNN004A3EnvironmentError(f"unsupported runtime entry: {relative}")
+    entries.sort(key=lambda entry: str(entry["path"]))
+    if not entries:
+        raise ResCNN004A3EnvironmentError("runtime prefix is empty")
+    return {"schema_version": "task004a3_runtime_manifest_v1", "entries": entries}
+
+
+def write_runtime_manifest(prefix: Path, output: Path) -> dict[str, object]:
+    output = Path(output)
+    if output.exists():
+        raise ResCNN004A3EnvironmentError("runtime manifest output already exists")
+    payload = build_runtime_manifest(prefix)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return payload
+
+
 def verify_runtime(
     prefix: Path,
     *,
@@ -53,6 +114,8 @@ def verify_runtime(
         elif entry.get("type") == "symlink":
             if not path.is_symlink() or os.readlink(path) != entry.get("target"):
                 raise ResCNN004A3EnvironmentError(f"runtime symlink drift: {relative}")
+            if not _inside_prefix(path, prefix):
+                raise ResCNN004A3EnvironmentError(f"runtime symlink escapes prefix: {relative}")
         else:
             raise ResCNN004A3EnvironmentError("unknown runtime manifest entry type")
     actual = set()

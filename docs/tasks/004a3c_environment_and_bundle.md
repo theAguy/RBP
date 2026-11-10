@@ -1,7 +1,8 @@
 # Task 004A-3C — freeze the Newton environment and build the GPU-smoke bundle
 
-**Status:** planning review corrections G1-G5 implemented and synthetically
-verified; awaiting independent implementation review. No environment job, real-data
+**Status:** checkpoint 3C-1 accepted and closed at `d11dad1`; checkpoint 3C-2
+execution handoff prepared and awaiting static review plus owner authorization.
+No environment job, real-data
 cache build, bundle build, CUDA use, or GPU submission is authorized by this
 document.
 

@@ -2,9 +2,10 @@
 
 **Status:** synthetic-only implementation plus bounded E1–E6 and F1–F2
 corrections are independently accepted; Task 004A-3A is closed. The one
-data-free 004A-3B discovery is complete and accepted. Its bounded
-UNLIMITED-partition correction awaits static review. No environment install,
-real-input subset build, CUDA smoke or training run is authorized here.
+data-free 004A-3B discovery and its UNLIMITED-partition correction are also
+accepted. Task 004A-3C is separately planned and awaiting review. No
+environment install, real-input subset build, CUDA smoke or training run is
+authorized here.
 
 **Parent:** `docs/tasks/004a3_newton_gpu_resource_smoke.md`
 

@@ -1,10 +1,10 @@
 # Task 004A-3 — Newton GPU environment and resource smoke
 
-**Status:** planning accepted after C1–C4 and D1–D4; 004A-3A is independently
-accepted and closed. The single data-free 004A-3B discovery ran and its
-returned hardware/storage/scheduler evidence is accepted. The bounded
-UNLIMITED-partition correction awaits static review. No environment install,
-real-data subset, CUDA smoke or training run is authorized by this document.
+**Status:** 004A-3A and the single data-free 004A-3B discovery are accepted and
+closed, including the UNLIMITED-partition correction. Task 004A-3C environment
+and bundle preparation is planned in `004a3c_environment_and_bundle.md` and
+awaits independent planning review. No environment install, real-data subset,
+CUDA smoke or training run is authorized by this document.
 
 **Parent:** `docs/tasks/004a_rescnn_reconstruction_and_development_pilot.md`
 

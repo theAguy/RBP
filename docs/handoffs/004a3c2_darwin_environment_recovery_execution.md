@@ -13,7 +13,7 @@ immutable evidence. Never delete, edit, enter for development, or reuse them.
 
 ## Fixed evidence and source
 
-- recovery source commit: `57c237231c00f41faf9c01e46418f51fec4d52ef`;
+- recovery source commit: `0a70024cb10c4890c7d2da47717c2e06f8c7c732`;
 - old source commit: `d11dad131d4a964a24bdd0a2dc46f6a76ba7686b`;
 - stopped job: `543090`;
 - stopped return SHA-256:
@@ -38,8 +38,8 @@ export RBP_004A3_STOPPED_RETURN_SHA256=056d553286ca60b7f23f89781b79ac5bba30bb660
 export RBP_004A3_PRIOR_PREFLIGHT_SHA256=645ecfc4f73dd1d9ea9040a45eb6791916e5775314debe6b2b4e0d3497feff6b
 export RBP_004A3_LOCK_SHA256=4acbb5a8ebf263a7cfc59975d29620ae03a59416046768b0627ad386cd5a67c8
 export RBP_004A3_LOCK_ENTRY_COUNT=91
-export RBP_004A3_RECOVERY_CHECKOUT="$HOME/rbp_004a3_env_recovery_57c2372"
-export RBP_004A3_RECOVERY_EVIDENCE="$HOME/rbp_004a3_env_recovery_57c2372_pre_submission.txt"
+export RBP_004A3_RECOVERY_CHECKOUT="$HOME/rbp_004a3_env_recovery_0a70024"
+export RBP_004A3_RECOVERY_EVIDENCE="$HOME/rbp_004a3_env_recovery_0a70024_pre_submission.txt"
 
 DARWIN_HOME=$(cd "$HOME" && pwd -P)
 FREE_HOME_KIB=$(df -Pk "$HOME" | awk 'NR==2 {print $4}')
@@ -78,8 +78,8 @@ if test ! -e "$RBP_004A3_RECOVERY_CHECKOUT"; then
     https://github.com/theAguy/RBP.git "$RBP_004A3_RECOVERY_CHECKOUT"; then
     export RBP_004A3_RECOVERY_CHECKOUT_WAS_ABSENT=1
     cd "$RBP_004A3_RECOVERY_CHECKOUT"
-    git checkout --detach 57c237231c00f41faf9c01e46418f51fec4d52ef
-    test "$(git rev-parse HEAD)" = 57c237231c00f41faf9c01e46418f51fec4d52ef
+    git checkout --detach 0a70024cb10c4890c7d2da47717c2e06f8c7c732
+    test "$(git rev-parse HEAD)" = 0a70024cb10c4890c7d2da47717c2e06f8c7c732
     test -z "$(git status --porcelain --untracked-files=all)"
   else
     echo 'STOP: recovery clone failed; preserve the partial checkout'
@@ -95,7 +95,7 @@ Prove the shared-home view from Newton:
 NEWTON_HOME=$(ssh guy.assa@newton 'cd "$HOME" && pwd -P')
 unset RBP_004A3_RECOVERY_NEWTON_VISIBLE
 if test "$NEWTON_HOME" = "$DARWIN_HOME" && ssh guy.assa@newton \
-  "test -d '$DARWIN_HOME/rbp_004a3_env_recovery_57c2372' && stat '$DARWIN_HOME/rbp_004a3_env_recovery_57c2372'"; then
+  "test -d '$DARWIN_HOME/rbp_004a3_env_recovery_0a70024' && stat '$DARWIN_HOME/rbp_004a3_env_recovery_0a70024'"; then
   export RBP_004A3_RECOVERY_NEWTON_VISIBLE=1
 else
   echo 'STOP: recovery checkout is not identically visible from Newton'
@@ -124,7 +124,7 @@ if case "$RBP_004A3_CONDA_EXE" in /*) true;; *) false;; esac \
   && python3 --version \
   && test "${RBP_004A3_RECOVERY_CHECKOUT_WAS_ABSENT:-}" = 1 \
   && test "${RBP_004A3_RECOVERY_NEWTON_VISIBLE:-}" = 1 \
-  && test "$(git rev-parse HEAD)" = 57c237231c00f41faf9c01e46418f51fec4d52ef \
+  && test "$(git rev-parse HEAD)" = 0a70024cb10c4890c7d2da47717c2e06f8c7c732 \
   && test -z "$(git status --porcelain --untracked-files=all)" \
   && test "$(git -C "$RBP_004A3_STOPPED_ROOT" rev-parse HEAD)" = d11dad131d4a964a24bdd0a2dc46f6a76ba7686b \
   && GIT_OPTIONAL_LOCKS=0 git -C "$RBP_004A3_STOPPED_ROOT" diff --quiet \
@@ -226,15 +226,15 @@ export DARWIN_HOME=/home/guy.assa
 mkdir -p artifacts/teammate_run_results/004a3c2_darwin_environment_recovery
 
 scp \
-  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/environment_recovery_return/RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip" \
-  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/environment_recovery_return/RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip.sha256" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_0a70024/environment_recovery_return/RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_0a70024/environment_recovery_return/RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip.sha256" \
   artifacts/teammate_run_results/004a3c2_darwin_environment_recovery/
 
 scp \
-  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/slurm-004a3-env-recovery-${JOB_ID}.out" \
-  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/slurm-004a3-env-recovery-${JOB_ID}.err" \
-  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/sacct-004a3-env-recovery-${JOB_ID}.txt" \
-  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372_pre_submission.txt" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_0a70024/slurm-004a3-env-recovery-${JOB_ID}.out" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_0a70024/slurm-004a3-env-recovery-${JOB_ID}.err" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_0a70024/sacct-004a3-env-recovery-${JOB_ID}.txt" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_0a70024_pre_submission.txt" \
   artifacts/teammate_run_results/004a3c2_darwin_environment_recovery/
 
 cd artifacts/teammate_run_results/004a3c2_darwin_environment_recovery

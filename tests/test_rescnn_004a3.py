@@ -779,7 +779,7 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             ROOT / "docs/handoffs/004a3c2_darwin_environment_recovery_execution.md"
         ).read_text()
         for fragment in (
-            "57c237231c00f41faf9c01e46418f51fec4d52ef",
+            "0a70024cb10c4890c7d2da47717c2e06f8c7c732",
             "543090",
             "056d553286ca60b7f23f89781b79ac5bba30bb6600afefe7232dad3a34ab19c4",
             "4acbb5a8ebf263a7cfc59975d29620ae03a59416046768b0627ad386cd5a67c8",

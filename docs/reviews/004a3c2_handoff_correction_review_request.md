@@ -84,3 +84,32 @@ F1 verification:
   warnings, 76.04 seconds;
 - complete five-file focused run 2: 110 passed, 73 subtests, two pre-existing
   warnings, 72.19 seconds.
+
+## G1 follow-up
+
+The F1 review approved D1-D3, E1 and F1 but found that the final gate could
+reissue a fresh approval token in the same session. The handoff now:
+
+- requires the pre-submission evidence file to be absent before the gate may
+  issue its one approval;
+- retains that evidence file after the submission attempt as a durable replay
+  barrier;
+- unsets both `RBP_004A3_PREFLIGHT_OK` and
+  `RBP_004A3_CHECKOUT_WAS_ABSENT` after the submission attempt.
+
+The extended regression requires the evidence-file absence gate and the
+post-submit clearing of both session flags. Please include G1 in the same
+static correction verdict.
+
+G1 verification:
+
+- the extended regression fails on parent `8bea703` because the durable
+  pre-submission-evidence absence gate is missing;
+- corrected `test_rescnn_004a3.py` run 1: 46 passed, 53 subtests, one
+  pre-existing warning, 10.32 seconds;
+- corrected run 2: 46 passed, 53 subtests, one pre-existing warning,
+  7.88 seconds;
+- complete five-file focused run 1: 110 passed, 73 subtests, two pre-existing
+  warnings, 83.31 seconds;
+- complete five-file focused run 2: 110 passed, 73 subtests, two pre-existing
+  warnings, 72.30 seconds.

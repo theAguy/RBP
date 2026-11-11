@@ -675,12 +675,20 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
         self.assertNotIn("set -Eeuo pipefail", handoff)
         self.assertIn('${RBP_004A3_CONDA_EXE:?', handoff)
         self.assertIn("PREFLIGHT_OK", handoff)
+        self.assertIn(
+            'test ! -e "$HOME/rbp_004a3_env_d11dad1_pre_submission.txt"',
+            handoff,
+        )
         submit_call = "bash hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh"
         unset_approval = "unset RBP_004A3_PREFLIGHT_OK"
         self.assertIn(submit_call, handoff)
         self.assertIn(unset_approval, handoff)
         submit_index = handoff.index(submit_call)
         self.assertGreater(handoff.index(unset_approval, submit_index), submit_index)
+        self.assertIn(
+            "unset RBP_004A3_PREFLIGHT_OK RBP_004A3_CHECKOUT_WAS_ABSENT",
+            handoff,
+        )
         self.assertIn("existing checkout ends this checkpoint", handoff)
         self.assertIn("do not delete", handoff)
         self.assertIn("do not enter or edit it", handoff)

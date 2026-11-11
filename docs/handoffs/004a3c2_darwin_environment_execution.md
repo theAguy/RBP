@@ -126,6 +126,7 @@ if case "$RBP_004A3_CONDA_EXE" in /*) true;; *) false;; esac \
   && test "${RBP_004A3_NEWTON_CHECKOUT_VISIBLE:-}" = 1 \
   && test "$(git rev-parse HEAD)" = "d11dad131d4a964a24bdd0a2dc46f6a76ba7686b" \
   && test -z "$(git status --porcelain --untracked-files=all)" \
+  && test ! -e "$HOME/rbp_004a3_env_d11dad1_pre_submission.txt" \
   && test ! -e environment_return \
   && test ! -e environment_work \
   && test ! -e environment_staging; then
@@ -160,7 +161,7 @@ Use the already validated and exported Conda path:
   && export RBP_004A3_CPU_PARTITION=public \
   && unset RBP_004A3_CPU_ACCOUNT \
   && export RBP_SLURM_MAIL_USER=guyassa@gmail.com \
-  && bash hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh; RBP_004A3_SUBMIT_STATUS=$?; unset RBP_004A3_PREFLIGHT_OK
+  && bash hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh; RBP_004A3_SUBMIT_STATUS=$?; unset RBP_004A3_PREFLIGHT_OK RBP_004A3_CHECKOUT_WAS_ABSENT
 if test "$RBP_004A3_SUBMIT_STATUS" -eq 0; then
   echo 'SUBMISSION_ACCEPTED: the one-use preflight approval has been consumed'
 else

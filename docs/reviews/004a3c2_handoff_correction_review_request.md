@@ -54,3 +54,33 @@ E1 verification:
   6.11 seconds;
 - the earlier post-D1-D3 complete five-file runs remain 110 passed and 73
   subtests twice.
+
+## F1 follow-up
+
+The E1 review approved D1-D3 and E1 but found that the exported approval flag
+remained reusable after the submission command. The handoff now:
+
+- records the submission command's status and unsets
+  `RBP_004A3_PREFLIGHT_OK` immediately afterward, whether submission succeeds
+  or fails;
+- tells the operator that a disconnect after cloning ends the checkpoint and
+  that the checkout must not be deleted or reused;
+- keeps checkout entry and detached checkout inside the newly-created clone
+  branch, so a pre-existing directory is not entered or edited.
+
+The extended document regression requires the approval-token consumption to
+occur after the submit call and checks the existing-checkout stop language.
+Please include F1 in the same static correction verdict.
+
+F1 verification:
+
+- the extended regression fails on parent `caab8d3` because no approval-token
+  `unset` occurs after the submit call;
+- corrected `test_rescnn_004a3.py` run 1: 46 passed, 53 subtests, one
+  pre-existing warning, 7.17 seconds;
+- corrected run 2: 46 passed, 53 subtests, one pre-existing warning,
+  6.74 seconds.
+- complete five-file focused run 1: 110 passed, 73 subtests, two pre-existing
+  warnings, 76.04 seconds;
+- complete five-file focused run 2: 110 passed, 73 subtests, two pre-existing
+  warnings, 72.19 seconds.

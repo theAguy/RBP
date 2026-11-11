@@ -66,15 +66,18 @@ The directory must not already exist:
 cd "$HOME"
 unset RBP_004A3_CHECKOUT_WAS_ABSENT
 if test ! -e "$HOME/rbp_004a3_env_d11dad1"; then
-  export RBP_004A3_CHECKOUT_WAS_ABSENT=1
-  git clone --branch issue-003b-simple-baselines https://github.com/theAguy/RBP.git rbp_004a3_env_d11dad1
+  if git clone --branch issue-003b-simple-baselines https://github.com/theAguy/RBP.git rbp_004a3_env_d11dad1; then
+    export RBP_004A3_CHECKOUT_WAS_ABSENT=1
+    cd "$HOME/rbp_004a3_env_d11dad1"
+    git checkout --detach d11dad131d4a964a24bdd0a2dc46f6a76ba7686b
+    test "$(git rev-parse HEAD)" = "d11dad131d4a964a24bdd0a2dc46f6a76ba7686b"
+    test -z "$(git status --porcelain --untracked-files=all)"
+  else
+    echo 'STOP: clone failed; do not reuse the partial checkout'
+  fi
 else
-  echo 'STOP: execution checkout already exists'
+  echo 'STOP: execution checkout already exists; do not enter or edit it'
 fi
-cd "$HOME/rbp_004a3_env_d11dad1"
-git checkout --detach d11dad131d4a964a24bdd0a2dc46f6a76ba7686b
-test "$(git rev-parse HEAD)" = "d11dad131d4a964a24bdd0a2dc46f6a76ba7686b"
-test -z "$(git status --porcelain --untracked-files=all)"
 ```
 
 Also run the clear check and inspect its single output line:
@@ -157,12 +160,18 @@ Use the already validated and exported Conda path:
   && export RBP_004A3_CPU_PARTITION=public \
   && unset RBP_004A3_CPU_ACCOUNT \
   && export RBP_SLURM_MAIL_USER=guyassa@gmail.com \
-  && bash hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh
+  && bash hpc/newton/004a3/02_SUBMIT_ENVIRONMENT.sh; RBP_004A3_SUBMIT_STATUS=$?; unset RBP_004A3_PREFLIGHT_OK
+if test "$RBP_004A3_SUBMIT_STATUS" -eq 0; then
+  echo 'SUBMISSION_ACCEPTED: the one-use preflight approval has been consumed'
+else
+  echo 'SUBMISSION_FAILED: stop and report; do not run the submit block again'
+fi
 ```
 
-If the SSH session drops at any point before submission, log in again and
-repeat the full preflight from the Conda-resolution block. Do not run only the
-submit block.
+If the SSH session drops before the clone is created, log in again and repeat
+the full preflight from the Conda-resolution block. If it drops after cloning,
+the existing checkout ends this checkpoint: stop and report it. Do not delete,
+enter, edit or reuse the checkout, and do not run only the submit block.
 
 Record the job number printed by `sbatch`:
 

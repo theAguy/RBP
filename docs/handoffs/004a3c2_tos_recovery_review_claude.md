@@ -9,7 +9,8 @@ Perform a static review using:
 5. `hpc/newton/004a3/02_RECOVER_ENVIRONMENT.sbatch`;
 6. `hpc/newton/004a3/02_SUBMIT_ENVIRONMENT_RECOVERY.sh`;
 7. `tests/test_rescnn_004a3.py`;
-8. the complete implementation diff.
+8. `docs/handoffs/004a3c2_darwin_environment_recovery_execution.md`;
+9. the complete implementation and handoff diff.
 
 Return Approve, Approve with bounded corrections, or Stop. Do not execute or
 authorize the recovery or any later checkpoint.

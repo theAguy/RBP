@@ -737,6 +737,23 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
         self.assertIn('[[ ! -e "$FINAL" ]]', submit)
         self.assertNotIn("--gres", submit)
 
+        handoff = (
+            ROOT / "docs/handoffs/004a3c2_darwin_environment_recovery_execution.md"
+        ).read_text()
+        for fragment in (
+            "57c237231c00f41faf9c01e46418f51fec4d52ef",
+            "543090",
+            "056d553286ca60b7f23f89781b79ac5bba30bb6600afefe7232dad3a34ab19c4",
+            "4acbb5a8ebf263a7cfc59975d29620ae03a59416046768b0627ad386cd5a67c8",
+            "RECOVERY_PREFLIGHT_OK", "02_SUBMIT_ENVIRONMENT_RECOVERY.sh",
+            "unset RBP_004A3_RECOVERY_PREFLIGHT_OK",
+            'test ! -e "$RBP_004A3_RECOVERY_EVIDENCE"',
+            "environment_recovery_return", "sacct-004a3-env-recovery",
+        ):
+            self.assertIn(fragment, handoff)
+        self.assertNotIn("conda tos accept", handoff)
+        self.assertNotIn("rm -rf", handoff)
+
     def test_darwin_environment_handoff_preflights_single_shot_dependencies(self):
         handoff = (
             ROOT / "docs/handoffs/004a3c2_darwin_environment_execution.md"

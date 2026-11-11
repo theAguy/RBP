@@ -58,6 +58,10 @@ Review:
    - valid and adversarial lock/return validation;
    - static prevention of a new solve, online recreation, staging deletion,
      evidence reuse, final-prefix overwrite or GPU request.
+6. `docs/handoffs/004a3c2_darwin_environment_recovery_execution.md`:
+   - exact source/evidence bindings, fresh checkout, single-use gate and
+     submission token, shared-home proof, separate accounting/return paths,
+     and explicit no-delete/no-retry rules.
 
 ## Review questions
 

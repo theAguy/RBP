@@ -96,3 +96,33 @@ cache/bundle, or authorize 3C-3/3D/004A-4.
   because the authenticated recovery module does not exist there;
 - every `hpc/newton/004a3` shell script passes `/bin/bash -n`, the new module
   compiles, and `git diff --check` is clean.
+
+## R1-R2 review corrections
+
+The first independent recovery review approved the design with two bounded
+bindings:
+
+- R1 authenticates the prior pre-submission evidence SHA-256, requires its
+  recorded Conda executable to equal the recovery executable, and requires
+  exact `conda 26.9.3` both in the operator gate and recovery job.
+- R2 requires the authenticated stopped ZIP to contain exactly one
+  `environment.lock` member whose byte SHA-256 equals the separately validated
+  lock SHA-256.
+
+The same correction also makes the job `cd "$ROOT"` explicitly, performs an
+offline dry-run before final-prefix creation, checks system Python in the
+operator gate, disables optional Git index locks when checking the old tree,
+and derives download paths from the recorded Darwin home. None changes package
+selection or scientific behavior.
+
+R1-R2 verification:
+
+- both corrected recovery tests fail on parent `57c2372`: R2 fails because
+  `validate_stopped_return` has no lock-hash binding, and R1 fails because the
+  recovery has no prior-preflight/Conda binding;
+- corrected `test_rescnn_004a3.py`: 48 passed, 53 subtests and one pre-existing
+  warning;
+- complete focused run 1: 112 passed, 73 subtests, two pre-existing warnings,
+  95.18 seconds;
+- complete focused run 2: 112 passed, 73 subtests, two pre-existing warnings,
+  82.07 seconds.

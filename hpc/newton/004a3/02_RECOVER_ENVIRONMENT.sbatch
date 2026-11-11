@@ -13,10 +13,12 @@ set -Eeuo pipefail
 : "${RBP_004A3_STOPPED_ROOT:?stopped checkout root required}"
 : "${RBP_004A3_STOPPED_JOB_ID:?stopped job ID required}"
 : "${RBP_004A3_STOPPED_RETURN_SHA256:?stopped-return SHA-256 required}"
+: "${RBP_004A3_PRIOR_PREFLIGHT_SHA256:?prior preflight SHA-256 required}"
 : "${RBP_004A3_LOCK_SHA256:?environment-lock SHA-256 required}"
 : "${RBP_004A3_LOCK_ENTRY_COUNT:?environment-lock entry count required}"
 
 ROOT=$(cd "$RBP_004A3_ROOT" && pwd -P)
+cd "$ROOT"
 PRIOR_ROOT=$(cd "$RBP_004A3_STOPPED_ROOT" && pwd -P)
 CONDA_EXE=$RBP_004A3_CONDA_EXE
 PRIOR_JOB_ID=$RBP_004A3_STOPPED_JOB_ID
@@ -25,6 +27,7 @@ RETURN="$ROOT/environment_recovery_return"
 PRIOR_WORK="$PRIOR_ROOT/environment_work/job_${PRIOR_JOB_ID}"
 STAGING="$PRIOR_ROOT/environment_staging/job_${PRIOR_JOB_ID}/solve_prefix"
 PRIOR_RETURN="$PRIOR_ROOT/environment_return/RBP_004A3_ENVIRONMENT_RETURN.zip"
+PRIOR_PREFLIGHT="$HOME/rbp_004a3_env_d11dad1_pre_submission.txt"
 FINAL="$HOME/.conda/envs/rbpbench-004a3-${RBP_004A3_LOCK_SHA256:0:12}"
 START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 STAGE=initialization
@@ -62,12 +65,17 @@ STAGE=authenticate_prior_evidence
 [[ "$CONDA_EXE" = /* && -x "$CONDA_EXE" ]]
 [[ "$PRIOR_JOB_ID" =~ ^[1-9][0-9]*$ ]]
 [[ "$RBP_004A3_STOPPED_RETURN_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$RBP_004A3_PRIOR_PREFLIGHT_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$RBP_004A3_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$RBP_004A3_LOCK_ENTRY_COUNT" =~ ^[1-9][0-9]*$ ]]
 [[ -d "$STAGING" && ! -L "$STAGING" ]]
 [[ -f "$PRIOR_WORK/environment.lock" && ! -L "$PRIOR_WORK/environment.lock" ]]
 [[ -f "$PRIOR_RETURN" && ! -L "$PRIOR_RETURN" ]]
+[[ -f "$PRIOR_PREFLIGHT" && ! -L "$PRIOR_PREFLIGHT" ]]
 [[ ! -e "$FINAL" ]]
+[[ "$(sha256sum "$PRIOR_PREFLIGHT" | awk '{print $1}')" = "$RBP_004A3_PRIOR_PREFLIGHT_SHA256" ]]
+[[ "$(sed -n 's/^conda_executable=//p' "$PRIOR_PREFLIGHT")" = "$CONDA_EXE" ]]
+[[ "$("$CONDA_EXE" --version)" = "conda 26.9.3" ]]
 cp "$PRIOR_WORK/environment.lock" "$WORK/environment.lock"
 PYTHONPATH=src python3 -m rbpbench.environment_recovery_004a3 \
   --stopped-return "$PRIOR_RETURN" \
@@ -111,6 +119,12 @@ cmp "$WORK/environment.lock" "$WORK/staging_environment.lock"
 "$CONDA_EXE" list --json --prefix "$STAGING" > "$WORK/staging_packages.json"
 
 STAGE=recreate_final_prefix_offline
+DRY_RUN_PREFIX="$WORK/offline_dry_run_prefix"
+"$CONDA_EXE" create --dry-run --json --copy --offline --override-channels --strict-channel-priority \
+  -c pytorch -c nvidia -c conda-forge \
+  --prefix "$DRY_RUN_PREFIX" --file "$WORK/environment.lock" > "$WORK/offline_recreation_plan.json"
+[[ ! -e "$DRY_RUN_PREFIX" ]]
+[[ ! -e "$FINAL" ]]
 "$CONDA_EXE" create --yes --copy --offline --override-channels --strict-channel-priority \
   -c pytorch -c nvidia -c conda-forge \
   --prefix "$FINAL" --file "$WORK/environment.lock"

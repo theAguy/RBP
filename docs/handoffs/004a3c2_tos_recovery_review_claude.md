@@ -1,4 +1,4 @@
-# Claude handoff — Task 004A-3C-2 bounded ToS-stop recovery review
+# Claude handoff — Task 004A-3C-2 bounded ToS-stop recovery review (R1-R2)
 
 Perform a static review using:
 

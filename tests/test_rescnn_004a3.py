@@ -687,10 +687,15 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
                     "RBP_004A3_ENVIRONMENT_RETURN/STATUS.json",
                     json.dumps(status),
                 )
+                handle.writestr(
+                    "RBP_004A3_ENVIRONMENT_RETURN/environment.lock",
+                    lock.read_bytes(),
+                )
             archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
             self.assertEqual(
                 validate_stopped_return(
                     archive, expected_sha256=archive_sha,
+                    expected_lock_sha256=lock_sha,
                     expected_staging=staging, expected_final=final,
                 )["status"],
                 "STOPPED",
@@ -704,7 +709,35 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             with self.assertRaisesRegex(EnvironmentRecoveryError, "staging-prefix"):
                 validate_stopped_return(
                     archive, expected_sha256=archive_sha,
+                    expected_lock_sha256=lock_sha,
                     expected_staging=staging + "-wrong", expected_final=final,
+                )
+            missing_lock = root / "missing-lock.zip"
+            with zipfile.ZipFile(missing_lock, "w") as handle:
+                handle.writestr(
+                    "RBP_004A3_ENVIRONMENT_RETURN/STATUS.json", json.dumps(status),
+                )
+            with self.assertRaisesRegex(EnvironmentRecoveryError, "invalid members"):
+                validate_stopped_return(
+                    missing_lock,
+                    expected_sha256=hashlib.sha256(missing_lock.read_bytes()).hexdigest(),
+                    expected_lock_sha256=lock_sha,
+                    expected_staging=staging, expected_final=final,
+                )
+            wrong_lock = root / "wrong-lock.zip"
+            with zipfile.ZipFile(wrong_lock, "w") as handle:
+                handle.writestr(
+                    "RBP_004A3_ENVIRONMENT_RETURN/STATUS.json", json.dumps(status),
+                )
+                handle.writestr(
+                    "RBP_004A3_ENVIRONMENT_RETURN/environment.lock", b"wrong",
+                )
+            with self.assertRaisesRegex(EnvironmentRecoveryError, "lock SHA-256"):
+                validate_stopped_return(
+                    wrong_lock,
+                    expected_sha256=hashlib.sha256(wrong_lock.read_bytes()).hexdigest(),
+                    expected_lock_sha256=lock_sha,
+                    expected_staging=staging, expected_final=final,
                 )
 
     def test_environment_recovery_is_offline_bound_and_non_destructive(self):
@@ -716,10 +749,12 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
         recovery = (ROOT / "hpc/newton/004a3/02_RECOVER_ENVIRONMENT.sbatch").read_text()
         for fragment in (
             "RBP_004A3_STOPPED_RETURN_SHA256", "RBP_004A3_LOCK_SHA256",
-            "RBP_004A3_LOCK_ENTRY_COUNT", "environment_recovery_work",
+            "RBP_004A3_PRIOR_PREFLIGHT_SHA256", "RBP_004A3_LOCK_ENTRY_COUNT",
+            "environment_recovery_work",
             "environment_recovery_return", "environment_recovery_004a3",
             "list --explicit --md5", 'cmp "$WORK/environment.lock"',
             "create --yes --copy --offline --override-channels",
+            "create --dry-run --json --copy --offline --override-channels",
             '[[ ! -e "$FINAL" ]]', "RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip",
             "conda_info_recovery_before.json", "package_cache_before.json",
             "conda_configured_channels.txt", "host.json", "prefix_summary.json",
@@ -728,6 +763,9 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             self.assertIn(fragment, recovery)
         self.assertNotIn("pytorch::pytorch=2.5.1", recovery)
         self.assertNotIn('rm -rf "$STAGING"', recovery)
+        self.assertIn('cd "$ROOT"', recovery)
+        self.assertIn("conda 26.9.3", recovery)
+        self.assertIn("offline_dry_run_prefix", recovery)
         self.assertLess(
             recovery.index("recovery_input_validation.json"),
             recovery.index("recreate_final_prefix_offline"),
@@ -749,10 +787,14 @@ class EnvironmentPortableAndScriptTests(unittest.TestCase):
             "unset RBP_004A3_RECOVERY_PREFLIGHT_OK",
             'test ! -e "$RBP_004A3_RECOVERY_EVIDENCE"',
             "environment_recovery_return", "sacct-004a3-env-recovery",
+            'test "$("$RBP_004A3_CONDA_EXE" --version)" = "conda 26.9.3"',
+            'sed -n \'s/^conda_executable=//p\'',
         ):
             self.assertIn(fragment, handoff)
         self.assertNotIn("conda tos accept", handoff)
         self.assertNotIn("rm -rf", handoff)
+        self.assertIn("GIT_OPTIONAL_LOCKS=0", handoff)
+        self.assertIn("python3 --version", handoff)
 
     def test_darwin_environment_handoff_preflights_single_shot_dependencies(self):
         handoff = (

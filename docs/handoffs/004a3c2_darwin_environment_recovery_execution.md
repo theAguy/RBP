@@ -35,6 +35,7 @@ export RBP_004A3_CONDA_EXE="$HOME/.local/rbpbench-miniconda-py311-26.9.3/bin/con
 export RBP_004A3_STOPPED_ROOT="$HOME/rbp_004a3_env_d11dad1"
 export RBP_004A3_STOPPED_JOB_ID=543090
 export RBP_004A3_STOPPED_RETURN_SHA256=056d553286ca60b7f23f89781b79ac5bba30bb6600afefe7232dad3a34ab19c4
+export RBP_004A3_PRIOR_PREFLIGHT_SHA256=645ecfc4f73dd1d9ea9040a45eb6791916e5775314debe6b2b4e0d3497feff6b
 export RBP_004A3_LOCK_SHA256=4acbb5a8ebf263a7cfc59975d29620ae03a59416046768b0627ad386cd5a67c8
 export RBP_004A3_LOCK_ENTRY_COUNT=91
 export RBP_004A3_RECOVERY_CHECKOUT="$HOME/rbp_004a3_env_recovery_57c2372"
@@ -52,11 +53,16 @@ Verify the preserved evidence without changing it:
 OLD_RETURN="$RBP_004A3_STOPPED_ROOT/environment_return/RBP_004A3_ENVIRONMENT_RETURN.zip"
 OLD_LOCK="$RBP_004A3_STOPPED_ROOT/environment_work/job_543090/environment.lock"
 OLD_STAGING="$RBP_004A3_STOPPED_ROOT/environment_staging/job_543090/solve_prefix"
+OLD_PREFLIGHT="$HOME/rbp_004a3_env_d11dad1_pre_submission.txt"
 FINAL="$HOME/.conda/envs/rbpbench-004a3-4acbb5a8ebf2"
-export OLD_RETURN OLD_LOCK OLD_STAGING FINAL
+export OLD_RETURN OLD_LOCK OLD_STAGING OLD_PREFLIGHT FINAL
 
 printf 'old_return_sha256=%s\n' "$(sha256sum "$OLD_RETURN" | awk '{print $1}')"
 printf 'old_lock_sha256=%s\n' "$(sha256sum "$OLD_LOCK" | awk '{print $1}')"
+printf 'old_preflight_sha256=%s\n' "$(sha256sum "$OLD_PREFLIGHT" | awk '{print $1}')"
+printf 'recorded_conda=%s\n' "$(sed -n 's/^conda_executable=//p' "$OLD_PREFLIGHT")"
+"$RBP_004A3_CONDA_EXE" --version
+python3 --version
 test -d "$OLD_STAGING" && test ! -L "$OLD_STAGING"
 test ! -e "$FINAL"
 ```
@@ -113,14 +119,18 @@ if case "$RBP_004A3_CONDA_EXE" in /*) true;; *) false;; esac \
   && case "$FREE_HOME_KIB" in ''|*[!0-9]*) false;; *) true;; esac \
   && test "$FREE_HOME_KIB" -ge 52428800 \
   && test "$NEWTON_HOME" = "$DARWIN_HOME" \
+  && test "$(sed -n 's/^conda_executable=//p' "$OLD_PREFLIGHT")" = "$RBP_004A3_CONDA_EXE" \
+  && test "$("$RBP_004A3_CONDA_EXE" --version)" = "conda 26.9.3" \
+  && python3 --version \
   && test "${RBP_004A3_RECOVERY_CHECKOUT_WAS_ABSENT:-}" = 1 \
   && test "${RBP_004A3_RECOVERY_NEWTON_VISIBLE:-}" = 1 \
   && test "$(git rev-parse HEAD)" = 57c237231c00f41faf9c01e46418f51fec4d52ef \
   && test -z "$(git status --porcelain --untracked-files=all)" \
   && test "$(git -C "$RBP_004A3_STOPPED_ROOT" rev-parse HEAD)" = d11dad131d4a964a24bdd0a2dc46f6a76ba7686b \
-  && git -C "$RBP_004A3_STOPPED_ROOT" diff --quiet \
-  && git -C "$RBP_004A3_STOPPED_ROOT" diff --cached --quiet \
+  && GIT_OPTIONAL_LOCKS=0 git -C "$RBP_004A3_STOPPED_ROOT" diff --quiet \
+  && GIT_OPTIONAL_LOCKS=0 git -C "$RBP_004A3_STOPPED_ROOT" diff --cached --quiet \
   && test "$(sha256sum "$OLD_RETURN" | awk '{print $1}')" = "$RBP_004A3_STOPPED_RETURN_SHA256" \
+  && test "$(sha256sum "$OLD_PREFLIGHT" | awk '{print $1}')" = "$RBP_004A3_PRIOR_PREFLIGHT_SHA256" \
   && test "$(sha256sum "$OLD_LOCK" | awk '{print $1}')" = "$RBP_004A3_LOCK_SHA256" \
   && test -d "$OLD_STAGING" && test ! -L "$OLD_STAGING" \
   && test ! -e "$FINAL" \
@@ -133,6 +143,10 @@ if case "$RBP_004A3_CONDA_EXE" in /*) true;; *) false;; esac \
     printf 'conda_executable=%s\n' "$RBP_004A3_CONDA_EXE"
     printf 'stopped_job_id=%s\n' "$RBP_004A3_STOPPED_JOB_ID"
     printf 'stopped_return_sha256=%s\n' "$RBP_004A3_STOPPED_RETURN_SHA256"
+    printf 'prior_preflight_sha256=%s\n' "$RBP_004A3_PRIOR_PREFLIGHT_SHA256"
+    printf 'conda_executable=%s\n' "$RBP_004A3_CONDA_EXE"
+    "$RBP_004A3_CONDA_EXE" --version
+    python3 --version
     printf 'environment_lock_sha256=%s\n' "$RBP_004A3_LOCK_SHA256"
     printf 'environment_lock_entry_count=%s\n' "$RBP_004A3_LOCK_ENTRY_COUNT"
     printf 'staging_prefix=%s\n' "$OLD_STAGING"
@@ -208,18 +222,19 @@ directory:
 ```bash
 cd /Users/guyassa/Desktop/Technion_courses/winter_2026/bioinformatics
 export JOB_ID=REPLACE_WITH_RECOVERY_JOB_ID
+export DARWIN_HOME=/home/guy.assa
 mkdir -p artifacts/teammate_run_results/004a3c2_darwin_environment_recovery
 
 scp \
-  guy.assa@132.68.38.100:/home/guy.assa/rbp_004a3_env_recovery_57c2372/environment_recovery_return/RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip \
-  guy.assa@132.68.38.100:/home/guy.assa/rbp_004a3_env_recovery_57c2372/environment_recovery_return/RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip.sha256 \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/environment_recovery_return/RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/environment_recovery_return/RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip.sha256" \
   artifacts/teammate_run_results/004a3c2_darwin_environment_recovery/
 
 scp \
-  "guy.assa@132.68.38.100:/home/guy.assa/rbp_004a3_env_recovery_57c2372/slurm-004a3-env-recovery-${JOB_ID}.out" \
-  "guy.assa@132.68.38.100:/home/guy.assa/rbp_004a3_env_recovery_57c2372/slurm-004a3-env-recovery-${JOB_ID}.err" \
-  "guy.assa@132.68.38.100:/home/guy.assa/rbp_004a3_env_recovery_57c2372/sacct-004a3-env-recovery-${JOB_ID}.txt" \
-  guy.assa@132.68.38.100:/home/guy.assa/rbp_004a3_env_recovery_57c2372_pre_submission.txt \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/slurm-004a3-env-recovery-${JOB_ID}.out" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/slurm-004a3-env-recovery-${JOB_ID}.err" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372/sacct-004a3-env-recovery-${JOB_ID}.txt" \
+  "guy.assa@132.68.38.100:$DARWIN_HOME/rbp_004a3_env_recovery_57c2372_pre_submission.txt" \
   artifacts/teammate_run_results/004a3c2_darwin_environment_recovery/
 
 cd artifacts/teammate_run_results/004a3c2_darwin_environment_recovery

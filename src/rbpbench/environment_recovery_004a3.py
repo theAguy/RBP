@@ -79,6 +79,7 @@ def validate_stopped_return(
     archive: Path,
     *,
     expected_sha256: str,
+    expected_lock_sha256: str,
     expected_staging: str,
     expected_final: str,
 ) -> dict[str, object]:
@@ -90,12 +91,20 @@ def validate_stopped_return(
     if sha256_file(archive) != expected_sha256:
         raise EnvironmentRecoveryError("stopped-return SHA-256 mismatch")
     status_name = "RBP_004A3_ENVIRONMENT_RETURN/STATUS.json"
+    lock_name = "RBP_004A3_ENVIRONMENT_RETURN/environment.lock"
+    if not HEX64.fullmatch(expected_lock_sha256):
+        raise EnvironmentRecoveryError("malformed stopped-return lock SHA-256")
     try:
         with zipfile.ZipFile(archive) as handle:
             names = handle.namelist()
-            if len(names) != len(set(names)) or status_name not in names:
+            if (
+                len(names) != len(set(names))
+                or names.count(status_name) != 1
+                or names.count(lock_name) != 1
+            ):
                 raise EnvironmentRecoveryError("stopped return has invalid members")
             status = json.loads(handle.read(status_name))
+            embedded_lock_sha256 = hashlib.sha256(handle.read(lock_name)).hexdigest()
     except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
         raise EnvironmentRecoveryError("stopped return cannot be validated") from exc
     if status.get("status") != "STOPPED":
@@ -104,8 +113,11 @@ def validate_stopped_return(
         raise EnvironmentRecoveryError("prior staging-prefix binding mismatch")
     if status.get("final_prefix") != expected_final:
         raise EnvironmentRecoveryError("prior final-prefix binding mismatch")
+    if embedded_lock_sha256 != expected_lock_sha256:
+        raise EnvironmentRecoveryError("stopped-return lock SHA-256 mismatch")
     return {
         "stopped_return_sha256": expected_sha256,
+        "environment_lock_sha256": expected_lock_sha256,
         "status": "STOPPED",
         "staging_prefix": expected_staging,
         "final_prefix": expected_final,
@@ -134,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         "stopped_return": validate_stopped_return(
             args.stopped_return,
             expected_sha256=args.stopped_return_sha256,
+            expected_lock_sha256=args.lock_sha256,
             expected_staging=args.staging_prefix,
             expected_final=args.final_prefix,
         ),

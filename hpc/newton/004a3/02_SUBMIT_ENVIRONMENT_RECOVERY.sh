@@ -7,6 +7,7 @@ set -Eeuo pipefail
 : "${RBP_004A3_STOPPED_ROOT:?stopped checkout root required}"
 : "${RBP_004A3_STOPPED_JOB_ID:?stopped job ID required}"
 : "${RBP_004A3_STOPPED_RETURN_SHA256:?stopped-return SHA-256 required}"
+: "${RBP_004A3_PRIOR_PREFLIGHT_SHA256:?prior preflight SHA-256 required}"
 : "${RBP_004A3_LOCK_SHA256:?environment-lock SHA-256 required}"
 : "${RBP_004A3_LOCK_ENTRY_COUNT:?environment-lock entry count required}"
 [[ "$RBP_004A3_CPU_PARTITION" =~ ^[A-Za-z0-9_.-]+$ ]]
@@ -15,6 +16,7 @@ set -Eeuo pipefail
 [[ "$RBP_004A3_STOPPED_ROOT" = /* && -d "$RBP_004A3_STOPPED_ROOT" && ! -L "$RBP_004A3_STOPPED_ROOT" ]]
 [[ "$RBP_004A3_STOPPED_JOB_ID" =~ ^[1-9][0-9]*$ ]]
 [[ "$RBP_004A3_STOPPED_RETURN_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$RBP_004A3_PRIOR_PREFLIGHT_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$RBP_004A3_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$RBP_004A3_LOCK_ENTRY_COUNT" =~ ^[1-9][0-9]*$ ]]
 

@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 try:
     import numpy as np
@@ -50,6 +51,11 @@ from rbpbench.rescnn.runtime_004a3 import (
     require_identity_match, require_memory_headroom, ResCNN004A3RuntimeError,
 )
 from rbpbench.rescnn.timing_004a3 import measure_batches, worst_case_metric_arrays
+from rbpbench.environment_recovery_004a3 import (
+    EnvironmentRecoveryError,
+    validate_explicit_lock,
+    validate_stopped_return,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -652,6 +658,85 @@ class ProjectionAndResourceTests(unittest.TestCase):
 
 
 class EnvironmentPortableAndScriptTests(unittest.TestCase):
+    def test_environment_recovery_authenticates_lock_and_stopped_return(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entries = [
+                "https://conda.anaconda.org/conda-forge/linux-64/python-3.11.conda#" + "1" * 32,
+                "https://conda.anaconda.org/pytorch/linux-64/pytorch-2.5.1.tar.bz2#" + "2" * 32,
+                "https://conda.anaconda.org/nvidia/linux-64/cuda-12.4.tar.bz2#" + "3" * 32,
+            ]
+            lock = root / "environment.lock"
+            lock.write_text("# synthetic\n@EXPLICIT\n" + "\n".join(entries) + "\n")
+            lock_sha = hashlib.sha256(lock.read_bytes()).hexdigest()
+            self.assertEqual(
+                validate_explicit_lock(
+                    lock, expected_sha256=lock_sha, expected_entry_count=3,
+                )["channels"],
+                ["conda-forge", "nvidia", "pytorch"],
+            )
+            staging = "/home/user/old/environment_staging/job_1/solve_prefix"
+            final = "/home/user/.conda/envs/rbpbench-004a3-" + lock_sha[:12]
+            archive = root / "return.zip"
+            status = {
+                "status": "STOPPED", "staging_prefix": staging,
+                "final_prefix": final,
+            }
+            with zipfile.ZipFile(archive, "w") as handle:
+                handle.writestr(
+                    "RBP_004A3_ENVIRONMENT_RETURN/STATUS.json",
+                    json.dumps(status),
+                )
+            archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+            self.assertEqual(
+                validate_stopped_return(
+                    archive, expected_sha256=archive_sha,
+                    expected_staging=staging, expected_final=final,
+                )["status"],
+                "STOPPED",
+            )
+            lock.write_text(lock.read_text().replace("conda-forge", "pkgs/main"))
+            changed_sha = hashlib.sha256(lock.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(EnvironmentRecoveryError, "forbidden"):
+                validate_explicit_lock(
+                    lock, expected_sha256=changed_sha, expected_entry_count=3,
+                )
+            with self.assertRaisesRegex(EnvironmentRecoveryError, "staging-prefix"):
+                validate_stopped_return(
+                    archive, expected_sha256=archive_sha,
+                    expected_staging=staging + "-wrong", expected_final=final,
+                )
+
+    def test_environment_recovery_is_offline_bound_and_non_destructive(self):
+        original = (ROOT / "hpc/newton/004a3/02_PREPARE_ENVIRONMENT.sbatch").read_text()
+        final_create = original[original.index('FINAL="$HOME/.conda/envs/'):]
+        self.assertIn("create --yes --copy --offline --override-channels", final_create)
+        self.assertIn("-c pytorch -c nvidia -c conda-forge", final_create)
+
+        recovery = (ROOT / "hpc/newton/004a3/02_RECOVER_ENVIRONMENT.sbatch").read_text()
+        for fragment in (
+            "RBP_004A3_STOPPED_RETURN_SHA256", "RBP_004A3_LOCK_SHA256",
+            "RBP_004A3_LOCK_ENTRY_COUNT", "environment_recovery_work",
+            "environment_recovery_return", "environment_recovery_004a3",
+            "list --explicit --md5", 'cmp "$WORK/environment.lock"',
+            "create --yes --copy --offline --override-channels",
+            '[[ ! -e "$FINAL" ]]', "RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip",
+            "conda_info_recovery_before.json", "package_cache_before.json",
+            "conda_configured_channels.txt", "host.json", "prefix_summary.json",
+            "package_cache_after.json",
+        ):
+            self.assertIn(fragment, recovery)
+        self.assertNotIn("pytorch::pytorch=2.5.1", recovery)
+        self.assertNotIn('rm -rf "$STAGING"', recovery)
+        self.assertLess(
+            recovery.index("recovery_input_validation.json"),
+            recovery.index("recreate_final_prefix_offline"),
+        )
+        submit = (ROOT / "hpc/newton/004a3/02_SUBMIT_ENVIRONMENT_RECOVERY.sh").read_text()
+        self.assertIn("Refusing pre-existing environment recovery", submit)
+        self.assertIn('[[ ! -e "$FINAL" ]]', submit)
+        self.assertNotIn("--gres", submit)
+
     def test_darwin_environment_handoff_preflights_single_shot_dependencies(self):
         handoff = (
             ROOT / "docs/handoffs/004a3c2_darwin_environment_execution.md"

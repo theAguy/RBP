@@ -97,7 +97,9 @@ PY
 LOCK_SHA=$(sha256sum "$WORK/environment.lock" | awk '{print $1}')
 FINAL="$HOME/.conda/envs/rbpbench-004a3-${LOCK_SHA:0:12}"
 [[ ! -e "$FINAL" ]] || { echo "Refusing existing final prefix: $FINAL" >&2; false; }
-"$CONDA_EXE" create --yes --copy --prefix "$FINAL" --file "$WORK/environment.lock"
+"$CONDA_EXE" create --yes --copy --offline --override-channels --strict-channel-priority \
+  -c pytorch -c nvidia -c conda-forge \
+  --prefix "$FINAL" --file "$WORK/environment.lock"
 "$CONDA_EXE" list --json --prefix "$STAGING" > "$WORK/staging_packages.json"
 "$CONDA_EXE" list --json --prefix "$FINAL" > "$WORK/final_packages.json"
 cmp "$WORK/staging_packages.json" "$WORK/final_packages.json"

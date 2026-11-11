@@ -1,0 +1,107 @@
+{
+  "schema_version": "task004a3c2_environment_v1",
+  "status": "ACCEPTED",
+  "checkpoint": "004A-3C-2",
+  "source": {
+    "recovery_implementation_commit": "0a70024cb10c4890c7d2da47717c2e06f8c7c732",
+    "recovery_handoff_commit": "9e91af6a95378ab98427533e47112ce36477602c",
+    "original_environment_commit": "d11dad131d4a964a24bdd0a2dc46f6a76ba7686b"
+  },
+  "execution": {
+    "recovery_job_id": "544376",
+    "prior_stopped_job_id": "543090",
+    "status": "COMPLETED",
+    "exit_code": "0:0",
+    "partition": "public",
+    "account": "cs",
+    "node": "protagoras",
+    "elapsed": "00:09:42",
+    "allocated_cpus": 4,
+    "requested_memory": "32G",
+    "peak_rss_kib": 2254308,
+    "gpu_allocated": false
+  },
+  "environment": {
+    "final_prefix": "/home/guy.assa/.conda/envs/rbpbench-004a3-4acbb5a8ebf2",
+    "environment_lock_sha256": "4acbb5a8ebf263a7cfc59975d29620ae03a59416046768b0627ad386cd5a67c8",
+    "package_count": 91,
+    "runtime_manifest_sha256": "ea1938760087ea6e89ca19a68e7147d39a7fe7ad14d35833cd175e895d45cf33",
+    "runtime_entry_count": 30772,
+    "runtime_file_count": 29297,
+    "runtime_symlink_count": 1475,
+    "runtime_file_bytes": 6717946054,
+    "read_only_verification_passed": true,
+    "staging_and_final_package_lists_equal": true,
+    "staging_and_return_lock_bytes_equal": true,
+    "package_cache_growth_bytes": 0
+  },
+  "runtime": {
+    "python": "3.11.18",
+    "pytorch": "2.5.1",
+    "torch_cuda": "12.4",
+    "cudnn": 90100,
+    "numpy": "1.26.4",
+    "install_os": "Ubuntu 22.04.5 LTS",
+    "install_glibc": "2.35",
+    "install_kernel": "5.15.0-179-generic"
+  },
+  "channel_policy": {
+    "effective_order": [
+      "pytorch",
+      "nvidia",
+      "conda-forge"
+    ],
+    "explicit_lock_contains_defaults": false,
+    "configured_defaults_were_overridden": true,
+    "offline_recreation": true,
+    "network_fetch_required": false
+  },
+  "focused_tests": {
+    "passed": 112,
+    "failed": 0,
+    "runtime_seconds": 63.92
+  },
+  "recovery_binding": {
+    "stopped_return_sha256": "056d553286ca60b7f23f89781b79ac5bba30bb6600afefe7232dad3a34ab19c4",
+    "prior_preflight_sha256": "645ecfc4f73dd1d9ea9040a45eb6791916e5775314debe6b2b4e0d3497feff6b",
+    "conda_executable": "/home/guy.assa/.local/rbpbench-miniconda-py311-26.9.3/bin/conda",
+    "conda_version": "26.9.3",
+    "preserved_staging_prefix": "/home/guy.assa/rbp_004a3_env_d11dad1/environment_staging/job_543090/solve_prefix"
+  },
+  "return_evidence": {
+    "directory": "artifacts/teammate_run_results/004a3c2_darwin_environment_recovery_job_544376",
+    "files": {
+      "RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip": {
+        "byte_size": 1523167,
+        "sha256": "f766f992a5ea27e3855bd8366d72a620e6d686de4332391ef4a76b068e07f83f"
+      },
+      "RBP_004A3_ENVIRONMENT_RECOVERY_RETURN.zip.sha256": {
+        "byte_size": 108,
+        "sha256": "6e481220372d9172dc899f46fae0b9545fcc4a8515c5bcedc4af5746c5c84631"
+      },
+      "rbp_004a3_env_recovery_0a70024_pre_submission.txt": {
+        "byte_size": 719,
+        "sha256": "2c3166f0b607761c259947db9559854786699e79ddfee0492a20df348c35fd26"
+      },
+      "sacct-004a3-env-recovery-544376.txt": {
+        "byte_size": 293,
+        "sha256": "7d86912e4ba5ea2e3c2fe04653ac407b6cbaceb3139684ba8bb104f5ad630bee"
+      },
+      "slurm-004a3-env-recovery-544376.err": {
+        "byte_size": 182,
+        "sha256": "1890c13a034f8b80bb321d109a4a761e6a4b1f65361e6312fa2537b7c503977f"
+      },
+      "slurm-004a3-env-recovery-544376.out": {
+        "byte_size": 12555,
+        "sha256": "9bb66bf9d3180ee2224f8e35dfc5df38c72fb68c18531baa23163808c0758399"
+      }
+    }
+  },
+  "notes": [
+    "The offline dry-run command exited successfully but emitted an empty JSON plan; acceptance does not treat that file as proof of cache completeness.",
+    "The configured Conda channel list still contains defaults, but both recovery commands used offline explicit-lock installation with override-channels.",
+    "The only stderr text was Conda's informational conda-pypi tip; no package was installed from PyPI.",
+    "The prior stopped evidence and multi-gigabyte staging prefix remain preserved pending a separate cleanup decision.",
+    "This manifest does not authorize Task 004A-3C-3, 004A-3D, or 004A-4."
+  ]
+}

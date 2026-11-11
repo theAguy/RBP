@@ -1,12 +1,11 @@
 # Task 004A-3C — freeze the Newton environment and build the GPU-smoke bundle
 
-**Status:** checkpoint 3C-1 accepted and closed at `d11dad1`. The single 3C-2
-environment job `543090` stopped after creating its staging environment when
-Conda consulted an unnecessary configured `defaults` channel during final
-explicit-lock recreation. Its evidence and staging prefix are preserved. A
-bounded, no-resolve recovery implementation awaits static review; no recovery
-job, real-data cache build, bundle build, CUDA use, or GPU submission is
-authorized by this document.
+**Status:** checkpoint 3C-1 is accepted and closed at `d11dad1`; checkpoint
+3C-2 is accepted after bounded recovery job `544376`, with its immutable
+environment recorded in `manifests/task004a3c2_environment.json`. The prior
+STOPPED evidence and staging prefix remain preserved. Checkpoint 3C-3 may be
+planned separately, but no real-data cache build, bundle build, CUDA use, GPU
+submission or full training is authorized by this document.
 
 ## 1. Purpose
 
